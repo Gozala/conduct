@@ -50,7 +50,7 @@ $ cargo run -- check examples/todo-item.cdt
 #96a1911470 view : ({editing: Bool}, Dict[String | nil]) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (22742 bytes)
+wrote todo-item.wasm (22770 bytes)
 ```
 
 Every type above is inferred. `attr`'s type says it returns the
