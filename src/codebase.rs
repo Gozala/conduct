@@ -11,7 +11,7 @@ use crate::infer::{Binding, Globals, Infer};
 use crate::reader;
 use crate::syntax::{self, Def, Expr};
 use crate::term::{Hash, Op, Term};
-use crate::types::{Scheme, Solver, Ty, TypeError, coalesce};
+use crate::types::{Scheme, Solver, Ty, Type, TypeError, coalesce};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
@@ -79,6 +79,26 @@ impl Globals for HashMap<Hash, Definition> {
 impl Codebase {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Declare a function the host provides, under `name`, which must end
+    /// with `!`: a call takes `params`, answers `ret`, and uses the
+    /// capability `capability`. Its hash covers the name it is imported
+    /// by and its type.
+    pub fn add_host(&mut self, name: &str, capability: &str, params: Vec<Ty>, ret: Ty) -> Result<Hash, Error> {
+        let arity = params.len() as u32;
+        let args = (0..arity).rev().map(Term::Local).collect();
+        let term = Term::Fn(arity, Box::new(Term::Host(name.to_string(), args)));
+        let ty = Ty::func_eff(params, ret, Ty::caps([capability.to_string()]));
+        let mut bytes = Vec::new();
+        term.encode(&mut bytes, &|i| i);
+        bytes.extend_from_slice(coalesce(&ty).to_string().as_bytes());
+        let hash = Hash::of(&bytes);
+        let scheme = Scheme { level: 0, body: ty };
+        check_name(name, &scheme)?;
+        self.defs.insert(hash, Definition { hash, term, cycle: vec![], scheme });
+        self.names.insert(name.to_string(), hash);
+        Ok(hash)
     }
 
     pub fn lookup(&self, name: &str) -> Option<&Definition> {
@@ -201,6 +221,10 @@ impl Codebase {
                 }
             }
             for (d, h) in members.iter().zip(hashes.iter()) {
+                let def = staged.iter().find(|s| s.hash == *h).or_else(|| self.defs.get(h));
+                if let Some(def) = def {
+                    check_name(&d.name, &def.scheme)?;
+                }
                 resolved.insert(d.name.clone(), *h);
                 added.push(Added { name: d.name.clone(), hash: *h, new: fresh });
             }
@@ -243,7 +267,14 @@ impl Codebase {
         // them are canonical: canonical position i is provisional member
         // `cycle_order[i]`.
         let cycle_types: Vec<Ty> = cycle_order.iter().map(|&p| member_vars[p].clone()).collect();
-        let infer = Infer { solver: s, globals: &globals, cycle: cycle_types };
+        // Outside any function, code must be pure: a top-level value is
+        // computed once, and nothing may happen when it is.
+        let infer = Infer {
+            solver: s,
+            globals: &globals,
+            cycle: cycle_types,
+            effects: std::cell::RefCell::new(vec![Ty::pure()]),
+        };
         let mut schemes = Vec::new();
         for (i, (d, term)) in members.iter().zip(terms).enumerate() {
             let t = infer
@@ -254,6 +285,37 @@ impl Codebase {
         }
         Ok(schemes)
     }
+}
+
+/// Roc's rule: a name ends with `!` exactly when what it names uses
+/// capabilities. A function whose effect depends on its arguments' (like
+/// `map`'s) may be named either way.
+fn check_name(name: &str, scheme: &Scheme) -> Result<(), Error> {
+    let marked = name.ends_with('!');
+    let effect = match coalesce(&scheme.body) {
+        Type::Fn(_, _, effect) => *effect,
+        _ => Type::Caps(Default::default()),
+    };
+    let mut caps = std::collections::BTreeSet::new();
+    let mut polymorphic = false;
+    let mut visit = |t: &Type| match t {
+        Type::Caps(c) => caps.extend(c.iter().cloned()),
+        Type::Var(_) => polymorphic = true,
+        _ => {}
+    };
+    match &effect {
+        Type::Union(ts) => ts.iter().for_each(&mut visit),
+        t => visit(t),
+    }
+    let error = |message: String| Err(Error::Resolve { def: name.to_string(), message });
+    if !caps.is_empty() && !marked {
+        let used = caps.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ");
+        return error(format!("it uses {used}, so its name must end with `!`"));
+    }
+    if caps.is_empty() && !polymorphic && marked {
+        return error("it uses no capabilities, so its name must not end with `!`".into());
+    }
+    Ok(())
 }
 
 enum ResolveError {

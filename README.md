@@ -170,6 +170,40 @@ Racket's occurrence typing, inferred without annotations.
 Equality and `str` work on any value, so there is no type class
 machinery: `=` takes `(Any, Any)`.
 
+### Effects
+
+As in Roc, effects run directly and purity is inferred: a function that
+calls one using a capability uses it too, and its type says which, with
+`=>` in place of `->`. Only the host provides functions that use
+capabilities, so the capabilities in a function's type are exactly what
+it can reach outside itself.
+
+```clojure
+(defn stamp! [msg] (let [t (now!)] (log! (str t ": " msg))))
+; stamp! : (Any) => nil ! {clock, log}
+
+(defn all! [xs] (map (fn [x] (log! x)) xs))     ; map lends its function's effect
+; all! : (List[String]) => List[nil] ! {log}
+
+(defn apply [f x] (f x))                        ; effect-polymorphic
+; apply : ((a) => b ! c, a) => b ! c
+```
+
+- A name ends with `!` exactly when what it names uses a capability; a
+  function whose effect is its argument's, like `apply`, may be named
+  either way.
+- A top-level value is pure: nothing may happen when it is computed.
+- An element's `update` and `view` are pure, since the naming rule keeps
+  an effectful one from being called `update`; elements keep returning
+  effects as data.
+- Capabilities form a lattice by inclusion, like keyword sets, so they
+  need no new machinery in the solver.
+
+A host function is declared with its capability and type
+(`Codebase::add_host`) and compiled to a core import from
+`conduct:host`. Binding a component world's imports to such
+declarations is the next step for routes.
+
 ### Hashing
 
 `codebase` resolves locals to de Bruijn indices and other definitions to
@@ -285,11 +319,10 @@ ask for a request.
 The demo's other parts each need something this slice does not have:
 
 1. **Routes**: `wasi:http/handler` and the async `demo:todo/model`
-   imports. Effects stop being data returned from `update`, and the
-   effect system (inferred, as Roc infers purity, and mapped to the
-   world's imports) has to exist.
-2. **In-place reuse**: Perceus's reuse analysis, so that updating a
-   uniquely owned list or record writes into it instead of copying.
+   imports, bound as host functions with their capabilities, and a
+   blocking handler export so effectful calls can wait.
+2. **The language proposal** in `notes/language.md`: qualified keys,
+   absence as failure, attributes and concepts, macros.
 3. **Narrowing in later clauses**: a clause does not learn that the ones
    before it failed. That needs MLstruct's negation types in general,
    not just `t \ nil`.

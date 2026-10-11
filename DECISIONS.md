@@ -3,6 +3,28 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Effects
+
+- **A capability set on every function type.** Roc tracks only pure or
+  effectful; conduct infers which capabilities, as a set ordered by
+  inclusion, so a type says what a function can reach. The empty set is
+  pure.
+- **Effects are a third part of the function type,** covariant like the
+  result, so the solver needed only a new lattice of sets, not a new
+  kind of constraint. A call adds the callee's effect to the body it is
+  in; `map` and `filter` take their function's.
+- **Effect polymorphism is kept.** `apply` is `((a) => b ! c, a) => b ! c`.
+  Roc avoids it; inference gives it for free, and the naming rule lets
+  such a function go without `!`.
+- **The `!` rule is an error both ways,** where Roc warns. A pure
+  function named with `!`, or an effectful one without, is refused.
+- **Host functions are declared through the API for now.** A world's
+  imports become such declarations when routes need them; there is no
+  syntax for declaring one yet.
+- **Effects run directly.** Code generation does not change: an
+  effectful call is a call. Waiting on an async import will need a
+  blocking export (Wasmtime's fibers, or JSPI under the polyfill).
+
 ## Reuse: a bug it found
 
 - **Record fields are evaluated in source order.** A record literal

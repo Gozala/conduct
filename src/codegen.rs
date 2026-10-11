@@ -243,6 +243,19 @@ impl<'a> Builder<'a> {
         addr
     }
 
+    /// The import of the host function `name`, declared once.
+    fn host_import(&mut self, name: &str, arity: usize) -> String {
+        let id = format!("$host_{}", Hash::of(name.as_bytes()).hex().get(..12).unwrap_or_default());
+        let import = format!(
+            "(import \"conduct:host\" \"{name}\" (func {id}{} (result i64)))",
+            if arity == 0 { String::new() } else { format!(" (param{})", " i64".repeat(arity)) }
+        );
+        if !self.imports.contains(&import) {
+            self.imports.push(import);
+        }
+        id
+    }
+
     /// A keyword object in static data, as a value.
     pub fn static_keyword(&mut self, k: &str) -> u32 {
         let key = format!(":{k}");
@@ -452,6 +465,25 @@ impl<'a> Builder<'a> {
             Term::Nil => format!("(i64.const {NIL})"),
             Term::Str(s) => format!("(i64.const {})", self.static_str(s)),
             Term::Keyword(k) => format!("(i64.const {})", self.static_keyword(k)),
+            Term::Host(name, args) => {
+                // The host borrows its arguments, like a built-in.
+                let refs: Vec<&Term> = args.iter().collect();
+                let values = self.sequence(&refs, env, frame, cycle, live)?;
+                let import = self.host_import(name, args.len());
+                let temps: Vec<String> = values.iter().map(|_| frame.local()).collect();
+                let result = frame.local();
+                let mut out = String::from("(block (result i64)");
+                for (t, v) in temps.iter().zip(values) {
+                    let _ = write!(out, " (local.set {t} {v})");
+                }
+                let gets: Vec<String> = temps.iter().map(|t| format!("(local.get {t})")).collect();
+                let _ = write!(out, " (local.set {result} (call {import} {}))", gets.join(" "));
+                for t in &temps {
+                    let _ = write!(out, " (call $drop (local.get {t}))");
+                }
+                let _ = write!(out, " (local.get {result}))");
+                out
+            }
             Term::Match(scrutinee, clauses, default) => {
                 // A `let` of the value and a chain of `if`s on its
                 // equality with each pattern. A match without `_`
@@ -894,6 +926,7 @@ fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
         }
         Term::Record(fs) | Term::Dict(fs) => fs.iter().for_each(|(_, t)| free_locals(t, binders, out)),
         Term::List(items) | Term::Prim(_, items) => items.iter().for_each(|t| free_locals(t, binders, out)),
+        Term::Host(_, args) => args.iter().for_each(|t| free_locals(t, binders, out)),
         Term::Match(scrutinee, clauses, default) => {
             free_locals(scrutinee, binders, out);
             clauses.iter().for_each(|(_, r)| free_locals(r, binders, out));
@@ -952,6 +985,7 @@ fn shift(term: &Term, by: u32, cutoff: u32) -> Term {
         Term::Update(r, k, v) => Term::Update(s(r), k.clone(), s(v)),
         Term::List(items) => Term::List(all(items)),
         Term::Prim(op, args) => Term::Prim(*op, all(args)),
+        Term::Host(name, args) => Term::Host(name.clone(), all(args)),
         Term::Match(x, clauses, default) => Term::Match(
             s(x),
             clauses.iter().map(|(p, r)| (p.clone(), shift(r, by, cutoff))).collect(),

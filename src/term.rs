@@ -227,6 +227,9 @@ pub enum Term {
     /// The scrutinee, each clause's pattern and result, and the result of
     /// the final `_` clause if there is one.
     Match(Box<Term>, Vec<(Pattern, Term)>, Option<Box<Term>>),
+    /// A call of a function the host provides, by its import name. Only
+    /// a host definition's body has one.
+    Host(String, Vec<Term>),
 }
 
 /// What a `match` clause tests its value against.
@@ -335,6 +338,7 @@ impl Term {
             | Term::Ref(_)
             | Term::Keyword(_)
             | Term::CycleRef(_) => {}
+            Term::Host(_, args) => args.iter().for_each(|a| a.walk(f)),
             Term::Match(scrutinee, clauses, default) => {
                 scrutinee.walk(f);
                 for (_, result) in clauses {
@@ -501,6 +505,11 @@ impl Term {
             Term::Keyword(k) => {
                 out.push(0x17);
                 text(out, k);
+            }
+            Term::Host(name, args) => {
+                out.push(0x19);
+                text(out, name);
+                many(out, args, cycle_index);
             }
             Term::Match(scrutinee, clauses, default) => {
                 out.push(0x18);

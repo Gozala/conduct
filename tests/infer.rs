@@ -15,7 +15,7 @@ fn infers_basic_functions() {
     assert_eq!(ty("(defn id [x] x)", "id"), "(a) -> a");
     assert_eq!(ty("(defn inc [x] (+ x 1))", "inc"), "(Int) -> Int");
     assert_eq!(ty("(defn k [x y] x)", "k"), "(a, Any) -> a");
-    assert_eq!(ty("(defn app [f x] (f x))", "app"), "((a) -> b, a) -> b");
+    assert_eq!(ty("(defn app [f x] (f x))", "app"), "((a) => b ! c, a) => b ! c");
 }
 
 #[test]
