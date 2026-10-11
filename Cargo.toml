@@ -1,0 +1,32 @@
+[package]
+name = "conduct"
+version = "0.1.0"
+edition = "2024"
+description = "A prototype language: Lisp syntax, hash-addressed definitions, inferred lattice types, compiled to Wasm components"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "conduct"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+wat = "1"
+wit-component = "0.261"
+wit-parser = "0.261"
+
+[dev-dependencies]
+# The polyfill runs the components the tests build, natively over
+# Wasmtime's core engine, as it runs them in a browser over the
+# `WebAssembly` API.
+wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill" }
+wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill" }
+# The same Wasmtime the polyfill pins, for running plain core modules.
+wasmtime = { version = "=49.0.0-rc.1", default-features = false, features = ["cranelift", "runtime"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[profile.dev.package."*"]
+opt-level = 2
