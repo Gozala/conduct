@@ -54,7 +54,6 @@ pub enum Op {
     Eq,
     NotEq,
     Not,
-    IsNil,
     Str,
     Count,
     First,
@@ -78,6 +77,7 @@ pub enum Op {
     JsonStr,
     JsonInt,
     JsonBool,
+    JsonType,
     /// Whether a value is a record with a field: only `match` uses it,
     /// so it has no name in source and is not in [`Op::ALL`].
     HasField,
@@ -97,7 +97,6 @@ impl Op {
         Op::Eq,
         Op::NotEq,
         Op::Not,
-        Op::IsNil,
         Op::Str,
         Op::Count,
         Op::First,
@@ -121,6 +120,7 @@ impl Op {
         Op::JsonStr,
         Op::JsonInt,
         Op::JsonBool,
+        Op::JsonType,
     ];
 
     pub fn name(self) -> &'static str {
@@ -137,7 +137,6 @@ impl Op {
             Op::Eq => "=",
             Op::NotEq => "not=",
             Op::Not => "not",
-            Op::IsNil => "nil?",
             Op::Str => "str",
             Op::Count => "count",
             Op::First => "first",
@@ -161,6 +160,7 @@ impl Op {
             Op::JsonStr => "json-str",
             Op::JsonInt => "json-int",
             Op::JsonBool => "json-bool",
+            Op::JsonType => "json-type",
             Op::HasField => "has-field?",
         }
     }
@@ -174,9 +174,7 @@ impl Op {
         Some(match self {
             Op::Str => return None,
             Op::Not
-            | Op::IsNil
             | Op::Count
-            | Op::First
             | Op::Rest
             | Op::Trim
             | Op::ParseJson
@@ -184,8 +182,9 @@ impl Op {
             | Op::JsonItems
             | Op::JsonStr
             | Op::JsonInt
-            | Op::JsonBool => 1,
-            Op::Assoc => 3,
+            | Op::JsonBool
+            | Op::JsonType => 1,
+            Op::Assoc | Op::Get => 3,
             Op::H | Op::Fetch => 4,
             _ => 2,
         })
@@ -197,6 +196,8 @@ pub enum Term {
     Int(i64),
     Str(String),
     Bool(bool),
+    /// No value: never written in source, only what an exhaustive
+    /// `match` lowers its impossible last case to.
     Nil,
     /// A local, by de Bruijn index: 0 is the innermost binder.
     Local(u32),
@@ -212,9 +213,6 @@ pub enum Term {
     /// Binds local 0 in the body.
     Let(Box<Term>, Box<Term>),
     If(Box<Term>, Box<Term>, Box<Term>),
-    /// Binds local 0 in the then branch.
-    IfSome(Box<Term>, Box<Term>, Box<Term>),
-    Coalesce(Box<Term>, Box<Term>),
     And(Box<Term>, Box<Term>),
     Or(Box<Term>, Box<Term>),
     /// Fields sorted by name, so that field order in the source does not
@@ -242,10 +240,6 @@ pub enum Pattern {
     Keyword(String),
     Str(String),
     Int(i64),
-    /// The value is `nil`.
-    Nil,
-    /// The value is not `nil`: `some?`.
-    Some,
     /// Any value: `_`. At the top of a clause it is the last clause; in
     /// a record pattern it only asks that the field be there.
     Any,
@@ -276,8 +270,6 @@ impl Pattern {
                 out.push(2);
                 out.extend_from_slice(&n.to_le_bytes());
             }
-            Pattern::Nil => out.push(3),
-            Pattern::Some => out.push(4),
             Pattern::Any => out.push(6),
             Pattern::Bind(_) => out.push(7),
             Pattern::Fields(fields) => {
@@ -349,16 +341,13 @@ impl Pattern {
     }
 
     /// Whether these patterns, without a `_` clause, can cover every value
-    /// the match is given: `nil` and `some?`, or variants (keywords and
+    /// the match is given: variants (keywords and
     /// one-field records) whose payload patterns cover, key by key, or a
     /// record pattern of `_`s among others. When every clause names the
     /// same one field, that is a field of a record as much as a variant,
     /// and the same test holds.
     pub fn cover(patterns: &[&Pattern]) -> bool {
         if patterns.iter().any(|p| p.irrefutable()) {
-            return true;
-        }
-        if patterns.len() == 2 && patterns.contains(&&Pattern::Nil) && patterns.contains(&&Pattern::Some) {
             return true;
         }
         // Otherwise a record pattern of `_`s covers what has its fields,
@@ -418,7 +407,7 @@ impl Term {
                 callee.walk(f);
                 args.iter().for_each(|a| a.walk(f));
             }
-            Term::Let(a, b) | Term::Coalesce(a, b) | Term::And(a, b) | Term::Or(a, b) => {
+            Term::Let(a, b) | Term::And(a, b) | Term::Or(a, b) => {
                 a.walk(f);
                 b.walk(f);
             }
@@ -426,7 +415,7 @@ impl Term {
                 r.walk(f);
                 v.walk(f);
             }
-            Term::If(a, b, c) | Term::IfSome(a, b, c) => {
+            Term::If(a, b, c) => {
                 a.walk(f);
                 b.walk(f);
                 c.walk(f);
@@ -517,17 +506,6 @@ impl Term {
                 c.encode(out, cycle_index);
                 t.encode(out, cycle_index);
                 e.encode(out, cycle_index);
-            }
-            Term::IfSome(v, t, e) => {
-                out.push(0x0d);
-                v.encode(out, cycle_index);
-                t.encode(out, cycle_index);
-                e.encode(out, cycle_index);
-            }
-            Term::Coalesce(a, b) => {
-                out.push(0x0e);
-                a.encode(out, cycle_index);
-                b.encode(out, cycle_index);
             }
             Term::And(a, b) => {
                 out.push(0x0f);

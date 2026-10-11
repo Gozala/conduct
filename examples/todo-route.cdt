@@ -9,22 +9,20 @@
 (defn todo-json [todo]
   {"id" (:id todo) "title" (:title todo) "completed" (:completed todo)})
 
-;; A JSON string as a string, and anything else as nil.
-(defn text [value]
-  (if (nil? value) nil (json-str value)))
-
-;; A JSON boolean as a Bool, and anything else as nil.
-(defn flag [value]
-  (cond
-    (= value true) true
-    (= value false) false
-    :else nil))
+;; The change a PATCH asks for: the id, and the title and completion
+;; where the body has them as a string and a boolean. An attribute the
+;; body does not have is left out, and the model leaves it as it is.
+(defn patch [id body]
+  (let [title (json-get body "title")
+        completed (json-get body "completed")
+        change {:id id}
+        change (match (json-type title) "string" (assoc change :title (json-str title)) _ change)]
+    (match (json-type completed) "boolean" (assoc change :completed (json-bool completed)) _ change)))
 
 (defn change! [id request]
-  (let [body (parse-json (:body request))]
-    (match (update! id (text (json-get body "title")) (flag (json-get body "completed")))
-      {:ok todo} (json (todo-json todo) 200)
-      {:error why} (problem why))))
+  (match (update! (patch id (parse-json (:body request))))
+    {:ok todo} (json (todo-json todo) 200)
+    {:error why} (problem why)))
 
 (defn delete! [id]
   (match (remove! id)
@@ -32,7 +30,7 @@
     {:error why} (problem why)))
 
 (defn handle! [request]
-  (let [id (?? (get (:params request) "id") "")]
+  (let [id (get (:params request) "id" "")]
     (match (:method request)
       "PATCH" (change! id request)
       "DELETE" (delete! id)

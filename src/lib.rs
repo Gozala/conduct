@@ -10,7 +10,7 @@
 //!    groups recursion into cycles, hashes every definition, and checks
 //!    its type once.
 //! 4. [`infer`] and [`types`] infer types with subtyping (Simple-sub),
-//!    with unions, intersections, and set-style optionals.
+//!    with unions, intersections, variants, and optional attributes.
 //! 5. [`codegen`] compiles the definitions an entry point reaches to a
 //!    core Wasm module, and [`element`] and [`route`] wrap one as a
 //!    component of the TodoMVC demo's element or route world.

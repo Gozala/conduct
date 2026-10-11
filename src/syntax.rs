@@ -11,17 +11,11 @@ pub enum Expr {
     Int(i64),
     Str(String),
     Bool(bool),
-    Nil,
     Var(String, Span),
     Fn(Vec<String>, Box<Expr>),
     App(Box<Expr>, Vec<Expr>, Span),
     Let(String, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
-    /// `(if-some [x e] then else)`: `x` is bound to `e` in `then`, with
-    /// `nil` removed from its type.
-    IfSome(String, Box<Expr>, Box<Expr>, Box<Expr>),
-    /// `(?? a b)`: `a` unless it is `nil`, then `b`.
-    Coalesce(Box<Expr>, Box<Expr>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Record(Vec<(String, Expr)>),
@@ -67,8 +61,21 @@ fn err<T>(message: impl Into<String>, span: Span) -> Result<T> {
 }
 
 /// Words that cannot name a definition or a local.
-const RESERVED: &[&str] =
-    &["def", "defn", "fn", "let", "if", "if-some", "??", "and", "or", "cond", "match", "nil", "true", "false"];
+const RESERVED: &[&str] = &["def", "defn", "fn", "let", "if", "and", "or", "cond", "match", "nil", "true", "false"];
+
+/// What to write instead of the forms conduct no longer has.
+fn retired(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "nil" => {
+            "conduct has no `nil`: leave an attribute out of a record, return a variant such as \
+             `{:error :not-found}`, or use `[]` for no children"
+        }
+        "??" => "conduct has no `??`: read a field with a default, `(:title todo \"\")`, or `(get d k default)`",
+        "if-some" => "conduct has no `if-some`: `match` the value, `(match r {:title t} .. _ ..)`",
+        "nil?" | "some?" => "conduct has no `nil`: `match` on whether an attribute is there, `{:title t}`",
+        _ => return None,
+    })
+}
 
 /// Parse top-level forms into definitions.
 pub fn defs(forms: &[Sexp]) -> Result<Vec<Def>> {
@@ -131,7 +138,7 @@ pub fn expr(form: &Sexp) -> Result<Expr> {
         Sexp::Int(n, _) => Ok(Expr::Int(*n)),
         Sexp::Str(s, _) => Ok(Expr::Str(s.clone())),
         Sexp::Symbol(name, span) => Ok(match name.as_str() {
-            "nil" => Expr::Nil,
+            n if retired(n).is_some() => return err(retired(n).unwrap(), *span),
             "true" => Expr::Bool(true),
             "false" => Expr::Bool(false),
             _ => Expr::Var(name.clone(), *span),
@@ -179,14 +186,22 @@ fn map_literal(items: &[Sexp], span: Span) -> Result<Expr> {
 
 fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
     let Some(head) = items.first() else {
-        return err("`()` is not an expression; use `nil` or `[]`", span);
+        return err("`()` is not an expression; use `[]` for an empty list", span);
     };
     let args = &items[1..];
     if let Sexp::Keyword(field, _) = head {
-        let [record] = args else {
-            return err(format!("`(:{field} record)` takes one argument"), span);
+        return match args {
+            [record] => Ok(Expr::Field(field.clone(), boxed(record)?)),
+            // `(:title todo "untitled")`: the attribute where the record
+            // has it, else the default.
+            [record, default] => {
+                let name = " attribute".to_string();
+                let read =
+                    vec![(Pattern::Fields(vec![(field.clone(), Pattern::Bind(name.clone()))]), Expr::Var(name, span))];
+                Ok(Expr::Match(boxed(record)?, read, Some(boxed(default)?)))
+            }
+            _ => err(format!("`(:{field} record)` takes a record, and maybe a default"), span),
         };
-        return Ok(Expr::Field(field.clone(), boxed(record)?));
     }
     if let Some(name) = head.as_symbol() {
         match name {
@@ -217,24 +232,6 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
                     return err("`if` takes a condition, a then branch, and an else branch", span);
                 };
                 return Ok(Expr::If(boxed(c)?, boxed(t)?, boxed(e)?));
-            }
-            "if-some" => {
-                let [binding, t, e] = args else {
-                    return err("`if-some` takes `[name expr]`, a then branch, and an else branch", span);
-                };
-                let Sexp::Vector(b, bspan) = binding else {
-                    return err("`if-some` binds with `[name expr]`", binding.span());
-                };
-                let [name, value] = b.as_slice() else {
-                    return err("`if-some` binds exactly one name", *bspan);
-                };
-                return Ok(Expr::IfSome(binder(name)?, boxed(value)?, boxed(t)?, boxed(e)?));
-            }
-            "??" => {
-                let [a, b] = args else {
-                    return err("`??` takes two arguments", span);
-                };
-                return Ok(Expr::Coalesce(boxed(a)?, boxed(b)?));
             }
             "and" | "or" => {
                 if args.len() < 2 {
@@ -319,7 +316,7 @@ fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
     if default.is_none() && !Pattern::cover(&arms.iter().map(|(p, _)| p).collect::<Vec<_>>()) {
         return err(
             "this `match` cannot cover every value without a `_` clause: only variants (keywords and \
-             one-field records) whose payloads are covered, or `nil` with `some?`, can",
+             one-field records) whose payloads are covered, or a record of `_`s, can",
             span,
         );
     }
@@ -331,10 +328,11 @@ fn pattern(form: &Sexp) -> Result<Pattern> {
         Sexp::Keyword(k, _) => Pattern::Keyword(k.clone()),
         Sexp::Str(s, _) => Pattern::Str(s.clone()),
         Sexp::Int(n, _) => Pattern::Int(*n),
-        Sexp::Symbol(s, _) if s == "nil" => Pattern::Nil,
-        Sexp::Symbol(s, _) if s == "some?" => Pattern::Some,
         Sexp::Symbol(s, _) if s == "_" => Pattern::Any,
         Sexp::Symbol(s, sspan) => {
+            if let Some(why) = retired(s) {
+                return err(why, *sspan);
+            }
             if RESERVED.contains(&s.as_str()) {
                 return err(format!("`{s}` is reserved, so it cannot name a value a pattern binds"), *sspan);
             }
@@ -358,7 +356,7 @@ fn pattern(form: &Sexp) -> Result<Pattern> {
         other => {
             return err(
                 format!(
-                    "a `match` pattern is a keyword, string, or integer, `nil`, `some?`, `_`, a name to bind, or a record of those, not `{other}`"
+                    "a `match` pattern is a keyword, string, or integer, `_`, a name to bind, or a record of those, not `{other}`"
                 ),
                 other.span(),
             );

@@ -6,11 +6,9 @@
 //! lattice: when they are shown, a variable's bounds become unions in
 //! positive positions and intersections in negative ones.
 //!
-//! One addition to Simple-sub: `Without(t)` is `t` with `nil` taken out.
-//! It appears only in positive positions (as what flows *into*
-//! something) and is what lets `if-some` and `??` treat an optional
-//! value as present. It is the one case of MLstruct's negation types
-//! (`t & ¬nil`) that set-style optionals need first.
+//! There is no `nil`. What may be missing is an attribute: a record
+//! field typed `Opt(t)` may be absent, `{k?: t}`, and reading it needs a
+//! default or a `match`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -22,7 +20,6 @@ pub enum Prim {
     Int,
     Bool,
     Str,
-    Nil,
     /// A parsed JSON value, read with the `json-` built-ins.
     Json,
 }
@@ -33,7 +30,6 @@ impl Prim {
             Prim::Int => "Int",
             Prim::Bool => "Bool",
             Prim::Str => "String",
-            Prim::Nil => "nil",
             Prim::Json => "Json",
         }
     }
@@ -44,9 +40,6 @@ pub struct VarState {
     pub level: u32,
     pub lower: RefCell<Vec<Ty>>,
     pub upper: RefCell<Vec<Ty>>,
-    /// Upper bounds that apply to every lower bound except `nil`: the
-    /// constraints `Without(this) <: t`.
-    pub filtered: RefCell<Vec<Ty>>,
 }
 
 pub type Var = Rc<VarState>;
@@ -64,9 +57,8 @@ pub enum Ty {
     View,
     Effect,
     Var(Var),
-    Without(Rc<Ty>),
-    /// A record with one field set: what `(assoc r :k v)` returns. Like
-    /// `Without`, it only flows into things.
+    /// A record with one field set: what `(assoc r :k v)` returns. It
+    /// only flows into things.
     Update(Rc<Ty>, String, Rc<Ty>),
     /// One of a finite set of variants, each a key with a payload or,
     /// for a keyword, without one. A keyword literal is the set of
@@ -83,11 +75,9 @@ pub enum Ty {
     /// A set of capabilities, ordered by inclusion like keyword sets. The
     /// empty set is pure.
     Caps(Rc<BTreeSet<String>>),
-    /// `t | nil`. Unlike a variable with both as lower bounds, it can
-    /// bound what flows in, as a parameter's type: nil heads no other
-    /// type, so `s <: t | nil` splits into `s` being nil or `s <: t`
-    /// without a choice to make.
-    Maybe(Rc<Ty>),
+    /// The type of a record field that may be absent: `{k?: t}`. It only
+    /// appears as a field's type.
+    Opt(Rc<Ty>),
 }
 
 impl Ty {
@@ -99,9 +89,6 @@ impl Ty {
     }
     pub fn str() -> Ty {
         Ty::Prim(Prim::Str)
-    }
-    pub fn nil() -> Ty {
-        Ty::Prim(Prim::Nil)
     }
     pub fn func(params: Vec<Ty>, ret: Ty) -> Ty {
         Ty::Fn(Rc::new(params), Rc::new(ret), Rc::new(Ty::pure()))
@@ -125,17 +112,11 @@ impl Ty {
     pub fn dict(t: Ty) -> Ty {
         Ty::Dict(Rc::new(t))
     }
-    pub fn without(t: Ty) -> Ty {
+    /// The type of a field that may be absent.
+    pub fn opt(t: Ty) -> Ty {
         match t {
-            Ty::Without(_) => t,
-            t => Ty::Without(Rc::new(t)),
-        }
-    }
-
-    pub fn maybe(t: Ty) -> Ty {
-        match t {
-            Ty::Maybe(_) | Ty::Prim(Prim::Nil) => t,
-            t => Ty::Maybe(Rc::new(t)),
+            Ty::Opt(_) => t,
+            t => Ty::Opt(Rc::new(t)),
         }
     }
 
@@ -169,7 +150,7 @@ impl Ty {
                 params.iter().map(Ty::level).max().unwrap_or(0).max(ret.level()).max(eff.level())
             }
             Ty::Record(fields) => fields.values().map(Ty::level).max().unwrap_or(0),
-            Ty::List(t) | Ty::Dict(t) | Ty::Without(t) | Ty::Maybe(t) => t.level(),
+            Ty::List(t) | Ty::Dict(t) | Ty::Opt(t) => t.level(),
             Ty::Update(r, _, v) => r.level().max(v.level()),
             Ty::Tags(tags) => tags.values().flatten().map(Ty::level).max().unwrap_or(0),
             Ty::IfHas(_, t) => t.level(),
@@ -191,12 +172,11 @@ impl Ty {
             Ty::Record(fields) => (7, Rc::as_ptr(fields) as *const u8 as usize),
             Ty::List(t) => (8, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Dict(t) => (9, Rc::as_ptr(t) as *const u8 as usize),
-            Ty::Without(t) => (10, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Update(r, _, _) => (11, Rc::as_ptr(r) as *const u8 as usize),
             Ty::Tags(k) => (12, Rc::as_ptr(k) as *const u8 as usize),
             Ty::IfHas(_, t) => (15, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Caps(c) => (13, Rc::as_ptr(c) as *const u8 as usize),
-            Ty::Maybe(t) => (14, Rc::as_ptr(t) as *const u8 as usize),
+            Ty::Opt(t) => (14, Rc::as_ptr(t) as *const u8 as usize),
         }
     }
 }
@@ -243,13 +223,7 @@ impl Solver {
     pub fn fresh(&self, level: u32) -> Var {
         let id = self.next_id.get();
         self.next_id.set(id + 1);
-        Rc::new(VarState {
-            id,
-            level,
-            lower: RefCell::new(Vec::new()),
-            upper: RefCell::new(Vec::new()),
-            filtered: RefCell::new(Vec::new()),
-        })
+        Rc::new(VarState { id, level, lower: RefCell::new(Vec::new()), upper: RefCell::new(Vec::new()) })
     }
 
     pub fn fresh_ty(&self, level: u32) -> Ty {
@@ -270,8 +244,6 @@ impl Solver {
         match (lhs, rhs) {
             (Ty::Bot, _) | (_, Ty::Top) => Ok(()),
             (Ty::Prim(a), Ty::Prim(b)) if a == b => Ok(()),
-            // JSON's `null` is nil, so nil is a JSON value.
-            (Ty::Prim(Prim::Nil), Ty::Prim(Prim::Json)) => Ok(()),
             (Ty::View, Ty::View) | (Ty::Effect, Ty::Effect) => Ok(()),
             (Ty::Tags(a), Ty::Tags(b)) => {
                 let missing: Vec<&String> = a.keys().filter(|k| !b.contains_key(*k)).collect();
@@ -303,10 +275,11 @@ impl Solver {
                         return Err(TypeError(format!("the keyword `:{k}` is not a record")));
                     };
                     for (name, t) in fields.iter() {
-                        if name != k {
+                        if name == k {
+                            self.go(payload, unopt(t), cache)?;
+                        } else if !matches!(t, Ty::Opt(_)) {
                             return Err(TypeError(format!("the variant `{{:{k} ..}}` has no field `:{name}`")));
                         }
-                        self.go(payload, t, cache)?;
                     }
                 }
                 Ok(())
@@ -339,9 +312,18 @@ impl Solver {
             }
             (Ty::Record(f0), Ty::Record(f1)) => {
                 for (name, t1) in f1.iter() {
-                    match f0.get(name) {
-                        Some(t0) => self.go(t0, t1, cache)?,
-                        None => {
+                    match (f0.get(name), t1) {
+                        (Some(Ty::Opt(t0)), Ty::Opt(u)) => self.go(t0, u, cache)?,
+                        (Some(Ty::Opt(_)), _) => {
+                            return Err(TypeError(format!(
+                                "the record {} may not have `:{name}`: read it with a default, or `match` it",
+                                Shallow(lhs)
+                            )));
+                        }
+                        (Some(t0), t1) => self.go(t0, unopt(t1), cache)?,
+                        // A field asked for only if it is there.
+                        (None, Ty::Opt(_)) => {}
+                        (None, _) => {
                             return Err(TypeError(format!("the record {} has no field `:{name}`", Shallow(lhs))));
                         }
                     }
@@ -363,29 +345,16 @@ impl Solver {
                 for u in &uppers {
                     self.go(lhs, u, cache)?;
                 }
-                let filtered = v.filtered.borrow().clone();
-                for f in &filtered {
-                    self.without(lhs, f, cache)?;
-                }
                 Ok(())
             }
-            (Ty::Maybe(a), Ty::Maybe(b)) => self.go(a, b, cache),
-            (Ty::Prim(Prim::Nil), Ty::Maybe(_)) => Ok(()),
-            // Either half of `a | nil` must fit.
-            (Ty::Maybe(a), _) if !matches!(rhs, Ty::Var(_)) => {
-                self.go(&Ty::nil(), rhs, cache)?;
-                self.go(a, rhs, cache)
-            }
-            // Anything but nil that fits `b | nil` fits `b`.
-            (_, Ty::Maybe(b)) if !matches!(lhs, Ty::Var(_) | Ty::Without(_)) => self.go(lhs, b, cache),
             // A value without the attribute fits, whatever else it is.
-            (_, Ty::IfHas(k, t)) if !matches!(lhs, Ty::Var(_) | Ty::Without(_) | Ty::Update(..)) => match lhs {
+            (_, Ty::IfHas(k, t)) if !matches!(lhs, Ty::Var(_) | Ty::Update(..)) => match lhs {
                 Ty::Tags(tags) => match tags.get(k) {
                     Some(Some(payload)) => self.go(payload, t, cache),
                     _ => Ok(()),
                 },
                 Ty::Record(fields) => match fields.get(k) {
-                    Some(v) => self.go(v, t, cache),
+                    Some(v) => self.go(unopt(v), t, cache),
                     None => Ok(()),
                 },
                 Ty::Top => self.go(&Ty::Top, t, cache),
@@ -397,7 +366,7 @@ impl Solver {
                 Ty::Record(wanted) => {
                     for (name, t) in wanted.iter() {
                         if name == field {
-                            self.go(value, t, cache)?;
+                            self.go(value, unopt(t), cache)?;
                         } else if cache.reads.insert((record.key(), name.clone(), t.key())) {
                             self.go(record, &Ty::record([(name.clone(), t.clone())]), cache)?;
                         }
@@ -416,21 +385,6 @@ impl Solver {
                 },
                 _ => Err(TypeError(format!("{} is not a {}", Shallow(lhs), Shallow(rhs)))),
             },
-            (Ty::Without(inner), _) => match &**inner {
-                Ty::Var(v) => {
-                    if rhs.level() > v.level {
-                        let rhs = self.extrude(rhs, false, v.level, &mut HashMap::new());
-                        return self.go(lhs, &rhs, cache);
-                    }
-                    v.filtered.borrow_mut().push(rhs.clone());
-                    let lowers = v.lower.borrow().clone();
-                    for l in &lowers {
-                        self.without(l, rhs, cache)?;
-                    }
-                    Ok(())
-                }
-                other => self.without(other, rhs, cache),
-            },
             (Ty::Var(v), _) => {
                 let rhs = self.extrude(rhs, false, v.level, &mut HashMap::new());
                 self.go(lhs, &rhs, cache)
@@ -440,16 +394,6 @@ impl Solver {
                 self.go(&lhs, rhs, cache)
             }
             _ => Err(TypeError(format!("{} is not a {}", Shallow(lhs), Shallow(rhs)))),
-        }
-    }
-
-    /// `lhs` with `nil` removed flows into `rhs`.
-    fn without(&self, lhs: &Ty, rhs: &Ty, cache: &mut Cache) -> Result<(), TypeError> {
-        match lhs {
-            Ty::Prim(Prim::Nil) => Ok(()),
-            Ty::Without(inner) | Ty::Maybe(inner) => self.without(inner, rhs, cache),
-            Ty::Var(_) => self.go(&Ty::without(lhs.clone()), rhs, cache),
-            _ => self.go(lhs, rhs, cache),
         }
     }
 
@@ -471,8 +415,7 @@ impl Solver {
             }
             Ty::List(t) => Ty::list(self.extrude(t, pol, level, cache)),
             Ty::Dict(t) => Ty::dict(self.extrude(t, pol, level, cache)),
-            Ty::Without(t) => Ty::without(self.extrude(t, pol, level, cache)),
-            Ty::Maybe(t) => Ty::maybe(self.extrude(t, pol, level, cache)),
+            Ty::Opt(t) => Ty::opt(self.extrude(t, pol, level, cache)),
             Ty::Tags(tags) => {
                 Ty::tags(tags.iter().map(|(k, p)| (k.clone(), p.as_ref().map(|p| self.extrude(p, pol, level, cache)))))
             }
@@ -496,9 +439,6 @@ impl Solver {
                     let uppers = v.upper.borrow().clone();
                     let copied = uppers.iter().map(|u| self.extrude(u, pol, level, cache)).collect();
                     *nv.upper.borrow_mut() = copied;
-                    let filtered = v.filtered.borrow().clone();
-                    let copied = filtered.iter().map(|u| self.extrude(u, pol, level, cache)).collect();
-                    *nv.filtered.borrow_mut() = copied;
                 }
                 Ty::Var(nv)
             }
@@ -525,13 +465,10 @@ impl Solver {
                 map.insert(v.id, nv.clone());
                 let lowers = v.lower.borrow().clone();
                 let uppers = v.upper.borrow().clone();
-                let filtered = v.filtered.borrow().clone();
                 let l = lowers.iter().map(|t| self.freshen(t, limit, level, map)).collect();
                 let u = uppers.iter().map(|t| self.freshen(t, limit, level, map)).collect();
-                let f = filtered.iter().map(|t| self.freshen(t, limit, level, map)).collect();
                 *nv.lower.borrow_mut() = l;
                 *nv.upper.borrow_mut() = u;
-                *nv.filtered.borrow_mut() = f;
                 Ty::Var(nv)
             }
             Ty::Fn(params, ret, eff) => Ty::func_eff(
@@ -544,8 +481,7 @@ impl Solver {
             }
             Ty::List(t) => Ty::list(self.freshen(t, limit, level, map)),
             Ty::Dict(t) => Ty::dict(self.freshen(t, limit, level, map)),
-            Ty::Without(t) => Ty::without(self.freshen(t, limit, level, map)),
-            Ty::Maybe(t) => Ty::maybe(self.freshen(t, limit, level, map)),
+            Ty::Opt(t) => Ty::opt(self.freshen(t, limit, level, map)),
             Ty::Tags(tags) => {
                 Ty::tags(tags.iter().map(|(k, p)| (k.clone(), p.as_ref().map(|p| self.freshen(p, limit, level, map)))))
             }
@@ -584,8 +520,7 @@ impl fmt::Display for Shallow<'_> {
             }
             Ty::List(_) => write!(f, "List"),
             Ty::Dict(_) => write!(f, "Dict"),
-            Ty::Without(t) => write!(f, "{} without nil", Shallow(t)),
-            Ty::Maybe(t) => write!(f, "{} or nil", Shallow(t)),
+            Ty::Opt(t) => write!(f, "{} if present", Shallow(t)),
             Ty::Update(r, k, _) => write!(f, "{} with `:{k}` set", Shallow(r)),
             Ty::Tags(k) => write!(f, "{}", tags_text(k)),
             Ty::IfHas(k, _) => write!(f, "{{{k}?: ..}}"),
@@ -622,10 +557,10 @@ pub enum Type {
     Union(Vec<Type>),
     Inter(Vec<Type>),
     Rec(u32, Box<Type>),
-    Without(Box<Type>),
+    /// A field that may be absent.
+    Opt(Box<Type>),
     Update(Box<Type>, String, Box<Type>),
     Tags(BTreeMap<String, Option<Type>>),
-    IfHas(String, Box<Type>),
     Caps(BTreeSet<String>),
 }
 
@@ -655,7 +590,12 @@ fn coalesce_go(
                 .map(|(k, p)| (k.clone(), p.as_ref().map(|p| coalesce_go(p, pol, in_process, recursive, next))))
                 .collect(),
         ),
-        Ty::IfHas(k, t) => Type::IfHas(k.clone(), Box::new(coalesce_go(t, pol, in_process, recursive, next))),
+        // Asking for `k` only if it is there is a record with `k?`, and
+        // asks nothing if anything may be there.
+        Ty::IfHas(k, t) => match coalesce_go(t, pol, in_process, recursive, next) {
+            Type::Top => Type::Top,
+            t => Type::Record([(k.clone(), Type::Opt(Box::new(t)))].into_iter().collect()),
+        },
         Ty::Caps(c) => Type::Caps((**c).clone()),
         Ty::Fn(params, ret, eff) => Type::Fn(
             params.iter().map(|p| coalesce_go(p, !pol, in_process, recursive, next)).collect(),
@@ -667,8 +607,7 @@ fn coalesce_go(
         ),
         Ty::List(t) => Type::List(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
         Ty::Dict(t) => Type::Dict(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
-        Ty::Without(t) => Type::Without(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
-        Ty::Maybe(t) => Type::Union(vec![coalesce_go(t, pol, in_process, recursive, next), Type::Prim(Prim::Nil)]),
+        Ty::Opt(t) => Type::Opt(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
         Ty::Update(r, k, v) => Type::Update(
             Box::new(coalesce_go(r, pol, in_process, recursive, next)),
             k.clone(),
@@ -691,10 +630,6 @@ fn coalesce_go(
             } else {
                 let uppers = v.upper.borrow().clone();
                 parts.extend(uppers.iter().map(|u| coalesce_go(u, pol, in_process, recursive, next)));
-                let filtered = v.filtered.borrow().clone();
-                parts.extend(filtered.iter().map(|u| {
-                    Type::Union(vec![coalesce_go(u, pol, in_process, recursive, next), Type::Prim(Prim::Nil)])
-                }));
             }
             in_process.pop();
             let body = if pol { Type::Union(parts) } else { Type::Inter(parts) };
@@ -725,7 +660,33 @@ fn simplify(ty: Type) -> Type {
         }
         ty = next;
     }
-    rename(ty)
+    rename(vacuous(ty, true))
+}
+
+/// Where a value goes in, a record that asks only for fields that may
+/// be absent and may be anything asks nothing. (Such a bound comes from
+/// a pattern that reads a field only where the value has it.)
+fn vacuous(ty: Type, pol: bool) -> Type {
+    match ty {
+        Type::Record(fields)
+            if !pol && !fields.is_empty() && fields.values().all(|t| *t == Type::Opt(Box::new(Type::Top))) =>
+        {
+            Type::Top
+        }
+        Type::Fn(params, ret, eff) => Type::Fn(
+            params.into_iter().map(|p| vacuous(p, !pol)).collect(),
+            Box::new(vacuous(*ret, pol)),
+            Box::new(vacuous(*eff, pol)),
+        ),
+        Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, vacuous(t, pol))).collect()),
+        Type::List(t) => Type::List(Box::new(vacuous(*t, pol))),
+        Type::Dict(t) => Type::Dict(Box::new(vacuous(*t, pol))),
+        Type::Opt(t) => Type::Opt(Box::new(vacuous(*t, pol))),
+        Type::Union(ts) => normalize(Type::Union(ts.into_iter().map(|t| vacuous(t, pol)).collect())),
+        Type::Inter(ts) => normalize(Type::Inter(ts.into_iter().map(|t| vacuous(t, pol)).collect())),
+        Type::Rec(v, body) => Type::Rec(v, Box::new(vacuous(*body, pol))),
+        other => other,
+    }
 }
 
 /// Simple-sub's co-occurrence simplification. A variable that, in every
@@ -765,7 +726,7 @@ fn cooccurrence(ty: Type) -> Type {
             }
             Type::Record(fields) => fields.values().for_each(|t| visit(t, pol, co, bound)),
             Type::Tags(tags) => tags.values().flatten().for_each(|t| visit(t, pol, co, bound)),
-            Type::List(t) | Type::Dict(t) | Type::Without(t) | Type::IfHas(_, t) => visit(t, pol, co, bound),
+            Type::List(t) | Type::Dict(t) | Type::Opt(t) => visit(t, pol, co, bound),
             Type::Update(r, _, v) => {
                 visit(r, pol, co, bound);
                 visit(v, pol, co, bound);
@@ -830,8 +791,7 @@ fn drop_var(ty: Type, v: u32, pol: bool) -> Type {
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, drop_var(t, v, pol))).collect()),
         Type::List(t) => Type::List(Box::new(drop_var(*t, v, pol))),
         Type::Dict(t) => Type::Dict(Box::new(drop_var(*t, v, pol))),
-        Type::Without(t) => Type::Without(Box::new(drop_var(*t, v, pol))),
-        Type::IfHas(k, t) => Type::IfHas(k, Box::new(drop_var(*t, v, pol))),
+        Type::Opt(t) => Type::Opt(Box::new(drop_var(*t, v, pol))),
         Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| drop_var(p, v, pol)))).collect()),
         Type::Update(r, k, x) => Type::Update(Box::new(drop_var(*r, v, pol)), k, Box::new(drop_var(*x, v, pol))),
         Type::Union(ts) => Type::Union(ts.into_iter().map(|t| drop_var(t, v, pol)).collect()),
@@ -854,8 +814,7 @@ fn map_type(ty: Type, f: &dyn Fn(&Type) -> Option<Type>) -> Type {
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, map_type(t, f))).collect()),
         Type::List(t) => Type::List(Box::new(map_type(*t, f))),
         Type::Dict(t) => Type::Dict(Box::new(map_type(*t, f))),
-        Type::Without(t) => Type::Without(Box::new(map_type(*t, f))),
-        Type::IfHas(k, t) => Type::IfHas(k, Box::new(map_type(*t, f))),
+        Type::Opt(t) => Type::Opt(Box::new(map_type(*t, f))),
         Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| map_type(p, f)))).collect()),
         Type::Update(r, k, v) => Type::Update(Box::new(map_type(*r, f)), k, Box::new(map_type(*v, f))),
         Type::Union(ts) => Type::Union(ts.into_iter().map(|t| map_type(t, f)).collect()),
@@ -881,7 +840,7 @@ fn occurrences(ty: &Type, pol: bool, pos: &mut HashSet<u32>, neg: &mut HashSet<u
         }
         Type::Record(fields) => fields.values().for_each(|t| occurrences(t, pol, pos, neg)),
         Type::Tags(tags) => tags.values().flatten().for_each(|t| occurrences(t, pol, pos, neg)),
-        Type::List(t) | Type::Dict(t) | Type::Without(t) | Type::IfHas(_, t) => occurrences(t, pol, pos, neg),
+        Type::List(t) | Type::Dict(t) | Type::Opt(t) => occurrences(t, pol, pos, neg),
         Type::Update(r, _, v) => {
             occurrences(r, pol, pos, neg);
             occurrences(v, pol, pos, neg);
@@ -914,8 +873,7 @@ fn prune(ty: Type, pol: bool, keep: &HashSet<u32>) -> Type {
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, prune(t, pol, keep))).collect()),
         Type::List(t) => Type::List(Box::new(prune(*t, pol, keep))),
         Type::Dict(t) => Type::Dict(Box::new(prune(*t, pol, keep))),
-        Type::Without(t) => Type::Without(Box::new(prune(*t, pol, keep))),
-        Type::IfHas(k, t) => Type::IfHas(k, Box::new(prune(*t, pol, keep))),
+        Type::Opt(t) => Type::Opt(Box::new(prune(*t, pol, keep))),
         Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| prune(p, pol, keep)))).collect()),
         Type::Update(r, k, v) => Type::Update(Box::new(prune(*r, pol, keep)), k, Box::new(prune(*v, pol, keep))),
         Type::Union(ts) => Type::Union(ts.into_iter().map(|t| prune(t, pol, keep)).collect()),
@@ -937,8 +895,7 @@ fn normalize(ty: Type) -> Type {
             let body = normalize(*body);
             if mentions(&body, v) { Type::Rec(v, Box::new(body)) } else { body }
         }
-        Type::Without(t) => without(normalize(*t)),
-        Type::IfHas(k, t) => Type::IfHas(k, Box::new(normalize(*t))),
+        Type::Opt(t) => Type::Opt(Box::new(normalize(*t))),
         Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(normalize))).collect()),
         Type::Update(r, k, v) => update(normalize(*r), k, normalize(*v)),
         Type::Union(ts) => {
@@ -978,12 +935,12 @@ fn normalize(ty: Type) -> Type {
             if out.contains(&Type::Bot) {
                 return Type::Bot;
             }
+            optional_reads_into_variants(&mut out);
             records_beside_records(&mut out);
             merge_records(&mut out, false);
             merge_containers(&mut out, false);
             merge_tags(&mut out, false);
             merge_caps(&mut out, false);
-            merge_if_has(&mut out);
             if out.contains(&Type::Bot) {
                 return Type::Bot;
             }
@@ -999,13 +956,11 @@ fn normalize(ty: Type) -> Type {
     }
 }
 
-/// Variables first, then concrete types, with `nil` last, so that an
-/// optional reads as `t | nil`.
+/// Variables first, then concrete types.
 fn display_order(a: &Type, b: &Type) -> std::cmp::Ordering {
     fn rank(t: &Type) -> u8 {
         match t {
-            Type::Var(_) | Type::Without(_) => 0,
-            Type::Prim(Prim::Nil) => 9,
+            Type::Var(_) => 0,
             _ => 1,
         }
     }
@@ -1050,6 +1005,34 @@ fn merge_tags(parts: &mut Vec<Type>, union: bool) {
     parts.push(if merged.is_empty() { Type::Bot } else { Type::Tags(merged) });
 }
 
+/// In an intersection with variants, a record of only optional fields
+/// asks of each variant that has the field that its payload fit: it
+/// folds into the payloads.
+fn optional_reads_into_variants(parts: &mut Vec<Type>) {
+    let Some(at) = parts.iter().position(|t| matches!(t, Type::Tags(tags) if tags.values().any(|p| p.is_some())))
+    else {
+        return;
+    };
+    let mut i = 0;
+    while i < parts.len() {
+        let fields = match &parts[i] {
+            Type::Record(fields) if fields.values().all(|t| matches!(t, Type::Opt(_))) => fields.clone(),
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        if let Type::Tags(tags) = &mut parts[at] {
+            for (k, t) in fields {
+                if let (Some(Some(p)), Type::Opt(t)) = (tags.get_mut(&k), t) {
+                    *p = normalize(Type::Inter(vec![p.clone(), *t]));
+                }
+            }
+        }
+        parts.remove(i);
+    }
+}
+
 /// A variant beside a record is shown as the record of one field it is,
 /// so the two merge as records do.
 fn records_beside_records(parts: &mut [Type]) {
@@ -1068,42 +1051,6 @@ fn as_record(t: &Type) -> Type {
             _ => t.clone(),
         },
         _ => t.clone(),
-    }
-}
-
-/// In an intersection, `{k?: t}` asks nothing more of a record that has
-/// `k`, or of variants, than that `k` fit `t`, so it folds into them;
-/// `{k?: Any}` asks nothing at all.
-fn merge_if_has(parts: &mut Vec<Type>) {
-    let mut i = 0;
-    while i < parts.len() {
-        let Type::IfHas(k, t) = &parts[i] else {
-            i += 1;
-            continue;
-        };
-        let (k, t) = (k.clone(), (**t).clone());
-        let mut folded = t == Type::Top;
-        for part in parts.iter_mut() {
-            match part {
-                Type::Record(fields) if fields.contains_key(&k) => {
-                    let old = fields.remove(&k).unwrap();
-                    fields.insert(k.clone(), normalize(Type::Inter(vec![old, t.clone()])));
-                    folded = true;
-                }
-                Type::Tags(tags) if tags.values().all(|p| p.is_some()) || tags.contains_key(&k) => {
-                    if let Some(Some(p)) = tags.get_mut(&k) {
-                        *p = normalize(Type::Inter(vec![p.clone(), t.clone()]));
-                    }
-                    folded = true;
-                }
-                _ => {}
-            }
-        }
-        if folded {
-            parts.remove(i);
-        } else {
-            i += 1;
-        }
     }
 }
 
@@ -1156,14 +1103,31 @@ fn merge_records(parts: &mut Vec<Type>, union: bool) {
             None => fields.clone(),
             Some(mut acc) => {
                 if union {
-                    acc.retain(|k, _| fields.contains_key(k));
+                    // A field one record lacks may be absent.
+                    for (k, v) in fields {
+                        if !acc.contains_key(k) {
+                            acc.insert(k.clone(), Type::Opt(Box::new(split_opt(v.clone()).0)));
+                        }
+                    }
                     for (k, v) in acc.iter_mut() {
-                        *v = normalize(Type::Union(vec![v.clone(), fields[k].clone()]));
+                        let (a, a_opt) = split_opt(v.clone());
+                        let (b, b_opt) = match fields.get(k) {
+                            Some(t) => split_opt(t.clone()),
+                            None => (Type::Bot, true),
+                        };
+                        let joined = normalize(Type::Union(vec![a, b]));
+                        *v = if a_opt || b_opt { Type::Opt(Box::new(joined)) } else { joined };
                     }
                 } else {
                     for (k, v) in fields {
                         let combined = match acc.remove(k) {
-                            Some(old) => normalize(Type::Inter(vec![old, v.clone()])),
+                            Some(old) => {
+                                // Required by either, it is required.
+                                let (a, a_opt) = split_opt(old);
+                                let (b, b_opt) = split_opt(v.clone());
+                                let met = normalize(Type::Inter(vec![a, b]));
+                                if a_opt && b_opt { Type::Opt(Box::new(met)) } else { met }
+                            }
                             None => v.clone(),
                         };
                         acc.insert(k.clone(), combined);
@@ -1179,16 +1143,6 @@ fn merge_records(parts: &mut Vec<Type>, union: bool) {
     }
 }
 
-fn without(ty: Type) -> Type {
-    match ty {
-        Type::Prim(Prim::Nil) => Type::Bot,
-        Type::Union(ts) => normalize(Type::Union(ts.into_iter().map(without).collect())),
-        Type::Var(v) => Type::Without(Box::new(Type::Var(v))),
-        Type::Without(t) => without(*t),
-        other => other,
-    }
-}
-
 /// A record with one field set, shown as the record when the original
 /// is one.
 fn update(record: Type, field: String, value: Type) -> Type {
@@ -1196,6 +1150,14 @@ fn update(record: Type, field: String, value: Type) -> Type {
         Type::Record(mut fields) => {
             fields.insert(field, value);
             Type::Record(fields)
+        }
+        // A variant is the record of one field it is.
+        Type::Tags(ref tags) if tags.len() == 1 && tags.values().all(|p| p.is_some()) => {
+            update(as_record(&record), field, value)
+        }
+        // Setting a field of either record sets it in whichever it is.
+        Type::Union(members) if members.iter().all(|m| matches!(m, Type::Record(_))) => {
+            normalize(Type::Union(members.into_iter().map(|m| update(m, field.clone(), value.clone())).collect()))
         }
         other => Type::Update(Box::new(other), field, Box::new(value)),
     }
@@ -1206,7 +1168,7 @@ fn mentions(ty: &Type, v: u32) -> bool {
         Type::Var(x) => *x == v,
         Type::Fn(params, ret, eff) => params.iter().any(|p| mentions(p, v)) || mentions(ret, v) || mentions(eff, v),
         Type::Record(fields) => fields.values().any(|t| mentions(t, v)),
-        Type::List(t) | Type::Dict(t) | Type::Without(t) | Type::Rec(_, t) | Type::IfHas(_, t) => mentions(t, v),
+        Type::List(t) | Type::Dict(t) | Type::Opt(t) | Type::Rec(_, t) => mentions(t, v),
         Type::Tags(tags) => tags.values().flatten().any(|t| mentions(t, v)),
         Type::Update(r, _, x) => mentions(r, v) || mentions(x, v),
         Type::Union(ts) | Type::Inter(ts) => ts.iter().any(|t| mentions(t, v)),
@@ -1234,8 +1196,7 @@ fn rename(ty: Type) -> Type {
             Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, go(t, map))).collect()),
             Type::List(t) => Type::List(Box::new(go(*t, map))),
             Type::Dict(t) => Type::Dict(Box::new(go(*t, map))),
-            Type::Without(t) => Type::Without(Box::new(go(*t, map))),
-            Type::IfHas(k, t) => Type::IfHas(k, Box::new(go(*t, map))),
+            Type::Opt(t) => Type::Opt(Box::new(go(*t, map))),
             Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| go(p, map)))).collect()),
             Type::Update(r, k, v) => {
                 let r = go(*r, map);
@@ -1280,11 +1241,6 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
             }
             Ok(())
         }
-        Type::IfHas(k, t) => {
-            write!(f, "{{{k}?: ")?;
-            write_type(t, f, 0)?;
-            write!(f, "}}")
-        }
         Type::Var(v) => write!(f, "{}", var(*v)),
         Type::Fn(params, ret, eff) => {
             if prec > 0 {
@@ -1321,8 +1277,16 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
                 if i > 0 {
                     write!(f, ", ")?;
                 }
-                write!(f, "{k}: ")?;
-                write_type(t, f, 0)?;
+                match t {
+                    Type::Opt(t) => {
+                        write!(f, "{k}?: ")?;
+                        write_type(t, f, 0)?;
+                    }
+                    t => {
+                        write!(f, "{k}: ")?;
+                        write_type(t, f, 0)?;
+                    }
+                }
             }
             write!(f, "}}")
         }
@@ -1368,10 +1332,7 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
             write_type(v, f, 0)?;
             write!(f, ")")
         }
-        Type::Without(t) => {
-            write_type(t, f, 3)?;
-            write!(f, " \\ nil")
-        }
+        Type::Opt(t) => write_type(t, f, prec),
     }
 }
 
@@ -1392,4 +1353,20 @@ fn write_tags(tags: &BTreeMap<String, Option<Type>>, f: &mut fmt::Formatter<'_>)
         }
     }
     Ok(())
+}
+
+/// A field's type, whether or not it may be absent.
+fn unopt(t: &Ty) -> &Ty {
+    match t {
+        Ty::Opt(inner) => inner,
+        t => t,
+    }
+}
+
+/// A field's displayed type, and whether it may be absent.
+fn split_opt(t: Type) -> (Type, bool) {
+    match t {
+        Type::Opt(inner) => (*inner, true),
+        t => (t, false),
+    }
 }

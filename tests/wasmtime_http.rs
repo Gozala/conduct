@@ -70,10 +70,10 @@ const FETCHER: &str = r#"
 (defn update [m handler event attrs]
   (cond
     (= handler "connected")
-      {:model m :effects (map ask (filter (fn [u] (not (= u ""))) (split (?? (get attrs "urls") "") "\n")))}
+      {:model m :effects (map ask (filter (fn [u] (not (= u ""))) (split (get attrs "urls" "") "\n")))}
     (= handler "answer")
       {:model {:n (+ (:n m) 1)}
-       :effects [(emit "answered" (str (?? (:status event) 0) " " (?? (:value event) "")))]}
+       :effects [(emit "answered" (str (:status event 0) " " (:value event "")))]}
     :else {:model m :effects []}))
 (defn view [m attrs] (h "p" {} [(str (:n m))] {}))
 "#;

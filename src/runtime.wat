@@ -5,7 +5,7 @@
   ;;
   ;; A value is an i64:
   ;;   ...xx1  an integer n, as (n << 1) | 1
-  ;;   0x02    nil
+  ;;   0x02    absent: no conduct value; JSON's null, an absent slot
   ;;   0x0a    false
   ;;   0x12    true
   ;;   ...000  a pointer to a heap object, 8-aligned and non-zero
@@ -366,10 +366,11 @@
     (call $obj (i32.const 2) (local.get $n) (i32.shl (local.get $n) (i32.const 3))))
   (func $count (param $v i64) (result i64)
     (i64.or (i64.shl (i64.extend_i32_u (call $len (local.get $v))) (i64.const 1)) (i64.const 1)))
-  (func $first (param $v i64) (result i64)
-    (if (result i64) (call $len (local.get $v))
-      (then (call $dup (call $list_get (local.get $v) (i32.const 0))))
-      (else (i64.const 0x02))))
+  (func $first (param $v i64) (param $default i64) (result i64)
+    ;; The first element, or the default for an empty list.
+    (call $dup (if (result i64) (call $len (local.get $v))
+      (then (call $list_get (local.get $v) (i32.const 0)))
+      (else (local.get $default)))))
   (func $slice (param $v i64) (param $from i32) (param $n i32) (result i64)
     (local $p i32)
     (local.set $p (call $list_new (local.get $n)))
@@ -627,6 +628,13 @@
     (if (result i64) (i32.lt_s (local.get $i) (i32.const 0))
       (then (i64.const 0x02))
       (else (call $dup (call $dict_val (local.get $d) (local.get $i))))))
+  (func $dict_get_or (param $d i64) (param $key i64) (param $default i64) (result i64)
+    ;; The value under `key`, or the default.
+    (local $i i32)
+    (local.set $i (call $dict_find (local.get $d) (local.get $key)))
+    (call $dup (if (result i64) (i32.lt_s (local.get $i) (i32.const 0))
+      (then (local.get $default))
+      (else (call $dict_val (local.get $d) (local.get $i))))))
   (func $dict_new (param $n i32) (result i32)
     (call $obj (i32.const 4) (local.get $n) (i32.shl (local.get $n) (i32.const 4))))
   (func $dict_put (param $p i32) (param $i i32) (param $key i64) (param $val i64)
@@ -800,7 +808,8 @@
 
   ;; JSON. Parsed values are ordinary values: objects are dictionaries,
   ;; arrays lists, numbers integers (a fraction or exponent is dropped),
-  ;; `null` nil. A malformed document parses to nil.
+  ;; `null` the absent value, which only a `Json` can hold. A malformed
+  ;; document parses to it too.
   (global $jp (mut i32) (i32.const 0))
   (global $je (mut i32) (i32.const 0))
   (global $jerr (mut i32) (i32.const 0))
@@ -1110,5 +1119,17 @@
       (else (call $lit (i32.const 0) (i32.const 0)))))
   (func $json_int (param $j i64) (result i64)
     (select (local.get $j) (i64.const 1) (i64.eq (i64.and (local.get $j) (i64.const 1)) (i64.const 1))))
+  (func $json_type (param $j i64) (result i64)
+    ;; What kind of JSON value `j` is, by name: "string", "number",
+    ;; "boolean", "array", "object", or "null" (also for a missing key).
+    (local $k i32)
+    (if (i64.eq (i64.and (local.get $j) (i64.const 1)) (i64.const 1)) (then (return (call $lit (i32.const 36) (i32.const 6)))))
+    (if (i32.or (i64.eq (local.get $j) (i64.const 0x12)) (i64.eq (local.get $j) (i64.const 0x0a)))
+      (then (return (call $lit (i32.const 42) (i32.const 7)))))
+    (local.set $k (call $kind (local.get $j)))
+    (if (i32.eq (local.get $k) (i32.const 1)) (then (return (call $lit (i32.const 30) (i32.const 6)))))
+    (if (i32.eq (local.get $k) (i32.const 2)) (then (return (call $lit (i32.const 49) (i32.const 5)))))
+    (if (i32.eq (local.get $k) (i32.const 4)) (then (return (call $lit (i32.const 54) (i32.const 6)))))
+    (call $lit (i32.const 19) (i32.const 4)))
   (func $json_bool (param $j i64) (result i64)
     (call $bool (i64.eq (local.get $j) (i64.const 0x12))))

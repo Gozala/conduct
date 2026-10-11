@@ -42,6 +42,10 @@ use crate::term::{Hash, Op, Pattern, Term};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
+/// The value no conduct code can write or name: the slot of an absent
+/// attribute in glue, JSON's `null` inside a `Json`, the closure
+/// argument of a direct call, and what an impossible `match` case lowers
+/// to.
 pub const NIL: i64 = 0x02;
 pub const FALSE: i64 = 0x0a;
 pub const TRUE: i64 = 0x12;
@@ -59,7 +63,7 @@ pub const KIND_FETCH: u32 = 8;
 pub const KIND_KEYWORD: u32 = 9;
 
 const RUNTIME: &str = include_str!("runtime.wat");
-const RUNTIME_DATA: &[u8] = b"truefalse[] <value>null{}:,\"\\u";
+const RUNTIME_DATA: &[u8] = b"truefalse[] <value>null{}:,\"\\ustringnumberbooleanarrayobject";
 /// Addresses below this hold scratch space: the canonical ABI return
 /// area at 0 and the allocator's free-list heads at 64.
 const STATIC_START: u32 = 1024;
@@ -271,9 +275,24 @@ impl<'a> Builder<'a> {
         id
     }
 
+    /// The empty record, in static data, as a value: what a function
+    /// with nothing to answer answers.
+    pub fn static_empty_record(&mut self) -> u32 {
+        // Not a string's text, so no string literal shares the entry.
+        let key = "\0{}".to_string();
+        if let Some(addr) = self.strings.get(&key) {
+            return *addr;
+        }
+        let mut bytes = KIND_RECORD.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        let addr = self.static_object(bytes);
+        self.strings.insert(key, addr);
+        addr
+    }
+
     /// A keyword object in static data, as a value.
     pub fn static_keyword(&mut self, k: &str) -> u32 {
-        let key = format!(":{k}");
+        let key = format!("\0:{k}");
         if let Some(addr) = self.strings.get(&key) {
             return *addr;
         }
@@ -597,47 +616,6 @@ impl<'a> Builder<'a> {
                 Self::join_arms(frame, live, &start, &[end_t, end_e])?;
                 format!("(if (result i64) (i64.eq {c} (i64.const {TRUE})) (then {t}) (else {e}))")
             }
-            Term::IfSome(value, then, otherwise) => {
-                let local = frame.local();
-                env.push(Slot::Local(local.clone()));
-                let then_fv = fv(then, env);
-                env.pop();
-                let mut value_live = live.clone();
-                value_live.extend(then_fv.iter().filter(|n| **n != local).cloned());
-                value_live.extend(fv(otherwise, env));
-                let v = self.expr(value, env, frame, cycle, &value_live)?;
-                let start = frame.owned.clone();
-                // Present: the bound value is owned in the then arm.
-                env.push(Slot::Local(local.clone()));
-                let mut then_start = start.clone();
-                then_start.insert(local.clone());
-                let t = self.arm(then, env, frame, cycle, live, &then_start);
-                env.pop();
-                let t = t?;
-                let end_t = frame.owned.clone();
-                // Absent: the bound value is nil, which owns nothing.
-                let e = self.arm(otherwise, env, frame, cycle, live, &start)?;
-                let end_e = frame.owned.clone();
-                Self::join_arms(frame, live, &start, &[end_t, end_e])?;
-                format!(
-                    "(block (result i64) (local.set {local} {v}) (if (result i64) (i64.ne (local.get {local}) (i64.const {NIL})) (then {t}) (else {e})))"
-                )
-            }
-            Term::Coalesce(a, b) => {
-                let mut a_live = live.clone();
-                a_live.extend(fv(b, env));
-                let a = self.expr(a, env, frame, cycle, &a_live)?;
-                let local = frame.local();
-                let start = frame.owned.clone();
-                let present = Self::empty_arm(frame, live, &start, format!("(local.get {local})"));
-                let end_p = frame.owned.clone();
-                let absent = self.arm(b, env, frame, cycle, live, &start)?;
-                let end_a = frame.owned.clone();
-                Self::join_arms(frame, live, &start, &[end_p, end_a])?;
-                format!(
-                    "(block (result i64) (local.set {local} {a}) (if (result i64) (i64.ne (local.get {local}) (i64.const {NIL})) (then {present}) (else {absent})))"
-                )
-            }
             Term::And(a, b) | Term::Or(a, b) => {
                 let is_and = matches!(term, Term::And(..));
                 let mut a_live = live.clone();
@@ -888,7 +866,6 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::Eq => bool(format!("(call $eq {} {})", a[0], a[1])),
         Op::NotEq => bool(format!("(i32.eqz (call $eq {} {}))", a[0], a[1])),
         Op::Not => bool(format!("(i64.ne {} (i64.const {TRUE}))", a[0])),
-        Op::IsNil => bool(format!("(i64.eq {} (i64.const {NIL}))", a[0])),
         Op::Str => {
             if a.is_empty() {
                 return format!("(i64.const {})", b.static_str(""));
@@ -900,13 +877,13 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
             out
         }
         Op::Count => format!("(call $count {})", a[0]),
-        Op::First => format!("(call $first {})", a[0]),
+        Op::First => format!("(call $first {} {})", a[0], a[1]),
         Op::Rest => format!("(call $rest {})", a[0]),
         Op::Concat => format!("(call $concat {} {})", a[0], a[1]),
         Op::Conj => format!("(call $conj_into {} {})", a[0], a[1]),
         Op::Map => format!("(call $map_into {} {})", a[0], a[1]),
         Op::Filter => format!("(call $filter_into {} {})", a[0], a[1]),
-        Op::Get => format!("(call $dict_get {} {})", a[0], a[1]),
+        Op::Get => format!("(call $dict_get_or {} {} {})", a[0], a[1], a[2]),
         Op::Assoc => format!("(call $dict_set {} {} {})", a[0], a[1], a[2]),
         Op::Dissoc => format!("(call $dict_remove {} {})", a[0], a[1]),
         Op::H => format!("(call $view_new {} {} {} {})", a[0], a[1], a[2], a[3]),
@@ -921,6 +898,7 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::JsonStr => format!("(call $json_str {})", a[0]),
         Op::JsonInt => format!("(call $json_int {})", a[0]),
         Op::JsonBool => format!("(call $json_bool {})", a[0]),
+        Op::JsonType => format!("(call $json_type {})", a[0]),
         Op::HasField => unreachable!("a field test is compiled where it is met"),
     }
 }
@@ -937,11 +915,6 @@ fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
             free_locals(v, binders, out);
             free_locals(body, binders + 1, out);
         }
-        Term::IfSome(v, t, e) => {
-            free_locals(v, binders, out);
-            free_locals(t, binders + 1, out);
-            free_locals(e, binders, out);
-        }
         Term::App(c, args) => {
             free_locals(c, binders, out);
             args.iter().for_each(|a| free_locals(a, binders, out));
@@ -951,7 +924,7 @@ fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
             free_locals(b, binders, out);
             free_locals(c, binders, out);
         }
-        Term::Coalesce(a, b) | Term::And(a, b) | Term::Or(a, b) => {
+        Term::And(a, b) | Term::Or(a, b) => {
             free_locals(a, binders, out);
             free_locals(b, binders, out);
         }
@@ -982,13 +955,10 @@ fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
 
 /// A Bool term that says whether `value` matches `pattern`.
 fn pattern_test(value: Term, pattern: &Pattern) -> Term {
-    let is_nil = |v: Term| Term::Prim(Op::IsNil, vec![v]);
     match pattern {
         Pattern::Keyword(k) => Term::Prim(Op::Eq, vec![value, Term::Keyword(k.clone())]),
         Pattern::Str(s) => Term::Prim(Op::Eq, vec![value, Term::Str(s.clone())]),
         Pattern::Int(n) => Term::Prim(Op::Eq, vec![value, Term::Int(*n)]),
-        Pattern::Nil => is_nil(value),
-        Pattern::Some => Term::Prim(Op::Not, vec![is_nil(value)]),
         Pattern::Any | Pattern::Bind(_) => Term::Bool(true),
         Pattern::Fields(fields) => {
             // The value may be a keyword or a variant with another key,
@@ -1019,8 +989,6 @@ fn shift(term: &Term, by: u32, cutoff: u32) -> Term {
         Term::App(c, args) => Term::App(s(c), all(args)),
         Term::Let(v, body) => Term::Let(s(v), Box::new(shift(body, by, cutoff + 1))),
         Term::If(a, b, c) => Term::If(s(a), s(b), s(c)),
-        Term::IfSome(v, t, e) => Term::IfSome(s(v), Box::new(shift(t, by, cutoff + 1)), s(e)),
-        Term::Coalesce(a, b) => Term::Coalesce(s(a), s(b)),
         Term::And(a, b) => Term::And(s(a), s(b)),
         Term::Or(a, b) => Term::Or(s(a), s(b)),
         Term::Record(fs) => Term::Record(entries(fs)),

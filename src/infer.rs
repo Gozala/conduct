@@ -33,7 +33,8 @@ impl Infer<'_> {
             Term::Int(_) => Ty::int(),
             Term::Str(_) => Ty::str(),
             Term::Bool(_) => Ty::bool(),
-            Term::Nil => Ty::nil(),
+            // Only what an exhaustive `match` cannot reach.
+            Term::Nil => Ty::Bot,
             Term::Local(i) => match &env[env.len() - 1 - *i as usize] {
                 Binding::Mono(t) => t.clone(),
                 Binding::Poly(scheme) => s.instantiate(scheme, level),
@@ -76,20 +77,6 @@ impl Infer<'_> {
                 s.constrain(&c, &Ty::bool())
                     .map_err(|e| TypeError(format!("the test of an `if` must be a Bool: {e}")))?;
                 self.join([self.term(t, env, level)?, self.term(e, env, level)?], level)?
-            }
-            Term::IfSome(value, then, otherwise) => {
-                let v = self.term(value, env, level)?;
-                let bound = s.fresh_ty(level);
-                s.constrain(&Ty::without(v), &bound)?;
-                env.push(Binding::Mono(bound));
-                let t = self.term(then, env, level);
-                env.pop();
-                self.join([t?, self.term(otherwise, env, level)?], level)?
-            }
-            Term::Coalesce(a, b) => {
-                let a = self.term(a, env, level)?;
-                let b = self.term(b, env, level)?;
-                self.join([Ty::without(a), b], level)?
             }
             Term::And(a, b) | Term::Or(a, b) => {
                 for part in [a, b] {
@@ -210,8 +197,6 @@ impl Infer<'_> {
             Pattern::Keyword(k) => (Ty::keys([k.clone()]), vec![]),
             Pattern::Str(_) => (Ty::str(), vec![]),
             Pattern::Int(_) => (Ty::int(), vec![]),
-            Pattern::Nil => (Ty::nil(), vec![]),
-            Pattern::Some => (Ty::without(t), vec![]),
             Pattern::Any => (t, vec![]),
             Pattern::Bind(_) => (t.clone(), vec![t]),
             Pattern::Fields(fields) => {
@@ -273,13 +258,12 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         Op::Lt | Op::Gt | Op::Le | Op::Ge => (int2(), Ty::bool()),
         Op::Eq | Op::NotEq => (vec![Ty::Top, Ty::Top], Ty::bool()),
         Op::Not => (vec![Ty::bool()], Ty::bool()),
-        Op::IsNil => (vec![Ty::Top], Ty::bool()),
         Op::Str => (vec![Ty::Top; argc], Ty::str()),
         Op::Count => (vec![Ty::list(Ty::Top)], Ty::int()),
+        // The default comes back for an empty list.
         Op::First => {
             let a = var();
-            let out = optional(s, a.clone(), level);
-            (vec![Ty::list(a)], out)
+            (vec![Ty::list(a.clone()), a.clone()], a)
         }
         Op::Rest => {
             let a = var();
@@ -301,10 +285,10 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
             let a = var();
             (vec![Ty::func(vec![a.clone()], Ty::bool()), Ty::list(a.clone())], Ty::list(a))
         }
+        // The default comes back for a missing key.
         Op::Get => {
             let v = var();
-            let out = optional(s, v.clone(), level);
-            (vec![Ty::dict(v), Ty::str()], out)
+            (vec![Ty::dict(v.clone()), Ty::str(), v.clone()], v)
         }
         Op::Assoc => {
             let v = var();
@@ -326,6 +310,7 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         Op::JsonStr => (vec![json()], Ty::str()),
         Op::JsonInt => (vec![json()], Ty::int()),
         Op::JsonBool => (vec![json()], Ty::bool()),
+        Op::JsonType => (vec![json()], Ty::str()),
         Op::HasField => (vec![Ty::Top, Ty::str()], Ty::bool()),
     }
 }
@@ -334,17 +319,9 @@ fn json() -> Ty {
     Ty::Prim(crate::types::Prim::Json)
 }
 
-/// `t | nil`, as a variable with both as lower bounds.
-fn optional(s: &Solver, t: Ty, level: u32) -> Ty {
-    let out = s.fresh(level);
-    out.lower.borrow_mut().push(t);
-    out.lower.borrow_mut().push(Ty::nil());
-    Ty::Var(out)
-}
-
 /// The type a value must have for patterns that cover it to cover it:
-/// the keywords named, or a record whose one field is covered. `nil`
-/// with `some?` covers anything.
+/// the variants named, each with what its payload patterns cover, or a
+/// record with the fields a pattern of `_`s names.
 fn cover_type(patterns: &[&Pattern]) -> Option<Ty> {
     // An irrefutable clause covers by itself; the fields it names are
     // required by the reads that test them.

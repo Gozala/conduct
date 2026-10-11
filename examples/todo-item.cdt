@@ -72,7 +72,7 @@
   }
 ")
 
-(defn attr [attrs name] (?? (get attrs name) ""))
+(defn attr [attrs name] (get attrs name ""))
 
 (defn init [attrs] {:editing false})
 
@@ -84,11 +84,11 @@
       (= handler "toggle") {:model model :effects [(emit "todo-toggle" id)]}
       (= handler "destroy") {:model model :effects [(emit "todo-destroy" id)]}
       (= handler "edit") (stay {:editing true})
-      (and (= handler "key") (= (:key event) "Escape")) (stay {:editing false})
+      (and (= handler "key") (= (:key event "") "Escape")) (stay {:editing false})
       (and (:editing model)
-           (or (and (= handler "key") (= (:key event) "Enter")) (= handler "save")))
+           (or (and (= handler "key") (= (:key event "") "Enter")) (= handler "save")))
         {:model {:editing false}
-         :effects [(emit "todo-edit" (str id "\n" (?? (:value event) "")))]}
+         :effects [(emit "todo-edit" (str id "\n" (:value event "")))]}
       :else (stay model))))
 
 (defn view [model attrs]
