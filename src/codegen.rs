@@ -11,6 +11,28 @@
 //! value. Any other top-level definition compiles to a function of no
 //! arguments that computes its value; definitions are pure, so
 //! computing one again is harmless.
+//!
+//! # Memory
+//!
+//! Values are reference counted, after Perceus (Reinking, Xie, de Moura
+//! and Leijen, PLDI 2021). Every function owns its parameters and
+//! returns a value its caller owns. While compiling a function the code
+//! generator tracks which of its locals it still owns:
+//!
+//! - a use of a local that is needed again later duplicates it, and its
+//!   last use moves it;
+//! - a local nothing will use again is dropped as soon as that is known:
+//!   on entry for an unused parameter, right after binding for an unused
+//!   `let`, and at the start of each branch for what only the other
+//!   branch uses;
+//! - a closure owns copies of what it captured, and its body borrows
+//!   them, duplicating at each use.
+//!
+//! So a value is freed when its last reference goes, at a point the
+//! compiler fixed, with no collector. The runtime's built-ins borrow
+//! their arguments; the code generator drops temporaries after them.
+//! Perceus's other half, reusing a uniquely owned block in place, is not
+//! done yet.
 
 use crate::codebase::Codebase;
 use crate::term::{Hash, Op, Term};
@@ -31,9 +53,11 @@ pub const KIND_EMIT: u32 = 7;
 
 const RUNTIME: &str = include_str!("runtime.wat");
 const RUNTIME_DATA: &[u8] = b"truefalse[] <value>";
-/// Addresses below this hold scratch space, such as the area that
-/// canonical ABI results are returned through.
+/// Addresses below this hold scratch space: the canonical ABI return
+/// area at 0 and the allocator's free-list heads at 64.
 const STATIC_START: u32 = 1024;
+/// The reference count of a static object, which is never counted.
+const IMMORTAL: u32 = u32::MAX;
 
 pub fn int(n: i64) -> i64 {
     (n << 1) | 1
@@ -58,11 +82,15 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+type Result<T> = std::result::Result<T, CodegenError>;
+type Names = BTreeSet<String>;
+
 /// Where a local lives inside the function being generated.
 #[derive(Clone)]
 enum Slot {
+    /// A Wasm local the function owns until it moves or drops it.
     Local(String),
-    /// The `k`th free variable of the closure being run.
+    /// The `k`th free variable of the closure being run, borrowed.
     Free(usize),
     /// A local of an enclosing function that this one did not capture.
     Absent,
@@ -71,14 +99,58 @@ enum Slot {
 /// The function currently being generated.
 struct Frame {
     locals: Vec<String>,
+    /// The locals this function still owns.
+    owned: Names,
 }
 
 impl Frame {
+    fn new() -> Frame {
+        Frame { locals: vec![], owned: Names::new() }
+    }
+
     fn local(&mut self) -> String {
         let name = format!("$t{}", self.locals.len());
         self.locals.push(name.clone());
         name
     }
+
+    /// Pointers to objects under construction are kept as i32 locals;
+    /// their names carry a `w` so `locals` declares them as such.
+    fn local32(&mut self) -> String {
+        let name = format!("$w{}", self.locals.len());
+        self.locals.push(name.clone());
+        name
+    }
+}
+
+fn locals(frame: &Frame) -> String {
+    frame
+        .locals
+        .iter()
+        .map(|l| if l.starts_with("$w") { format!(" (local {l} i32)") } else { format!(" (local {l} i64)") })
+        .collect()
+}
+
+/// The owned locals a term mentions.
+fn fv(term: &Term, env: &[Slot]) -> Names {
+    let mut indices = BTreeSet::new();
+    free_locals(term, 0, &mut indices);
+    indices
+        .into_iter()
+        .filter_map(|d| match &env[env.len() - 1 - d as usize] {
+            Slot::Local(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Drop each of `names`, then evaluate `body`.
+fn with_drops(names: &Names, body: String) -> String {
+    if names.is_empty() {
+        return body;
+    }
+    let drops: String = names.iter().map(|n| format!(" (call $drop (local.get {n}))")).collect();
+    format!("(block (result i64){drops} {body})")
 }
 
 /// Builds one module: the runtime, the definitions it needs, and
@@ -142,6 +214,15 @@ impl<'a> Builder<'a> {
         addr
     }
 
+    /// A heap object in static data, behind the immortal prefix the
+    /// allocator's blocks carry, so reference counting skips it.
+    fn static_object(&mut self, object: Vec<u8>) -> u32 {
+        let mut bytes = IMMORTAL.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&object);
+        self.static_bytes(bytes) + 8
+    }
+
     /// A string object in static data, as a value.
     pub fn static_str(&mut self, s: &str) -> u32 {
         if let Some(addr) = self.strings.get(s) {
@@ -150,7 +231,7 @@ impl<'a> Builder<'a> {
         let mut bytes = KIND_STR.to_le_bytes().to_vec();
         bytes.extend_from_slice(&(s.len() as u32).to_le_bytes());
         bytes.extend_from_slice(s.as_bytes());
-        let addr = self.static_bytes(bytes);
+        let addr = self.static_object(bytes);
         self.strings.insert(s.to_string(), addr);
         addr
     }
@@ -161,7 +242,7 @@ impl<'a> Builder<'a> {
 
     /// Queue a definition (and so everything it reaches) for
     /// compilation, returning its static closure if it is a function.
-    fn require(&mut self, hash: Hash) -> Result<Option<u32>, CodegenError> {
+    fn require(&mut self, hash: Hash) -> Result<Option<u32>> {
         if let Some(addr) = self.defs.get(&hash) {
             return Ok(*addr);
         }
@@ -179,7 +260,7 @@ impl<'a> Builder<'a> {
                 bytes.extend_from_slice(&0u32.to_le_bytes());
                 bytes.extend_from_slice(&index.to_le_bytes());
                 bytes.extend_from_slice(&arity.to_le_bytes());
-                Some(self.static_bytes(bytes))
+                Some(self.static_object(bytes))
             }
             _ => None,
         };
@@ -188,8 +269,9 @@ impl<'a> Builder<'a> {
         Ok(addr)
     }
 
-    /// A WAT expression for the value of a definition.
-    pub fn value_of(&mut self, hash: Hash) -> Result<String, CodegenError> {
+    /// A WAT expression for the value of a definition, owned by whoever
+    /// evaluates it.
+    pub fn value_of(&mut self, hash: Hash) -> Result<String> {
         Ok(match self.require(hash)? {
             Some(addr) => format!("(i64.const {addr})"),
             None => format!("(call {})", Self::def_name(&hash)),
@@ -197,7 +279,9 @@ impl<'a> Builder<'a> {
     }
 
     /// A WAT expression applying a definition to argument expressions.
-    pub fn call(&mut self, hash: Hash, args: &[String]) -> Result<String, CodegenError> {
+    /// The call consumes the arguments: pass duplicates of anything the
+    /// caller keeps.
+    pub fn call(&mut self, hash: Hash, args: &[String]) -> Result<String> {
         let arity = match &self.cb.defs[&hash].term {
             Term::Fn(arity, _) => Some(*arity as usize),
             _ => None,
@@ -208,30 +292,128 @@ impl<'a> Builder<'a> {
         }
         let f = self.value_of(hash)?;
         self.max_arity = self.max_arity.max(args.len());
-        Ok(format!("(call $apply{} {f} {})", args.len(), args.join(" ")))
+        Ok(format!("(call $apply{}_take {f} {})", args.len(), args.join(" ")))
     }
 
-    fn compile_queued(&mut self) -> Result<(), CodegenError> {
+    fn compile_queued(&mut self) -> Result<()> {
         while let Some(hash) = self.queue.pop() {
             let def = &self.cb.defs[&hash];
             let term = def.term.clone();
             let cycle = def.cycle.clone();
             let name = Self::def_name(&hash);
-            let mut frame = Frame { locals: vec![] };
             let text = match &term {
                 Term::Fn(arity, body) => {
-                    let mut env: Vec<Slot> = (0..*arity).map(|i| Slot::Local(format!("$p{i}"))).collect();
-                    let body = self.expr(body, &mut env, &mut frame, &cycle)?;
+                    let env: Vec<Slot> = (0..*arity).map(|i| Slot::Local(format!("$p{i}"))).collect();
+                    let (body, frame) = self.function_body(body, env, &cycle)?;
                     let params: String = (0..*arity).map(|i| format!(" (param $p{i} i64)")).collect();
                     format!("  (func {name} (param $env i64){params} (result i64){}\n    {body})", locals(&frame))
                 }
                 other => {
-                    let body = self.expr(other, &mut Vec::new(), &mut frame, &cycle)?;
+                    let (body, frame) = self.function_body(other, Vec::new(), &cycle)?;
                     format!("  (func {name} (result i64){}\n    {body})", locals(&frame))
                 }
             };
             self.funcs.push(text);
         }
+        Ok(())
+    }
+
+    /// Compile a function's body: it owns its parameters, drops the ones
+    /// it never uses, and must have consumed all of them by its end.
+    fn function_body(&mut self, body: &Term, mut env: Vec<Slot>, cycle: &[Hash]) -> Result<(String, Frame)> {
+        let mut frame = Frame::new();
+        frame.owned = env
+            .iter()
+            .filter_map(|s| match s {
+                Slot::Local(n) => Some(n.clone()),
+                _ => None,
+            })
+            .collect();
+        let used = fv(body, &env);
+        let unused: Names = frame.owned.difference(&used).cloned().collect();
+        for n in &unused {
+            frame.owned.remove(n);
+        }
+        let code = self.expr(body, &mut env, &mut frame, cycle, &Names::new())?;
+        if !frame.owned.is_empty() {
+            return Err(CodegenError(format!(
+                "internal: locals still owned at the end of a function: {:?}",
+                frame.owned
+            )));
+        }
+        Ok((with_drops(&unused, code), frame))
+    }
+
+    /// The live set for each of a sequence of subterms evaluated in
+    /// order: what is live after the sequence, plus what later subterms
+    /// use.
+    fn sequence_live(items: &[&Term], env: &[Slot], live: &Names) -> Vec<Names> {
+        let mut out = vec![Names::new(); items.len()];
+        let mut acc = live.clone();
+        for i in (0..items.len()).rev() {
+            out[i] = acc.clone();
+            acc.extend(fv(items[i], env));
+        }
+        out
+    }
+
+    fn sequence(
+        &mut self,
+        items: &[&Term],
+        env: &mut Vec<Slot>,
+        frame: &mut Frame,
+        cycle: &[Hash],
+        live: &Names,
+    ) -> Result<Vec<String>> {
+        let lives = Self::sequence_live(items, env, live);
+        items.iter().zip(lives.iter()).map(|(t, l)| self.expr(t, env, frame, cycle, l)).collect()
+    }
+
+    /// Compile one arm of a branch, starting from the locals owned before
+    /// the branch, dropping first what this arm does not use.
+    fn arm(
+        &mut self,
+        term: &Term,
+        env: &mut Vec<Slot>,
+        frame: &mut Frame,
+        cycle: &[Hash],
+        live: &Names,
+        start: &Names,
+    ) -> Result<String> {
+        frame.owned = start.clone();
+        let mut needed = fv(term, env);
+        needed.extend(live.iter().cloned());
+        let drops: Names = frame.owned.difference(&needed).cloned().collect();
+        for n in &drops {
+            frame.owned.remove(n);
+        }
+        let code = self.expr(term, env, frame, cycle, live)?;
+        Ok(with_drops(&drops, code))
+    }
+
+    /// An arm that evaluates nothing of the program's: it drops whatever
+    /// only the other arm would have used.
+    fn empty_arm(frame: &mut Frame, live: &Names, start: &Names, value: String) -> String {
+        frame.owned = start.clone();
+        let drops: Names = frame.owned.difference(live).cloned().collect();
+        for n in &drops {
+            frame.owned.remove(n);
+        }
+        with_drops(&drops, value)
+    }
+
+    /// After a branch, every arm has consumed what it last used, so what
+    /// is still owned is what was owned before and is live after.
+    fn join_arms(frame: &mut Frame, live: &Names, start: &Names, ends: &[Names]) -> Result<()> {
+        let expected: Names = start.intersection(live).cloned().collect();
+        for end in ends {
+            if *end != expected {
+                return Err(CodegenError(format!(
+                    "internal: branch arms disagree on ownership: {end:?} vs {expected:?}"
+                )));
+            }
+        }
+        frame.owned = expected;
         Ok(())
     }
 
@@ -241,82 +423,151 @@ impl<'a> Builder<'a> {
         env: &mut Vec<Slot>,
         frame: &mut Frame,
         cycle: &[Hash],
-    ) -> Result<String, CodegenError> {
+        live: &Names,
+    ) -> Result<String> {
         Ok(match term {
             Term::Int(n) => format!("(i64.const {})", int(*n)),
             Term::Bool(b) => format!("(i64.const {})", if *b { TRUE } else { FALSE }),
             Term::Nil => format!("(i64.const {NIL})"),
             Term::Str(s) => format!("(i64.const {})", self.static_str(s)),
             Term::Local(i) => match &env[env.len() - 1 - *i as usize] {
-                Slot::Local(name) => format!("(local.get {name})"),
-                Slot::Free(k) => format!("(i64.load offset={} (i32.wrap_i64 (local.get $env)))", 16 + 8 * k),
+                Slot::Local(name) => {
+                    if !frame.owned.contains(name) {
+                        return Err(CodegenError(format!("internal: {name} used after it was moved")));
+                    }
+                    if live.contains(name) {
+                        format!("(call $dup (local.get {name}))")
+                    } else {
+                        frame.owned.remove(name);
+                        format!("(local.get {name})")
+                    }
+                }
+                Slot::Free(k) => {
+                    format!("(call $dup (i64.load offset={} (i32.wrap_i64 (local.get $env))))", 16 + 8 * k)
+                }
                 Slot::Absent => return Err(CodegenError("internal: a local was not captured".into())),
             },
             Term::Ref(h) => self.value_of(*h)?,
             Term::CycleRef(i) => self.value_of(cycle[*i as usize])?,
-            Term::Fn(arity, body) => self.lambda(*arity, body, env, frame, cycle)?,
+            Term::Fn(arity, body) => self.lambda(*arity, body, env, frame, cycle, live)?,
             Term::App(callee, args) => {
-                let args: Vec<String> =
-                    args.iter().map(|a| self.expr(a, env, frame, cycle)).collect::<Result<_, _>>()?;
-                match &**callee {
-                    Term::Ref(h) => self.call(*h, &args)?,
-                    Term::CycleRef(i) => self.call(cycle[*i as usize], &args)?,
-                    other => {
-                        let f = self.expr(other, env, frame, cycle)?;
-                        self.max_arity = self.max_arity.max(args.len());
-                        format!("(call $apply{} {f} {})", args.len(), args.join(" "))
+                let direct = match &**callee {
+                    Term::Ref(h) => Some(*h),
+                    Term::CycleRef(i) => Some(cycle[*i as usize]),
+                    _ => None,
+                };
+                let arg_refs: Vec<&Term> = args.iter().collect();
+                match direct {
+                    Some(h) => {
+                        let args = self.sequence(&arg_refs, env, frame, cycle, live)?;
+                        self.call(h, &args)?
+                    }
+                    None => {
+                        let mut items = vec![&**callee];
+                        items.extend(arg_refs);
+                        let mut parts = self.sequence(&items, env, frame, cycle, live)?;
+                        let f = parts.remove(0);
+                        self.max_arity = self.max_arity.max(parts.len());
+                        format!("(call $apply{}_take {f} {})", parts.len(), parts.join(" "))
                     }
                 }
             }
             Term::Let(value, body) => {
-                let v = self.expr(value, env, frame, cycle)?;
                 let local = frame.local();
                 env.push(Slot::Local(local.clone()));
-                let body = self.expr(body, env, frame, cycle);
+                let body_fv = fv(body, env);
                 env.pop();
-                format!("(block (result i64) (local.set {local} {v}) {})", body?)
+                let mut value_live = live.clone();
+                value_live.extend(body_fv.iter().filter(|n| **n != local).cloned());
+                let v = self.expr(value, env, frame, cycle, &value_live)?;
+                env.push(Slot::Local(local.clone()));
+                frame.owned.insert(local.clone());
+                let unused = !body_fv.contains(&local);
+                if unused {
+                    frame.owned.remove(&local);
+                }
+                let body = self.expr(body, env, frame, cycle, live);
+                env.pop();
+                let drop = if unused { format!(" (call $drop (local.get {local}))") } else { String::new() };
+                format!("(block (result i64) (local.set {local} {v}){drop} {})", body?)
             }
             Term::If(c, t, e) => {
-                let c = self.expr(c, env, frame, cycle)?;
-                let t = self.expr(t, env, frame, cycle)?;
-                let e = self.expr(e, env, frame, cycle)?;
+                let mut cond_live = live.clone();
+                cond_live.extend(fv(t, env));
+                cond_live.extend(fv(e, env));
+                let c = self.expr(c, env, frame, cycle, &cond_live)?;
+                let start = frame.owned.clone();
+                let t = self.arm(t, env, frame, cycle, live, &start)?;
+                let end_t = frame.owned.clone();
+                let e = self.arm(e, env, frame, cycle, live, &start)?;
+                let end_e = frame.owned.clone();
+                Self::join_arms(frame, live, &start, &[end_t, end_e])?;
                 format!("(if (result i64) (i64.eq {c} (i64.const {TRUE})) (then {t}) (else {e}))")
             }
             Term::IfSome(value, then, otherwise) => {
-                let v = self.expr(value, env, frame, cycle)?;
                 let local = frame.local();
                 env.push(Slot::Local(local.clone()));
-                let t = self.expr(then, env, frame, cycle);
+                let then_fv = fv(then, env);
                 env.pop();
-                let e = self.expr(otherwise, env, frame, cycle)?;
+                let mut value_live = live.clone();
+                value_live.extend(then_fv.iter().filter(|n| **n != local).cloned());
+                value_live.extend(fv(otherwise, env));
+                let v = self.expr(value, env, frame, cycle, &value_live)?;
+                let start = frame.owned.clone();
+                // Present: the bound value is owned in the then arm.
+                env.push(Slot::Local(local.clone()));
+                let mut then_start = start.clone();
+                then_start.insert(local.clone());
+                let t = self.arm(then, env, frame, cycle, live, &then_start);
+                env.pop();
+                let t = t?;
+                let end_t = frame.owned.clone();
+                // Absent: the bound value is nil, which owns nothing.
+                let e = self.arm(otherwise, env, frame, cycle, live, &start)?;
+                let end_e = frame.owned.clone();
+                Self::join_arms(frame, live, &start, &[end_t, end_e])?;
                 format!(
-                    "(block (result i64) (local.set {local} {v}) (if (result i64) (i64.ne (local.get {local}) (i64.const {NIL})) (then {}) (else {e})))",
-                    t?
+                    "(block (result i64) (local.set {local} {v}) (if (result i64) (i64.ne (local.get {local}) (i64.const {NIL})) (then {t}) (else {e})))"
                 )
             }
             Term::Coalesce(a, b) => {
-                let a = self.expr(a, env, frame, cycle)?;
-                let b = self.expr(b, env, frame, cycle)?;
+                let mut a_live = live.clone();
+                a_live.extend(fv(b, env));
+                let a = self.expr(a, env, frame, cycle, &a_live)?;
                 let local = frame.local();
+                let start = frame.owned.clone();
+                let present = Self::empty_arm(frame, live, &start, format!("(local.get {local})"));
+                let end_p = frame.owned.clone();
+                let absent = self.arm(b, env, frame, cycle, live, &start)?;
+                let end_a = frame.owned.clone();
+                Self::join_arms(frame, live, &start, &[end_p, end_a])?;
                 format!(
-                    "(block (result i64) (local.set {local} {a}) (if (result i64) (i64.ne (local.get {local}) (i64.const {NIL})) (then (local.get {local})) (else {b})))"
+                    "(block (result i64) (local.set {local} {a}) (if (result i64) (i64.ne (local.get {local}) (i64.const {NIL})) (then {present}) (else {absent})))"
                 )
             }
-            Term::And(a, b) => {
-                let a = self.expr(a, env, frame, cycle)?;
-                let b = self.expr(b, env, frame, cycle)?;
-                format!("(if (result i64) (i64.eq {a} (i64.const {TRUE})) (then {b}) (else (i64.const {FALSE})))")
-            }
-            Term::Or(a, b) => {
-                let a = self.expr(a, env, frame, cycle)?;
-                let b = self.expr(b, env, frame, cycle)?;
-                format!("(if (result i64) (i64.eq {a} (i64.const {TRUE})) (then (i64.const {TRUE})) (else {b}))")
+            Term::And(a, b) | Term::Or(a, b) => {
+                let is_and = matches!(term, Term::And(..));
+                let mut a_live = live.clone();
+                a_live.extend(fv(b, env));
+                let a = self.expr(a, env, frame, cycle, &a_live)?;
+                let start = frame.owned.clone();
+                let short =
+                    Self::empty_arm(frame, live, &start, format!("(i64.const {})", if is_and { FALSE } else { TRUE }));
+                let end_s = frame.owned.clone();
+                let long = self.arm(b, env, frame, cycle, live, &start)?;
+                let end_l = frame.owned.clone();
+                Self::join_arms(frame, live, &start, &[end_s, end_l])?;
+                if is_and {
+                    format!("(if (result i64) (i64.eq {a} (i64.const {TRUE})) (then {long}) (else {short}))")
+                } else {
+                    format!("(if (result i64) (i64.eq {a} (i64.const {TRUE})) (then {short}) (else {long}))")
+                }
             }
             Term::Record(fields) => {
-                let mut sorted: Vec<(i64, String)> = Vec::new();
-                for (name, t) in fields {
-                    sorted.push((field_id(name), self.expr(t, env, frame, cycle)?));
-                }
+                let items: Vec<&Term> = fields.iter().map(|(_, t)| t).collect();
+                let values = self.sequence(&items, env, frame, cycle, live)?;
+                let mut sorted: Vec<(i64, String)> =
+                    fields.iter().zip(values).map(|((name, _), v)| (field_id(name), v)).collect();
                 sorted.sort_by_key(|f| f.0);
                 let p = frame.local32();
                 let mut out = format!(
@@ -336,39 +587,53 @@ impl<'a> Builder<'a> {
                 out
             }
             Term::Field(name, record) => {
-                let r = self.expr(record, env, frame, cycle)?;
-                format!("(call $rec_get {r} (i64.const {}))", field_id(name))
+                let r = self.expr(record, env, frame, cycle, live)?;
+                format!("(call $rec_take {r} (i64.const {}))", field_id(name))
             }
             Term::Dict(entries) => {
-                let mut parts = Vec::new();
-                for (k, t) in entries {
-                    let key = self.static_str(k);
-                    parts.push((key, self.expr(t, env, frame, cycle)?));
-                }
+                let items: Vec<&Term> = entries.iter().map(|(_, t)| t).collect();
+                let values = self.sequence(&items, env, frame, cycle, live)?;
                 let p = frame.local32();
                 let mut out =
-                    format!("(block (result i64) (local.set {p} (call $dict_new (i32.const {})))", parts.len());
-                for (i, (k, v)) in parts.iter().enumerate() {
-                    let _ = write!(out, " (call $dict_put (local.get {p}) (i32.const {i}) (i64.const {k}) {v})");
+                    format!("(block (result i64) (local.set {p} (call $dict_new (i32.const {})))", entries.len());
+                for (i, ((k, _), v)) in entries.iter().zip(values).enumerate() {
+                    let key = self.static_str(k);
+                    let _ = write!(out, " (call $dict_put (local.get {p}) (i32.const {i}) (i64.const {key}) {v})");
                 }
                 let _ = write!(out, " (i64.extend_i32_u (local.get {p})))");
                 out
             }
             Term::List(items) => {
-                let parts: Vec<String> =
-                    items.iter().map(|t| self.expr(t, env, frame, cycle)).collect::<Result<_, _>>()?;
+                let refs: Vec<&Term> = items.iter().collect();
+                let values = self.sequence(&refs, env, frame, cycle, live)?;
                 let p = frame.local32();
                 let mut out =
-                    format!("(block (result i64) (local.set {p} (call $list_new (i32.const {})))", parts.len());
-                for (i, v) in parts.iter().enumerate() {
+                    format!("(block (result i64) (local.set {p} (call $list_new (i32.const {})))", values.len());
+                for (i, v) in values.iter().enumerate() {
                     let _ = write!(out, " (call $list_set (local.get {p}) (i32.const {i}) {v})");
                 }
                 let _ = write!(out, " (i64.extend_i32_u (local.get {p})))");
                 out
             }
             Term::Prim(op, args) => {
-                let a: Vec<String> = args.iter().map(|t| self.expr(t, env, frame, cycle)).collect::<Result<_, _>>()?;
-                prim(*op, &a, self)
+                let refs: Vec<&Term> = args.iter().collect();
+                let values = self.sequence(&refs, env, frame, cycle, live)?;
+                // Built-ins borrow: hold each argument in a temporary,
+                // call, then drop the temporaries.
+                let temps: Vec<String> = values.iter().map(|_| frame.local()).collect();
+                let result = frame.local();
+                let gets: Vec<String> = temps.iter().map(|t| format!("(local.get {t})")).collect();
+                let call = prim(*op, &gets, self);
+                let mut out = String::from("(block (result i64)");
+                for (t, v) in temps.iter().zip(values) {
+                    let _ = write!(out, " (local.set {t} {v})");
+                }
+                let _ = write!(out, " (local.set {result} {call})");
+                for t in &temps {
+                    let _ = write!(out, " (call $drop (local.get {t}))");
+                }
+                let _ = write!(out, " (local.get {result}))");
+                out
             }
         })
     }
@@ -380,7 +645,8 @@ impl<'a> Builder<'a> {
         env: &mut Vec<Slot>,
         frame: &mut Frame,
         cycle: &[Hash],
-    ) -> Result<String, CodegenError> {
+        live: &Names,
+    ) -> Result<String> {
         // The locals of the enclosing function this lambda mentions, as
         // de Bruijn indices from outside it.
         let mut free = BTreeSet::new();
@@ -397,13 +663,15 @@ impl<'a> Builder<'a> {
         let index = self.table.len();
         self.table.push(name.clone());
         self.max_arity = self.max_arity.max(arity as usize);
-        let mut inner_frame = Frame { locals: vec![] };
-        let body = self.expr(body, &mut inner, &mut inner_frame, cycle)?;
+        let (code, inner_frame) = self.function_body(body, inner, cycle)?;
         let params: String = (0..arity).map(|i| format!(" (param $p{i} i64)")).collect();
         self.funcs
-            .push(format!("  (func {name} (param $env i64){params} (result i64){}\n    {body})", locals(&inner_frame)));
-        let captured: Vec<String> =
-            free.iter().map(|d| self.expr(&Term::Local(*d), env, frame, cycle)).collect::<Result<_, _>>()?;
+            .push(format!("  (func {name} (param $env i64){params} (result i64){}\n    {code})", locals(&inner_frame)));
+        // The closure owns a copy of each captured value: capturing moves
+        // a local on its last use and duplicates it otherwise.
+        let captured_terms: Vec<Term> = free.iter().map(|d| Term::Local(*d)).collect();
+        let refs: Vec<&Term> = captured_terms.iter().collect();
+        let captured = self.sequence(&refs, env, frame, cycle, live)?;
         let p = frame.local32();
         let mut out = format!(
             "(block (result i64) (local.set {p} (call $clo_new (i32.const {index}) (i32.const {arity}) (i32.const {})))",
@@ -417,7 +685,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Compile everything queued and assemble the module text.
-    pub fn finish(mut self) -> Result<String, CodegenError> {
+    pub fn finish(mut self) -> Result<String> {
         self.compile_queued()?;
         let mut m = String::from("(module\n");
         for n in 0..=self.max_arity {
@@ -440,12 +708,22 @@ impl<'a> Builder<'a> {
             let _ = writeln!(m, "  (data (i32.const {addr}) \"{}\")", escape(bytes));
         }
         m.push_str(RUNTIME);
+        let _ = writeln!(
+            m,
+            "  (func $rec_take (param $r i64) (param $id i64) (result i64)\n    (local $v i64)\n    (local.set $v (call $rec_get (local.get $r) (local.get $id)))\n    (call $drop (local.get $r))\n    (local.get $v))"
+        );
         for n in 0..=self.max_arity {
             let params: String = (0..n).map(|i| format!(" (param $a{i} i64)")).collect();
             let args: String = (0..n).map(|i| format!(" (local.get $a{i})")).collect();
+            // `$applyN` borrows the closure and consumes the arguments;
+            // `$applyN_take` consumes the closure too.
             let _ = writeln!(
                 m,
                 "  (func $apply{n} (param $f i64){params} (result i64)\n    (call_indirect $fns (type $fn{n}) (local.get $f){args} (i32.load offset=8 (i32.wrap_i64 (local.get $f)))))"
+            );
+            let _ = writeln!(
+                m,
+                "  (func $apply{n}_take (param $f i64){params} (result i64)\n    (local $r i64)\n    (local.set $r (call $apply{n} (local.get $f){args}))\n    (call $drop (local.get $f))\n    (local.get $r))"
             );
         }
         for f in &self.funcs {
@@ -460,24 +738,8 @@ impl<'a> Builder<'a> {
     }
 }
 
-impl Frame {
-    /// Pointers to objects under construction are kept as i32 locals;
-    /// their names carry a `w` so `locals` declares them as such.
-    fn local32(&mut self) -> String {
-        let name = format!("$w{}", self.locals.len());
-        self.locals.push(name.clone());
-        name
-    }
-}
-
-fn locals(frame: &Frame) -> String {
-    frame
-        .locals
-        .iter()
-        .map(|l| if l.starts_with("$w") { format!(" (local {l} i32)") } else { format!(" (local {l} i64)") })
-        .collect()
-}
-
+/// A built-in applied to argument expressions. Every built-in borrows
+/// its arguments and returns an owned value.
 fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
     let bool = |e: String| format!("(call $bool {e})");
     match op {
@@ -500,7 +762,7 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
             }
             let mut out = format!("(call $to_str {})", a[0]);
             for x in &a[1..] {
-                out = format!("(call $str_concat {out} (call $to_str {x}))");
+                out = format!("(call $concat_owned {out} (call $to_str {x}))");
             }
             out
         }
@@ -519,8 +781,6 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
     }
 }
 
-/// The de Bruijn indices, from outside, of the locals a function body
-/// mentions beyond its own `binders` parameters.
 fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
     match term {
         Term::Local(i) => {
@@ -569,8 +829,10 @@ fn escape(bytes: &[u8]) -> String {
 /// Compile definitions to a core module that exports each under the
 /// given name: a function definition as a Wasm function taking and
 /// returning values, any other definition as a function of no
-/// arguments returning its value. Returns the module's text.
-pub fn compile_exports(cb: &Codebase, exports: &[(&str, Hash)]) -> Result<String, CodegenError> {
+/// arguments returning its value. The caller owns what an export
+/// returns, and gives it back with `conduct_drop`; `conduct_live` counts
+/// the blocks allocated and not yet freed. Returns the module's text.
+pub fn compile_exports(cb: &Codebase, exports: &[(&str, Hash)]) -> Result<String> {
     let mut b = Builder::new(cb);
     for (name, hash) in exports {
         b.require(*hash)?;
@@ -586,6 +848,8 @@ pub fn compile_exports(cb: &Codebase, exports: &[(&str, Hash)]) -> Result<String
             _ => b.add_export(format!("(export \"{name}\" (func {def_name}))")),
         }
     }
+    b.add_func("  (func (export \"conduct_live\") (result i32) (global.get $live))");
+    b.add_func("  (func (export \"conduct_drop\") (param $v i64) (call $drop (local.get $v)))");
     b.finish()
 }
 
