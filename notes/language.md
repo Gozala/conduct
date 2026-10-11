@@ -12,12 +12,12 @@ placeholder for a decision still open (listed at the end).
 2. **Types are inferred; declarations are optional constraints.** A
    program with no declarations is fully typed. A declaration narrows
    what inference found; it never replaces it.
-3. **Type declarations are rules that describe, never rules that
-   choose.** A rule constrains and identifies data. No rule ever decides
-   which code runs, so there are no type classes, no coherence or orphan
-   rules, and rules may be spread across a program freely.
-4. **Names are fully qualified; rules give local names.** Data always
-   carries `:io.gozala/name`; a rule binds it to `name` where you say so.
+3. **Declarations describe data; they never choose code.** An
+   attribute or a concept constrains and identifies data. None decides
+   which code runs, so there are no type classes.
+4. **Data carries global names; programs use local ones.** A value
+   always holds `:io.gozala/name`; an attribute gives it the local name
+   `name` that code and concepts use.
 5. **Effects are inferred and visible**, as in Roc. So is failure.
 6. **The core is small; the rest is macros.** Macros are pure,
    hygienic by hash, and can read what the compiler knows.
@@ -74,98 +74,103 @@ type lattice; `Without` and `t | nil` become a "fails" flag on
 expressions and function types, checked at failure contexts. Event
 fields in the element contract become absent instead of `nil`.
 
-## 3. Type rules
+## 3. Attributes and concepts
 
-A type is a rule, in the style of SICP's query language: a conclusion
-and a body of premises that must all hold. Several rules with one
-conclusion are alternatives.
+Declared types are two forms, after clojure.spec and Rich Hickey's
+"Maybe Not": an **attribute** says what a key means, everywhere
+(schema); a **concept** says which keys a context needs (selection).
 
 ```clojure
-(rule (person ?p ?name ?age)                 ; provisional: `rule`
-  (the io.gozala/name of: ?p is: ?name)
-  (the io.gozala/age of: ?p is: ?age)
-  (type ?name :text)                         ; provisional spelling
-  (type ?age :integer))
+(attribute name
+  the: io.gozala/name
+  as: text)
 
-(rule (status ?job :complete)
-  (the io.example/completed-at of: ?job is: _))
+(attribute age
+  the: io.gozala/age
+  as: natural)
 
-(rule (status ?job :pending)
-  (the io.example/created-at of: ?job is: _))
+(attribute nickname
+  the: io.gozala/nickname
+  as: text)
+
+(attribute status
+  the: io.gozala.job/status
+  as: [:pending :done])                 ; a listed set of keywords
+
+(concept person
+  :with {name age}                      ; required
+  :maybe {nickname})                    ; optional
 ```
 
-### What a rule body may contain
-
-| Premise | Meaning | At runtime |
+| Form | spec | Meaning |
 |---|---|---|
-| `(the k of: ?v is: ?x)` | `?v` has key `k`, whose value is `?x` | key present |
-| `(type ?x :text)` | primitive type constraint | type test |
-| `(= ?x :active)`, `(= ?x 3)` | literal | equality |
-| `(person ?x ...)` | another rule | its test |
-| `(= ?y (f ?x))` | `?y` has `f`'s result type | **none** |
-| bounds: `(>= ?age 0)` | refinement | comparison |
+| `attribute` | `s/def` | key `the:` holds values of type `as:`, in every value that has it |
+| `concept` | `s/keys` | a value with every `:with` key and possibly the `:maybe` keys |
 
-The function premise is used for inference only: `f`'s signature
-contributes a type, and `f` never runs. No negation in the first
-version. Recursion is allowed, solved with tabling and a depth limit,
-since type terms nest.
+### Names
 
-### How a rule is used
+An attribute has a **local name** (`name`), a definition in its module,
+and a **global name** (`io.gozala/name`), the key values carry. Code and
+concepts use local names; data never does. Local names are unique in a
+module; another module's are reached as `person/name`.
 
-One rule is three things, depending on where it appears:
+### Types an attribute can have
 
-- **A type.** A rule's conclusion is a relation whose rows are records:
-  a `person` is `{p, name, age}` with the types its premises give. The
-  type checker solves rules like Rust's trait solver solves clauses
-  (Chalk, the new solver), as Horn clauses over types.
-- **A constructor and a destructuring**, when its body is only `the`
-  and `type` premises over its head variables. Head variables double as
-  labels, which is how a rule spares you the full key names:
+`as:` takes a primitive (`text`, `integer`, `natural`, ...), a listed
+set of keywords (`[:pending :done]`, which `case` checks for
+exhaustiveness), or a concept, for a value nested under the key. No
+predicates in this version; refinements such as "an even integer above
+1000" can come later if the rest works well.
 
-  ```clojure
-  (person :name "Alice" :age 28)       ; => {:io.gozala/name "Alice" :io.gozala/age 28}
-  (let [(person p name age) value] (str name ", " age))
-  ```
+### Using a concept
 
-- **A pattern**, when every premise has a runtime test (the right
-  column). The same rule then narrows in `match`:
-
-  ```clojure
-  (match job
-    (status :complete) "done"
-    (status :pending) "waiting")       ; exhaustive: the rules' tags
-  ```
-
-  A rule with a function premise is a type only. Using it as a pattern
-  is a compile error, because there is nothing to run.
-
-Rules with constant heads (`:complete`, `:pending`) are tagged
-alternatives: the union of their tags is a closed set, so a `match` on
-them is checked for exhaustiveness. Untagged alternatives of the same
-rule are allowed as types but cannot be matched exhaustively.
-
-### Ranking
-
-When a value satisfies several alternatives and code needs one answer,
-the first alternative in the conclusion's listed order wins. The order is
-declared once (provisional):
+One concept is a type, a constructor, and a destructuring:
 
 ```clojure
-(rank status :complete :pending)
+(person {name "Alice" age 28})
+; => {:io.gozala/name "Alice" :io.gozala/age 28}, checked
+
+(define (greet (person {name}))
+  (str "Hello " name))
+
+(define (call-me (person {name nickname}))
+  (?? nickname name))                   ; a :maybe key: reading it is failable
 ```
 
-so clauses can live anywhere without their position mattering.
+A concept in a parameter is checked at every call, statically: it is
+only keys and their types, so nothing runs. It binds the local names
+listed, and reading a `:maybe` attribute is failable (section 2).
 
-**Compiler:** a `rule` form; lowering bodies to constraints in the
-existing solver (fields and keyword sets already exist there); a small
-Horn-clause solver for rule references, with tabling; constructors,
-destructuring, and pattern compilation for rules that qualify.
+Requiring a concept may demand more than the function uses: `greet`
+needs only a name but asks for a whole `person`. Both are allowed.
+Without the annotation, inference requires exactly what the body reads,
+here a value with `io.gozala/name`; with it, the concept is what callers
+must pass.
+
+### What the checker does
+
+Attributes and concepts are constraints in the solver inference already
+uses:
+
+- an attribute is a global constraint on its key: any record with
+  `io.gozala/age` has a `natural` there, wherever it was built;
+- a concept is a record type over the attributes' global names, with
+  `:maybe` keys optional;
+- a listed set is the keyword sets `match` already checks.
+
+Every qualified key a program uses must be declared by some attribute,
+so a misspelled key is an error, not a new key.
+
+**Compiler:** `attribute` and `concept` forms; global key constraints in
+the solver; concept patterns in parameters and constructors; module
+namespaces with unique local names and `module/name` references.
 
 ## 4. Functions and match
 
 As today: `define`, `fn`, `let`, `if`, `match` with `_` as the last
-clause, narrowing in each clause. `match` patterns gain rule patterns
-(above) and lose `nil` (it is `_` or a failure context now).
+clause, narrowing in each clause. `match` patterns gain concept patterns
+(`(person {name})` as a clause) and lose `nil` (it is `_` or a failure
+context now).
 
 ## 5. Effects
 
@@ -190,7 +195,7 @@ Two tiers, the first one first:
    form, run by the compiler. Hygiene comes from hash addressing: a
    symbol in a macro's template resolves to a hash where the *macro* is
    defined; binders it introduces are fresh. Macros can read what the
-   compiler knows (a definition's type, a rule's premises), as Lux
+   compiler knows (a definition's type, a concept's attributes), as Lux
    macros run in `Meta` with the compiler's state. `cond`, `and`, `or`,
    `if-some`, `defn` move out of the core into macros.
 2. **Typed quotes** later, after Chris Done's sketch: `~e` has type
@@ -223,9 +228,8 @@ working.
 2. **Failure instead of `nil`.** Value space, solver, codegen, the
    element contract, examples. Every existing test is rewritten against
    the new semantics, which is the measure of whether it reads better.
-3. **Rules as types.** `rule`, the premise table above, the solver for
-   rule references, rules as types in inference. Patterns and
-   constructors second.
+3. **Attributes and concepts.** The two forms, global key constraints,
+   concepts as parameter patterns and constructors, module namespaces.
 4. **Macros, tier 1.** A `form` value type, quote and syntax-quote,
    `defmacro`, the interpreter, and `cond`/`and`/`or`/`defn` re-done as
    macros.
@@ -234,21 +238,28 @@ working.
 
 The acceptance test for the whole is four programs written as you would
 want to read them: the todo element (exists), the `/api/todos` route, a
-view over changing data, and a function of the kind a rule would call.
+view over changing data, and a pure function over concepts.
 
 ## Open decisions
 
-1. **Premise spelling.** `(type ?x :text)` collides with naming the
-   rule form `type`; this draft names the form `rule`. Alternatives:
-   `(is ?x :text)`, or `(:text ?x)`.
-2. **A failing value in a record literal.** Omit the key silently
+1. **A failing value in a record literal.** Omit the key silently
    (`{:k (first xs)}` has no `:k` when `xs` is empty), or require
    handling the failure explicitly. This draft requires it.
-3. **Marking failable functions in their names**, as `!` marks effects
+2. **Marking failable functions in their names**, as `!` marks effects
    (`find-todo?`), or in their types only.
-4. **Signatures.** With rules as types, is `(: label (-> status :text))`
-   still needed, or do rule patterns in parameters cover it?
-5. **Ranking syntax.** `(rank status ...)`, or the listed order of the
-   first rule.
-6. **Macro default, for tier 2.** Arguments typed before expansion
+3. **Predicates in types**, later: refinements as attribute types, and
+   whether a parameter's refinement is proven by the caller or checked
+   on entry.
+4. **Modules.** Local names need a module; how a module is declared and
+   how its namespace relates to the attributes' `the:` names.
+5. **Macro default, for tier 2.** Arguments typed before expansion
    unless quoted (jerd), or raw unless marked typed (Chris Done's `~`).
+
+## Decided in discussion
+
+- `_` ends a `match`; `:else` is an ordinary keyword.
+- An attribute always names its global key with `the:`.
+- A concept lists optional attributes in `:maybe`, beside `:with`.
+- Local names are unique in a module; others are `module/name`.
+- Both inferred requirements and declared concepts are allowed.
+- No predicates in types in this version.
