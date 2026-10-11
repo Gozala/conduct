@@ -6,9 +6,10 @@
 
 // The element world of the Wasm Component Model Polyfill's TodoMVC demo
 // (rust/wcmp-demo/zena/wit/element.wit), with the world's WASI imports
-// left out: an element compiled by conduct imports only `host`. A
-// component may import less than its world offers, so the demo's host
-// links it as it links a Zena element.
+// other than `wasi:http` left out. An element compiled by conduct imports
+// `host`, and `wasi:http` only if it makes requests. A component may
+// import less than its world offers, so the demo's host links it as it
+// links a Zena element.
 package demo:element;
 
 interface element {
@@ -75,5 +76,7 @@ interface host {
 
 world element-component {
   import host;
+  import wasi:http/types@0.3.0;
+  import wasi:http/client@0.3.0;
   export element;
 }

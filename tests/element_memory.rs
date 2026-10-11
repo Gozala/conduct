@@ -33,6 +33,11 @@ impl Core {
                 },
             )
             .unwrap();
+        // The exports that run `update` are lifted async; with no request
+        // in flight each returns at once, after `task.return`.
+        for name in ["connected", "attribute-changed", "handle-event"] {
+            linker.func_wrap("[export]demo:element/element", &format!("[task-return]{name}"), || {}).unwrap();
+        }
         let mut store = Store::new(&engine, Vec::new());
         let instance = linker.instantiate(&mut store, &module).unwrap();
         let memory = instance.get_memory(&mut store, "memory").unwrap();
@@ -101,10 +106,12 @@ impl Core {
             }
             None => (0, 0, 0),
         };
-        let f = self.instance.get_func(&mut self.store, "demo:element/element#handle-event").unwrap();
+        let f = self.instance.get_func(&mut self.store, "[async-lift]demo:element/element#handle-event").unwrap();
         let args: Vec<wasmtime::Val> =
             [id, hp, hn, kp, kn, vd, vp, vn, 0, 0, yd, yp, yn].iter().map(|v| wasmtime::Val::I32(*v)).collect();
-        f.call(&mut self.store, &args, &mut []).unwrap();
+        let mut code = [wasmtime::Val::I32(-1)];
+        f.call(&mut self.store, &args, &mut code).unwrap();
+        assert_eq!(code[0].unwrap_i32(), 0, "the task exits");
     }
 
     fn set_attr(&mut self, id: i32, name: &str, value: Option<&str>) {
@@ -118,12 +125,12 @@ impl Core {
         };
         let f = self
             .instance
-            .get_typed_func::<(i32, i32, i32, i32, i32, i32), ()>(
+            .get_typed_func::<(i32, i32, i32, i32, i32, i32), i32>(
                 &mut self.store,
-                "demo:element/element#attribute-changed",
+                "[async-lift]demo:element/element#attribute-changed",
             )
             .unwrap();
-        f.call(&mut self.store, (id, np, nn, disc, vp, vn)).unwrap();
+        assert_eq!(f.call(&mut self.store, (id, np, nn, disc, vp, vn)).unwrap(), 0, "the task exits");
     }
 
     fn disconnect(&mut self, id: i32) {

@@ -37,12 +37,19 @@
 
 use crate::codebase::Codebase;
 use crate::codegen::{Builder, CodegenError, NIL, field_id};
-use crate::term::Hash;
+use crate::fetch;
+use crate::term::{Hash, Op, Term};
 use crate::types::{Ty, TypeError};
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 /// The element world, as the demo defines it, without its WASI imports.
 pub const ELEMENT_WIT: &str = include_str!("../wit/element.wit");
+/// The element world with a memory count exported, for tests.
+const DEBUG_WIT: &str = include_str!("../wit/debug.wit");
+/// The WASI packages the element world names.
+const WASI_WIT: [(&str, &str); 2] =
+    [("clocks.wit", include_str!("../wit/deps/clocks.wit")), ("http.wit", include_str!("../wit/deps/http.wit"))];
 
 #[derive(Debug)]
 pub enum ElementError {
@@ -142,6 +149,32 @@ pub fn check(cb: &Codebase) -> Result<ElementDefs, ElementError> {
     Ok(defs)
 }
 
+/// Whether the definition `root`, or anything it refers to, uses `op`.
+fn reaches(cb: &Codebase, root: Hash, op: Op) -> bool {
+    let mut seen = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(hash) = stack.pop() {
+        if !seen.insert(hash) {
+            continue;
+        }
+        let Some(def) = cb.defs.get(&hash) else { continue };
+        let mut found = false;
+        def.term.walk(&mut |t| {
+            if let Term::Prim(o, _) = t
+                && *o == op
+            {
+                found = true;
+            }
+        });
+        if found {
+            return true;
+        }
+        def.term.refs(&mut stack);
+        stack.extend(def.cycle.iter().copied());
+    }
+    false
+}
+
 /// The core module of an element, as WebAssembly text.
 pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     let defs = check(cb)?;
@@ -189,6 +222,37 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     let changed = b.static_str("attribute-changed");
 
     b.add_import("(import \"demo:element/host\" \"emit\" (func $host_emit (param i32 i32 i32 i32 i32)))");
+    for name in ["connected", "attribute-changed", "handle-event"] {
+        b.add_import(format!(
+            "(import \"[export]{iface}\" \"[task-return]{name}\" (func $return_{} ))",
+            name.replace('-', "_")
+        ));
+    }
+    // An element that makes requests gets the `wasi:http` glue, and its
+    // tasks keep a waitable set in their context while requests are in
+    // flight. Others import nothing of `wasi:http`.
+    let fetching = defs.update.is_some_and(|h| reaches(cb, h, Op::Fetch));
+    if fetching {
+        for line in fetch::IMPORTS.lines() {
+            b.add_import(line);
+        }
+        b.add_import("(import \"$root\" \"[context-get-0]\" (func $ctx_get (result i32)))");
+        b.add_import("(import \"$root\" \"[context-set-0]\" (func $ctx_set (param i32)))");
+        let zeros = b.static_str(&"\0".repeat(64)) + 8;
+        let methods =
+            ["GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"].map(|m| b.static_str(m));
+        let statics = fetch::Statics {
+            zeros,
+            content_type: b.static_str("content-type"),
+            json: b.static_str("application/json"),
+            response: b.static_str("response"),
+            http: b.static_str("http://"),
+            https: b.static_str("https://"),
+            slash: b.static_str("/"),
+            methods,
+        };
+        b.add_func(fetch::funcs(&statics));
+    }
 
     // The table of elements: 16 bytes for each id, the model then the
     // attributes, both owned by the table. Ids start at 1.
@@ -419,19 +483,22 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     (i64.store offset=8 (call $slot (local.get $id)) (local.get $attrs))
     (i64.store (call $slot (local.get $id)) {init})
     (local.get $id))
-  (func (export "{iface}#connected") (param $id i32)
+  (func (export "[async-lift]{iface}#connected") (param $id i32) (result i32)
     (call $release)
+    (global.set $which (i32.const 0))
     (call $dispatch (local.get $id) (call $lit_owned (i64.const {connected}))
-      (call $event_new (call $lit_owned (i64.const {connected})) (i64.const 2) (i64.const 2) (i64.const 2) (i64.const 2))))
+      (call $event_new (call $lit_owned (i64.const {connected})) (i64.const 2) (i64.const 2) (i64.const 2) (i64.const 2)))
+    (call $task_end))
   (func (export "{iface}#disconnected") (param $id i32)
     (call $release)
     (call $drop (i64.load (call $slot (local.get $id))))
     (call $drop (i64.load offset=8 (call $slot (local.get $id))))
     (i64.store (call $slot (local.get $id)) (i64.const 0))
     (i64.store offset=8 (call $slot (local.get $id)) (i64.const 0)))
-  (func (export "{iface}#attribute-changed") (param $id i32) (param $np i32) (param $nn i32) (param $disc i32) (param $vp i32) (param $vn i32)
+  (func (export "[async-lift]{iface}#attribute-changed") (param $id i32) (param $np i32) (param $nn i32) (param $disc i32) (param $vp i32) (param $vn i32) (result i32)
     (local $attrs i64) (local $name i64) (local $val i64)
     (call $release)
+    (global.set $which (i32.const 1))
     (local.set $attrs (i64.load offset=8 (call $slot (local.get $id))))
     (local.set $name (call $arg_str (local.get $np) (local.get $nn)))
     (local.set $val (call $opt_str (local.get $disc) (local.get $vp) (local.get $vn)))
@@ -443,7 +510,8 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     (call $drop (local.get $val))
     ;; Tell `update`, with the attribute's name as the event's value.
     (call $dispatch (local.get $id) (call $lit_owned (i64.const {changed}))
-      (call $event_new (call $lit_owned (i64.const {changed})) (local.get $name) (i64.const 2) (i64.const 2) (i64.const 2))))
+      (call $event_new (call $lit_owned (i64.const {changed})) (local.get $name) (i64.const 2) (i64.const 2) (i64.const 2)))
+    (call $task_end))
   (func (export "{iface}#render") (param $id i32) (result i32)
     (local $v i64) (local $n i32) (local $arr i32)
     (call $release)
@@ -493,7 +561,10 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
         "    (call $drop (local.get $handler))\n    (call $drop (local.get $event))".to_string()
     } else {
         format!(
-            r#"    (local.set $model (i64.load (call $slot (local.get $id))))
+            r#"    ;; An element that left meanwhile hears nothing more.
+    (if (i64.eqz (i64.load offset=8 (call $slot (local.get $id))))
+      (then (call $drop (local.get $handler)) (call $drop (local.get $event)) (return)))
+    (local.set $model (i64.load (call $slot (local.get $id))))
     (i64.store (call $slot (local.get $id)) (i64.const 2))
     (local.set $r {update})
     (i64.store (call $slot (local.get $id)) (call $rec_get (local.get $r) (i64.const {model})))
@@ -503,18 +574,24 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     (block $done (loop $next
       (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
       (local.set $e (call $ptr (call $list_get (local.get $effects) (local.get $i))))
-      ;; A custom event goes out through the host; a fetch waits for the
-      ;; `wasi:http/client` glue.
+      ;; A custom event goes out through the host; a request starts in
+      ;; the current task.
       (if (i32.eq (i32.load (local.get $e)) (i32.const 7))
         (then
           (call $host_emit (local.get $id)
             (call $str_data (i64.load offset=8 (local.get $e))) (call $len (i64.load offset=8 (local.get $e)))
             (call $str_data (i64.load offset=16 (local.get $e))) (call $len (i64.load offset=16 (local.get $e))))))
+{start_fetch}
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $next)))
     (call $drop (local.get $effects))"#,
             model = field_id("model"),
             effects = field_id("effects"),
+            start_fetch = if fetching {
+                "      (if (i32.eq (i32.load (local.get $e)) (i32.const 8))\n        (then (call $fetch_start (local.get $id) (local.get $e) (call $task_set))))"
+            } else {
+                ""
+            },
         )
     };
     let _ = write!(
@@ -522,10 +599,11 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
         r#"  (func $dispatch (param $id i32) (param $handler i64) (param $event i64)
     (local $model i64) (local $r i64) (local $effects i64) (local $n i32) (local $i i32) (local $e i32)
 {dispatch})
-  (func (export "{iface}#handle-event") (param $id i32) (param $hp i32) (param $hn i32)
+  (func (export "[async-lift]{iface}#handle-event") (param $id i32) (param $hp i32) (param $hn i32)
     (param $kp i32) (param $kn i32) (param $vd i32) (param $vp i32) (param $vn i32)
-    (param $cd i32) (param $cv i32) (param $yd i32) (param $yp i32) (param $yn i32)
+    (param $cd i32) (param $cv i32) (param $yd i32) (param $yp i32) (param $yn i32) (result i32)
     (call $release)
+    (global.set $which (i32.const 2))
     (call $dispatch (local.get $id)
       (call $arg_str (local.get $hp) (local.get $hn))
       (call $event_new
@@ -533,21 +611,99 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
         (call $opt_str (local.get $vd) (local.get $vp) (local.get $vn))
         (if (result i64) (local.get $cd) (then (call $bool (local.get $cv))) (else (i64.const 2)))
         (call $opt_str (local.get $yd) (local.get $yp) (local.get $yn))
-        (i64.const 2))))"#
+        (i64.const 2)))
+    (call $task_end))"#
     );
     b.add_func(x);
+    b.add_func(task_funcs(fetching, iface));
     // For tests: how many blocks are allocated and not yet freed.
-    b.add_func("  (func (export \"conduct_live\") (result i32) (global.get $live))");
+    b.add_func(
+        "  (func (export \"conduct_live\") (export \"conduct:debug/memory#live\") (result i32) (global.get $live))",
+    );
     Ok(b.finish()?)
+}
+
+/// The end of a task that runs `update`, and the callback that carries
+/// it on. A task returns once none of its requests waits on anything;
+/// until then it waits on its waitable set, which its context holds with
+/// which export started it.
+fn task_funcs(fetching: bool, iface: &str) -> String {
+    let returns = r#"    (if (i32.eqz (local.get $which)) (then (call $return_connected)))
+    (if (i32.eq (local.get $which) (i32.const 1)) (then (call $return_attribute_changed)))
+    (if (i32.eq (local.get $which) (i32.const 2)) (then (call $return_handle_event)))
+    (i32.const 0))"#;
+    let mut out = String::from("  (global $which (mut i32) (i32.const 0))\n");
+    if fetching {
+        out.push_str(
+            r#"  (func $task_set (result i32)
+    (local $ctx i32)
+    (local.set $ctx (call $ctx_get))
+    (if (i32.eqz (local.get $ctx))
+      (then
+        (local.set $ctx (call $alloc (i32.const 8)))
+        (i32.store (local.get $ctx) (call $set_new))
+        (i32.store offset=4 (local.get $ctx) (global.get $which))
+        (call $ctx_set (local.get $ctx))))
+    (i32.load (local.get $ctx)))
+  (func $task_end (result i32)
+    (local $ctx i32) (local $which i32)
+    (local.set $ctx (call $ctx_get))
+    (local.set $which (global.get $which))
+    (if (local.get $ctx)
+      (then
+        (if (call $fetch_pending (i32.load (local.get $ctx)))
+          (then (return (i32.or (i32.const 2) (i32.shl (i32.load (local.get $ctx)) (i32.const 4))))))
+        (local.set $which (i32.load offset=4 (local.get $ctx)))
+        (call $set_drop (i32.load (local.get $ctx)))
+        (call $free (local.get $ctx))
+        (call $ctx_set (i32.const 0))))
+"#,
+        );
+        out.push_str(returns);
+        out.push_str(
+            r#"
+  (func $callback (param $event i32) (param $w i32) (param $payload i32) (result i32)
+    (call $fetch_event (local.get $event) (local.get $w) (local.get $payload))
+    (call $task_end))
+"#,
+        );
+    } else {
+        out.push_str(
+            "  (func $task_end (result i32)\n    (local $which i32)\n    (local.set $which (global.get $which))\n",
+        );
+        out.push_str(returns);
+        out.push_str("\n  (func $callback (param i32 i32 i32) (result i32) (call $task_end))\n");
+    }
+    for name in ["connected", "attribute-changed", "handle-event"] {
+        out.push_str(&format!("  (export \"[callback][async-lift]{iface}#{name}\" (func $callback))\n"));
+    }
+    out
 }
 
 /// Compile the element in `cb` to a component of the
 /// `element-component` world.
 pub fn component(cb: &Codebase) -> Result<Vec<u8>, ElementError> {
+    encode(cb, false)
+}
+
+/// The element as [`component`] compiles it, plus an export
+/// `conduct:debug/memory#live` that counts the blocks its memory holds,
+/// for tests.
+pub fn debug_component(cb: &Codebase) -> Result<Vec<u8>, ElementError> {
+    encode(cb, true)
+}
+
+fn encode(cb: &Codebase, debug: bool) -> Result<Vec<u8>, ElementError> {
     let wat = core_wat(cb)?;
     let mut core = wat::parse_str(&wat).map_err(|e| ElementError::Encode(format!("{e}")))?;
     let mut resolve = wit_parser::Resolve::default();
-    let pkg = resolve.push_str("element.wit", ELEMENT_WIT).map_err(|e| ElementError::Encode(format!("{e:#}")))?;
+    for (name, wit) in WASI_WIT {
+        resolve.push_str(name, wit).map_err(|e| ElementError::Encode(format!("{e:#}")))?;
+    }
+    let mut pkg = resolve.push_str("element.wit", ELEMENT_WIT).map_err(|e| ElementError::Encode(format!("{e:#}")))?;
+    if debug {
+        pkg = resolve.push_str("debug.wit", DEBUG_WIT).map_err(|e| ElementError::Encode(format!("{e:#}")))?;
+    }
     let world =
         resolve.select_world(&[pkg], Some("element-component")).map_err(|e| ElementError::Encode(format!("{e:#}")))?;
     wit_component::embed_component_metadata(&mut core, &resolve, world, wit_component::StringEncoding::UTF8, false)
