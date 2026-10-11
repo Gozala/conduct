@@ -1,2 +1,183 @@
 # conduct
-Language prototype
+
+A prototype language for writing the code that lives in a local-first
+database: query functions, views, and routes, stored by hash and
+compiled to WebAssembly components.
+
+- **Lisp syntax.** A small Clojure-like reader. Syntax is not the point.
+- **Hash-addressed definitions.** A definition's identity is the hash of
+  its name-free term, as in Unison. Renaming a definition or its locals
+  keeps its hash; mutually recursive definitions are hashed as a cycle.
+  A definition is type checked once, ever.
+- **Full type inference with a lattice of types.** No annotations, ever.
+  Types have unions and intersections (Simple-sub's algebraic
+  subtyping), records are structural, and optionals are set-style: a
+  `String` is a `String | nil`, with no wrapping.
+- **Wasm components as the target.** Compiled code carries a small
+  runtime and no garbage collector, and speaks the canonical ABI
+  directly, so it runs on Wasmtime or in a browser through the [Wasm
+  Component Model Polyfill].
+
+The first objective is to rebuild the polyfill's TodoMVC demo, whose
+elements and routes are written in Zena, in conduct.
+
+## Status
+
+Iteration 1, the first vertical slice. [`examples/todo-item.cdt`] is the
+demo's `<todo-item>` element in conduct. It compiles to a component of
+the demo's `element-component` world, and the tests drive it through the
+polyfill, natively over Wasmtime, the way the demo's page drives an
+element: create, render, toggle, edit in place, cancel, attribute
+changes, several instances at once.
+
+```
+$ cargo run -- check examples/todo-item.cdt
+#2b845adc8c attributes : List[String]
+#f7a2cda090 styles : String
+#12298b70de attr : (Dict[a], String) -> a \ nil | String
+#844dd5f2e4 init : (Any) -> {editing: Bool}
+#b74820340e stay : (a) -> {emit: List[Nothing], model: a}
+#3e5ab238a2 update : ({editing: Bool}, Any, {key: Any, value: Any}, Dict[String | nil]) -> {emit: List[Emit], model: {editing: Bool}}
+#96a1911470 view : ({editing: Bool}, Dict[String | nil]) -> View
+
+$ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
+wrote todo-item.wasm (13840 bytes)
+```
+
+Every type above is inferred. `attr`'s type says it returns the
+dictionary's value type with `nil` taken out, or a `String`.
+
+`cargo test` runs everything: the reader, inference, hashing, the code
+generator on Wasmtime, and the element on the polyfill.
+
+## The language
+
+```clojure
+(def greeting "hello")                  ; a definition
+(defn inc [x] (+ x 1))                  ; a function
+(fn [x y] (+ x y))                      ; a lambda; closures capture
+(let [a 1 b (inc a)] (* a b))           ; sequential bindings, polymorphic
+(if test then else)                     ; the test must be a Bool
+(cond a x b y :else z)
+(and a b) (or a b) (not a)
+
+{:title "Buy milk" :done false}         ; a record: keyword keys
+(:title todo)                           ; a field
+{"class" "toggle" "type" "checkbox"}    ; a dictionary: string keys
+(get attrs "title")                     ; String | nil
+(assoc d "k" v) (dissoc d "k")
+[1 2 3] (count xs) (first xs) (rest xs) (concat xs ys) (conj xs x)
+(map f xs) (filter f xs)
+(str "id: " 42)                         ; any values, as text
+(= a b)                                 ; structural, for every value
+
+(?? (get attrs "title") "untitled")     ; nil-coalescing
+(if-some [t (get attrs "title")]        ; t is a String here, not String | nil
+  t
+  "untitled")
+
+(h "li" {"class" "done"} [child ...] {"click" "handler"})   ; a view
+(emit "todo-toggle" id)                                     ; an event to send
+```
+
+Built-ins are applied in full; they are not yet values.
+
+### Types
+
+Types are inferred with Parreaux's [Simple-sub], which extends
+Hindley-Milner with subtyping while keeping principal types. Values flow
+into type variables; a type is shown with each variable's bounds turned
+into unions (where values come out) and intersections (where they go
+in), then simplified.
+
+Optionals are set-style, after Rich Hickey's "Maybe Not" and Radiant's
+[notes][Maybe Not]: `get` returns `v | nil`, a plain value passes where an
+optional is expected, and nothing is wrapped. To use the value,
+`if-some` and `??` remove `nil` from its type. That is one addition to
+Simple-sub, a type `t \ nil` that may only flow into things: the one case
+of MLstruct's negation types (`t & ¬nil`) that optionals need first.
+
+Equality and `str` work on any value, so there is no type class
+machinery: `=` takes `(Any, Any)`.
+
+### Hashing
+
+`codebase` resolves locals to de Bruijn indices and other definitions to
+their hashes, then hashes the canonical encoding of the term with BLAKE3.
+The type is not part of the hash: with full inference, a definition's
+type follows from its term and the types of what it refers to, so it is
+stored as derived data. Mutually recursive definitions are found as
+strongly connected components and hashed as one cycle, with members
+ordered by their name-free encoding.
+
+Adding source that the codebase already holds, under any names, finds
+the hashes present and checks nothing.
+
+### Compiled code
+
+`codegen` writes WebAssembly text and assembles it with the `wat` crate.
+Every value is an `i64`: a tagged integer, `nil`, a Boolean, or a pointer
+to a heap object (`src/runtime.wat` describes the layout), so one
+function type per arity serves every function. A top-level function
+compiles to a Wasm function and a closure object in static data;
+lambdas compile to functions in a table, called through the closures
+that capture their free variables.
+
+Memory is a bump arena and nothing is freed yet.
+
+## Elements
+
+An element is pure definitions in the Elm architecture's shape:
+
+```text
+attributes : List[String]          the attributes it observes
+styles     : String                the CSS of its shadow root
+init       : (Dict[String]) -> m   its first model
+update     : (m, String, Event, Dict[String]) -> {model: m, emit: List[Emit]}
+view       : (m, Dict[String]) -> View
+```
+
+`update` does not send custom events: it returns them, and generated glue
+sends them through the world's `host.emit` import. So element code stays
+pure, and the glue is the only code with effects. `element::check`
+checks the definitions against this contract by subtyping, with the
+model type being whatever `init` returns.
+
+The glue keeps each element's model and attributes between calls, and
+lowers a view into the world's flattened `list<node>` with the same
+rules as the Zena authoring library: `key` names a node, `checked` and
+`value` become properties, and lists among a view's children are spliced
+in.
+
+Every export is lifted synchronously, though the world declares them
+`async`, and `host.emit` is lowered synchronously. The component model
+allows both, wit-component validates them, and the polyfill runs them.
+This keeps the async ABI out of the compiler until a slice needs it.
+
+## Next
+
+The demo's other parts each need something this slice does not have:
+
+1. **`<todo-input>` and `<todo-footer>`**: record update, so a model
+   with several fields can change one.
+2. **`<todo-app>`**: `wasi:http/client`, which brings resources, streams,
+   and calls that must wait.
+3. **Routes**: `wasi:http/handler` and the async `demo:todo/model`
+   imports. Effects stop being data returned from `update`, and the
+   effect system (inferred, as Roc infers purity, and mapped to the
+   world's imports) has to exist.
+4. **Memory**: an element keeps its model across calls, so a bump arena
+   only grows. Copying what the element table holds into a fresh arena
+   after each call would be deterministic and simple; Perceus-style
+   reference counting is the longer-term plan.
+5. **Sum types**: matching on variants needs MLstruct's negation types in
+   general, not just `t \ nil`.
+6. **The codebase in Dialog**: definitions as facts, names as assertions
+   that point at hashes.
+7. **The compiler in the browser**: its dependencies are pure Rust, but
+   building it for `wasm32` has not been tried yet.
+
+[Wasm Component Model Polyfill]: https://github.com/dialog-db/wasm-component-model-polyfill
+[`examples/todo-item.cdt`]: examples/todo-item.cdt
+[Simple-sub]: https://dl.acm.org/doi/10.1145/3409006
+[Maybe Not]: https://radiant.computer/notes/maybe-not/
