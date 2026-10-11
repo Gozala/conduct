@@ -2,23 +2,29 @@
 
 A synthesis of the design discussion, written to be built. Each section
 ends with what changes in the compiler. Syntax marked *provisional* is a
-placeholder for a decision still open (listed at the end).
+placeholder for a decision still open (listed at the end). Parts already
+built are marked **(built)**.
 
 ## Principles, in the order they win
 
 1. **Values are plain, immutable data.** Records, lists, strings,
-   numbers, keywords. There is no `nil` value: absence is not a thing a
-   program can hold.
-2. **Types are inferred; declarations are optional constraints.** A
-   program with no declarations is fully typed. A declaration narrows
-   what inference found; it never replaces it.
+   numbers, keywords. There is no `nil`: what may be missing is an
+   attribute, and failure is a variant that says why.
+2. **Data is declared; code is inferred.** Attributes, concepts and
+   ranked classifications are type definitions, written by hand because
+   they are decisions (a global name, a shape, an order), not facts a
+   checker could find. Functions, effects, local records and narrowing
+   are inferred, and a function never needs an annotation. This is ML's
+   split: Elm, Roc and OCaml declare `type Job = ...` and infer the
+   code that uses it. An annotation on code is optional and only ever
+   asks for something inference cannot know, such as a ranking.
 3. **Declarations describe data; they never choose code.** An
    attribute or a concept constrains and identifies data. None decides
    which code runs, so there are no type classes.
 4. **Data carries global names; programs use local ones.** A value
-   always holds `:io.gozala/name`; an attribute gives it the local name
-   `name` that code and concepts use.
-5. **Effects are inferred and visible**, as in Roc. So is failure.
+   holds `io.gozala.point/x`; an attribute gives it the local name `x`
+   that code uses.
+5. **Effects are inferred and visible**, as in Roc. **(built)**
 6. **The core is small; the rest is macros.** Macros are pure,
    hygienic by hash, and can read what the compiler knows.
 7. **A definition is its hash**, taken after macro expansion, over a
@@ -26,169 +32,181 @@ placeholder for a decision still open (listed at the end).
 
 When two principles conflict, the earlier one wins.
 
+A consequence of 7 for 2: a definition is checked once and stored by
+hash, so its type cannot depend on code written later. Nothing global is
+inferred from its uses; an attribute's value type is declared or is
+`Any` (see the open decisions).
+
 ## 1. Values
 
-```clojure
-{:io.gozala/name "Alice" :io.gozala/age 28}   ; a record: qualified keyword keys
-[1 2 3]                                       ; a list
-:active                                       ; a keyword, the type of just itself
+```scheme
+{x: 0, y: 0}                          ; a record: x and y name declared attributes
+{io.gozala.point/x: 0}                ; the same key, spelled out in full
+[1 2 3]                               ; a list
+:active                               ; a keyword, a value whose type is itself
 "text" 42
 ```
 
-Keys are fully qualified keywords. An unqualified key is an error in a
-record literal (dictionaries keep string keys).
+A record's keys are attributes. `x:` refers to the attribute declared
+with the local name `x`; the value holds its global name. A key no
+attribute declares is an error, so a misspelled key is never a new key.
+Commas are whitespace.
 
-**Compiler:** the reader accepts `:a.b/c`; record literals require a
-namespace. Small.
+`x:` and `:x` are distinct: `x:` names an attribute or a parameter's
+label, `:active` is a keyword value. (In Dialog the two spellings denote
+the same entity; in conduct a call needs to tell a label from a keyword
+argument.)
 
-## 2. Absence is failure
+The platform and the prelude declare the attributes their contracts use
+(`ok`, `error`, a route's request fields), so user code declares only
+its own domain.
 
-No expression evaluates to "nothing". Reading something that may be
-missing *fails*, and failure is only allowed where something handles it:
+**Compiler:** the reader takes `name:` and `ns/name:` tokens; record
+literals resolve keys to declared attributes; field ids are taken from
+global names.
 
-```clojure
-(?? (first titles) "untitled")                       ; fallback
-(if-some [s (:io.gozala/since job)] (str "Since " s) "not started")
-(match (:io.gozala/since job) some? ... _ ...)
-```
+## 2. Absence and failure **(built, with today's keys)**
 
-- `(first xs)`, `(get d "k")`, and reading an optional field are
-  failable.
-- A failable expression anywhere else is a compile error that says where
-  absence must be handled. `[(first xs)]` does not compile: a list
-  cannot have a hole.
-- A function whose body can fail without handling it can fail. "Can
-  fail" is inferred and shown on the function's type, like an effect,
-  so `find-todo` simply fails and its callers handle it.
-- At the machine level a failable call returns a status. No program can
-  store, compare, or pass it: unobservable, which is what
-  "unrepresentable" means here.
-- JSON's `null` is the keyword `:null`, a value. Missing and null stay
-  distinct.
+There is no `nil`. Each use of "maybe" has its own form, after Roc's
+reasons for having no Maybe and Hickey's "Maybe Not", which agree once
+each is put where it belongs:
 
-This is Verse's failure, and the functional face of a logic query with
-no answers.
+- **What can fail answers a variant that says why:** `{ok: v}` or
+  `{error: :not-found}`.
+- **Absence that means something is a variant that names it:**
+  `:unspecified | {specified: artist}`.
+- **An attribute a value may not have is simply not there.** Reading it
+  takes a default, `(:title todo "untitled")`, or a `match`.
 
-**Compiler:** the biggest change. `nil` leaves the value space and the
-type lattice; `Without` and `t | nil` become a "fails" flag on
-expressions and function types, checked at failure contexts. Event
-fields in the element contract become absent instead of `nil`.
+`get` and `first` take the value to give when there is none. A function
+with nothing to answer answers `{}`. A WIT function with `option`
+parameters takes one record of its named parameters, an absent
+attribute meaning `none`. JSON keeps an opaque `null` inside `Json`,
+seen through `json-type`.
 
-## 3. Attributes and concepts
+Failure as control flow (Verse) is not used for data: failure that
+propagates by itself hides where absence was handled, which is Roc's
+objection to Maybe again. It may return for predicates in rules.
 
-Declared types are two forms, after clojure.spec and Rich Hickey's
-"Maybe Not": an **attribute** says what a key means, everywhere
-(schema); a **concept** says which keys a context needs (selection).
+## 3. Attributes
 
-```clojure
-(attribute name
-  the: io.gozala/name
-  as: text)
-
-(attribute age
-  the: io.gozala/age
-  as: natural)
-
-(attribute nickname
-  the: io.gozala/nickname
-  as: text)
+```scheme
+(attribute x
+  the: io.gozala.point/x
+  as: integer)
 
 (attribute status
   the: io.gozala.job/status
   as: [:pending :done])                 ; a listed set of keywords
-
-(concept person
-  :with {name age}                      ; required
-  :maybe {nickname})                    ; optional
 ```
 
-An attribute can also be written inline, in the concept that uses it:
-
-```clojure
-(concept person
-  :with {name {the: io.gozala/name as: text}
-         age  age}                      ; a module-level attribute, by name
-  :maybe {nickname {the: io.gozala/nickname as: text}})
-```
-
-An inline attribute's local name belongs to its concept: it binds in
-`(person {name})` patterns and constructors, and is not a module-level
-name, so two concepts may each inline their own `name`. Its global key
-is still global: every declaration of `io.gozala/name`, inline or not,
-must agree on its type (declarations of one key unify, as repeated
-declarations do in CUE; a conflict is an error).
-
-| Form | spec | Meaning |
-|---|---|---|
-| `attribute` | `s/def` | key `the:` holds values of type `as:`, in every value that has it |
-| `concept` | `s/keys` | a value with every `:with` key and possibly the `:maybe` keys |
-
-### Names
-
-An attribute has a **local name** (`name`), a definition in its module,
-and a **global name** (`io.gozala/name`), the key values carry. Code and
-concepts use local names; data never does. Local names are unique in a
-module; another module's are reached as `person/name`.
-
-### Types an attribute can have
+An attribute has a **local name** (`x`), a definition in its module,
+and a **global name** (`io.gozala.point/x`), the key values carry. Local
+names are unique in a module; another module's are reached as
+`point/x`. Every declaration of one global name must agree on its type.
 
 `as:` takes a primitive (`text`, `integer`, `natural`, ...), a listed
-set of keywords (`[:pending :done]`, which `case` checks for
-exhaustiveness), or a concept, for a value nested under the key. No
-predicates in this version; refinements such as "an even integer above
-1000" can come later if the rest works well.
+set of keywords, or a concept for a value nested under the key. No
+predicates in this version.
 
-### Using a concept
+**Compiler:** the `attribute` form; a global constraint on each key in
+the solver (any record with `io.gozala.point/x` has an `integer` there,
+wherever it was built); module namespaces.
 
-One concept is a type, a constructor, and a destructuring:
+## 4. Functions
 
-```clojure
-(person {name "Alice" age 28})
-; => {:io.gozala/name "Alice" :io.gozala/age 28}, checked
+```scheme
+(define (sum x y) (+ x y))             ; puns (define (sum x: x y: y) ...)
+(sum x: 1 y: 2)                        ; labels at the call, in any order
+(sum y: 2 x: 1)                        ; the same call
 
-(define (greet (person {name}))
-  (str "Hello " name))
+(define (inc _: n) (+ n 1))            ; one nameless parameter, first
+(inc 2)
 
-(define (call-me (person {name nickname}))
-  (?? nickname name))                   ; a :maybe key: reading it is failable
+(define (greet _: name greeting:) (str greeting " " name))
+(greet "Bo" greeting: "Hi")
 ```
 
-A concept in a parameter is checked at every call, statically: it is
-only keys and their types, so nothing runs. It binds the local names
-listed, and reading a `:maybe` attribute is failable (section 2).
+Every parameter has a label, which by default is its name; `label: local`
+gives them separately. `_:` marks the one parameter passed without a
+label, which comes first. Underneath, a function's labeled parameters
+are one record argument and the nameless one is a separate argument, so
+a labeled parameter that may be left out is an optional attribute, and
+calling a function and building a concept are the same act. Calls to a
+known function can be compiled without building the record.
 
-Requiring a concept may demand more than the function uses: `greet`
-needs only a name but asks for a whole `person`. Both are allowed.
-Without the annotation, inference requires exactly what the body reads,
-here a value with `io.gozala/name`; with it, the concept is what callers
-must pass.
+`let` binds with `[name value ...]`. `match` is as today, with concept
+patterns added (section 5).
 
-### What the checker does
+*Provisional:* `(fn [x] ...)` takes its parameters without labels, as
+Swift's closures do, so a function passed to `map` is called as `map`
+calls it. A defined function passed as a value needs `_:` on its first
+parameter.
 
-Attributes and concepts are constraints in the solver inference already
-uses:
+**Compiler:** `define` replaces `def`/`defn`; labels at calls; the
+record argument; `_:`.
 
-- an attribute is a global constraint on its key: any record with
-  `io.gozala/age` has a `natural` there, wherever it was built;
-- a concept is a record type over the attributes' global names, with
-  `:maybe` keys optional;
-- a listed set is the keyword sets `match` already checks.
+## 5. Concepts
 
-Every qualified key a program uses must be declared by some attribute,
-so a misspelled key is an error, not a new key.
+```scheme
+(concept idle    with: {description})
+(concept pending with: {description started-at})
+(concept done    with: {description completed-at})
 
-**Compiler:** `attribute` and `concept` forms; global key constraints in
-the solver; concept patterns in parameters and constructors; module
-namespaces with unique local names and `module/name` references.
+(done description: "Ship it" completed-at: now)  ; a constructor, checked
+```
 
-## 4. Functions and match
+A concept is a named set of attributes a value has, and so a record
+type, a constructor, and a pattern. *Provisional:* `maybe:` beside
+`with:` lists attributes a value may have.
 
-As today: `define`, `fn`, `let`, `if`, `match` with `_` as the last
-clause, narrowing in each clause. `match` patterns gain concept patterns
-(`(person {name})` as a clause) and lose `nil` (it is `_` or a failure
-context now).
+### Ranked classifications
 
-## 5. Effects
+Concepts overlap: facts accrete, so a job that finishes still has its
+`started-at`, and every job has a `description`. Which concept a value
+"is" therefore needs an order, and the order is declared once:
+
+```scheme
+(concept job [done pending idle])      ; a job is the first of these it satisfies
+
+(define (run! job: job)
+  (match job
+    done    (print! "Done:" (description job))
+    pending (print! "Pending:" (description job))
+    idle    (print! "Idle:" (description job))))
+```
+
+- Every value lands in exactly one case: the highest-ranked concept it
+  satisfies. A job with both `started-at` and `completed-at` is `done`.
+- The cases are disjoint, so the arms of a `match` on a classification
+  may come in any order.
+- A match covers the classification when it names every case, or ends
+  with `_`.
+- In each arm the value has that concept's attributes.
+
+This is Dialog's listed domain under `top`, with concepts in place of
+values; the same order can rank conflicting facts when the
+classification is stored.
+
+### Checks
+
+- **A wider concept ranked above a narrower one is an error.**
+  `[idle done pending]` fails: every `done` is an `idle`, so `done`
+  could never be chosen. The lattice decides "wider": a concept with
+  more attributes fits wherever one with fewer is expected.
+- **A `match` without a classification** may order arms the lattice
+  orders (narrower first, whatever order they are written in). Two arms
+  that overlap where neither is narrower are an error that asks for a
+  classification: the order between incomparable concepts must be
+  stated, never decided by where an arm happens to be written.
+- **Narrowing** follows the chosen case. Concepts only test which
+  attributes a value has, so overlap, nesting and coverage are decided
+  exactly.
+
+**Compiler:** the `concept` form; concepts as constructors and as
+patterns; ranked classifications; the rank and overlap checks.
+
+## 6. Effects **(built)**
 
 Roc's model, with capabilities:
 
@@ -197,13 +215,20 @@ Roc's model, with capabilities:
 - The set of capabilities a function reaches is part of its type, so a
   type says what a function can touch. An empty set is pure.
 - Only the host provides effectful functions (a component's imports).
-- Failure (section 2) is inferred the same way and shown beside effects.
 
-Effectful calls run directly, blocking on their own stack, where the
-host can suspend (Wasmtime; JSPI in browsers). Elements keep effects as
-data in `update`, which needs none of this.
+Effectful calls run directly, blocking the task where the host can
+suspend (Wasmtime, the polyfill). Elements keep effects as data in
+`update`.
 
-## 6. Macros
+## 7. Variants **(built, with today's keys)**
+
+Inferred unions grow as in Roc: `{ok: v} | {error: :not-found}`,
+keywords being the variants that carry nothing. They are the anonymous
+counterpart of a classification: a variant is told apart by its one
+key, a classification by its declared rank. Model results and WIT
+`result`s use variants.
+
+## 8. Macros
 
 Two tiers, the first one first:
 
@@ -212,72 +237,66 @@ Two tiers, the first one first:
    symbol in a macro's template resolves to a hash where the *macro* is
    defined; binders it introduces are fresh. Macros can read what the
    compiler knows (a definition's type, a concept's attributes), as Lux
-   macros run in `Meta` with the compiler's state. `cond`, `and`, `or`,
-   `if-some`, `defn` move out of the core into macros.
+   macros run in `Meta` with the compiler's state. `cond`, `and`, `or`
+   move out of the core into macros.
 2. **Typed quotes** later, after Chris Done's sketch: `~e` has type
    `'T`, so a macro that only splices its arguments (`when`, `->`)
    can be checked at its call, before expansion.
 
-jerd (Jared Forsyth) planned a third arrangement that combines the two:
-macros receive a *typed* syntax tree and the typing environment, and
-"all nodes will be parsed and type-checked before going in, unless
-explicitly quoted". Typed by default, quoted by choice. Its catch is the
-same one that puts tier 1 first here: a macro that introduces binders
-(`defn`, `match`) cannot have its arguments typed before it runs, so in
-jerd those arguments would all be quoted. Which default conduct takes,
-typed with quoting by choice or raw with typing by choice, can wait
-until tier 2; tier 1 is needed either way.
+jerd (Jared Forsyth) planned a third arrangement: macros receive a
+*typed* syntax tree and the typing environment, "all nodes ...
+type-checked before going in, unless explicitly quoted". Its catch puts
+tier 1 first here: a macro that introduces binders (`define`, `match`)
+cannot have its arguments typed before it runs. Which default conduct
+takes can wait until tier 2.
 
 The compiler runs macros with an interpreter for the pure subset, so
-macros work wherever the compiler does, browser included; tests run
-each macro compiled too, to catch drift.
+macros work wherever the compiler does, browser included.
 
-A definition's hash is taken after expansion; the source as written and
-the macro hashes that expanded it are kept beside it.
+## 9. Plan
 
-## 7. Plan
+Each step is a pull request with tests; each keeps the demo working.
 
-Each step is a pull request with tests; each keeps the four elements
-working.
+1. **Labels and attributes.** `define` with labels and `_:`, `name:`
+   tokens, `attribute`, declared keys in records, module namespaces;
+   the prelude and platform declare theirs; every example rewritten.
+2. **Concepts.** The form, constructors, patterns, ranked
+   classifications, narrowing.
+3. **Checks.** Rank order against the lattice, overlap in matches,
+   coverage of classifications.
+4. **Macros, tier 1.**
 
-1. **Qualified keys.** Reader, record literals, the examples renamed.
-2. **Failure instead of `nil`.** Value space, solver, codegen, the
-   element contract, examples. Every existing test is rewritten against
-   the new semantics, which is the measure of whether it reads better.
-3. **Attributes and concepts.** The two forms, global key constraints,
-   concepts as parameter patterns and constructors, module namespaces.
-4. **Macros, tier 1.** A `form` value type, quote and syntax-quote,
-   `defmacro`, the interpreter, and `cond`/`and`/`or`/`defn` re-done as
-   macros.
-5. **Effects.** Purity and capability inference, `=>` and `!`, then the
-   demo's route with `wasi:http/handler` on Wasmtime.
-
-The acceptance test for the whole is four programs written as you would
-want to read them: the todo element (exists), the `/api/todos` route, a
-view over changing data, and a pure function over concepts.
+The acceptance test: the demo's elements and routes, and the job
+example above, written as you would want to read them.
 
 ## Open decisions
 
-1. **A failing value in a record literal.** Omit the key silently
-   (`{:k (first xs)}` has no `:k` when `xs` is empty), or require
-   handling the failure explicitly. This draft requires it.
-2. **Marking failable functions in their names**, as `!` marks effects
-   (`find-todo?`), or in their types only.
-3. **Predicates in types**, later: refinements as attribute types, and
-   whether a parameter's refinement is proven by the caller or checked
-   on entry.
-4. **Modules.** Local names need a module; how a module is declared and
-   how its namespace relates to the attributes' `the:` names.
-5. **Macro default, for tier 2.** Arguments typed before expansion
-   unless quoted (jerd), or raw unless marked typed (Chris Done's `~`).
+1. **An attribute without `as:`.** Its value type is `Any`, narrowed
+   where it is used, or `as:` is required. (It cannot be inferred from
+   uses, by principle 7.)
+2. **Lambdas and labels.** `fn` unlabeled, as above, or labeled like
+   `define` with callers of function values passing labels.
+3. **`maybe:` in concepts**, for attributes a value may have.
+4. **Modules.** How a module is declared, and how its namespace relates
+   to the attributes' `the:` names.
+5. **Predicates in types**, later.
+6. **Macro default, for tier 2.**
 
 ## Decided in discussion
 
 - `_` ends a `match`; `:else` is an ordinary keyword.
-- An attribute always names its global key with `the:`.
-- A concept lists optional attributes in `:maybe`, beside `:with`.
-- Local names are unique in a module; others are `module/name`.
-- Both inferred requirements and declared concepts are allowed.
+- No `nil`: variants for failure, absent attributes for what may be
+  missing. Roc over Verse for data.
+- Variants are inferred unions; one payload per variant.
+- An attribute names its global key with `the:`; attributes are
+  nominal and always declared.
+- `define`, with every parameter labeled (punned by default) and at
+  most one nameless parameter, first.
+- `x:` names an attribute or label; `:x` is a keyword value.
+- A concept is a named set of attributes, usable as constructor,
+  pattern and type.
+- Overlapping concepts are ranked by a declared classification, never
+  by where a match arm is written; a wider concept ranked above a
+  narrower one does not compile.
+- Data is declared, code is inferred.
 - No predicates in types in this version.
-- Attributes can be inlined in a concept; their local names are scoped
-  to the concept, their keys stay global and must agree.
