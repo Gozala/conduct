@@ -69,6 +69,15 @@ pub enum Op {
     H,
     Emit,
     Trim,
+    Fetch,
+    Split,
+    ParseJson,
+    ToJson,
+    JsonGet,
+    JsonItems,
+    JsonStr,
+    JsonInt,
+    JsonBool,
 }
 
 impl Op {
@@ -100,6 +109,15 @@ impl Op {
         Op::H,
         Op::Emit,
         Op::Trim,
+        Op::Fetch,
+        Op::Split,
+        Op::ParseJson,
+        Op::ToJson,
+        Op::JsonGet,
+        Op::JsonItems,
+        Op::JsonStr,
+        Op::JsonInt,
+        Op::JsonBool,
     ];
 
     pub fn name(self) -> &'static str {
@@ -131,6 +149,15 @@ impl Op {
             Op::H => "h",
             Op::Emit => "emit",
             Op::Trim => "trim",
+            Op::Fetch => "fetch",
+            Op::Split => "split",
+            Op::ParseJson => "parse-json",
+            Op::ToJson => "to-json",
+            Op::JsonGet => "json-get",
+            Op::JsonItems => "json-items",
+            Op::JsonStr => "json-str",
+            Op::JsonInt => "json-int",
+            Op::JsonBool => "json-bool",
         }
     }
 
@@ -142,9 +169,20 @@ impl Op {
     pub fn arity(self) -> Option<usize> {
         Some(match self {
             Op::Str => return None,
-            Op::Not | Op::IsNil | Op::Count | Op::First | Op::Rest | Op::Trim => 1,
+            Op::Not
+            | Op::IsNil
+            | Op::Count
+            | Op::First
+            | Op::Rest
+            | Op::Trim
+            | Op::ParseJson
+            | Op::ToJson
+            | Op::JsonItems
+            | Op::JsonStr
+            | Op::JsonInt
+            | Op::JsonBool => 1,
             Op::Assoc => 3,
-            Op::H => 4,
+            Op::H | Op::Fetch => 4,
             _ => 2,
         })
     }

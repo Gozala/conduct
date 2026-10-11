@@ -76,19 +76,19 @@
 
 (defn init [attrs] {:editing false})
 
-(defn stay [model] {:model model :emit []})
+(defn stay [model] {:model model :effects []})
 
 (defn update [model handler event attrs]
   (let [id (attr attrs "todo-id")]
     (cond
-      (= handler "toggle") {:model model :emit [(emit "todo-toggle" id)]}
-      (= handler "destroy") {:model model :emit [(emit "todo-destroy" id)]}
+      (= handler "toggle") {:model model :effects [(emit "todo-toggle" id)]}
+      (= handler "destroy") {:model model :effects [(emit "todo-destroy" id)]}
       (= handler "edit") (stay {:editing true})
       (and (= handler "key") (= (:key event) "Escape")) (stay {:editing false})
       (and (:editing model)
            (or (and (= handler "key") (= (:key event) "Enter")) (= handler "save")))
         {:model {:editing false}
-         :emit [(emit "todo-edit" (str id "\n" (?? (:value event) "")))]}
+         :effects [(emit "todo-edit" (str id "\n" (?? (:value event) "")))]}
       :else (stay model))))
 
 (defn view [model attrs]

@@ -185,9 +185,22 @@ pub fn signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) {
             (vec![Ty::dict(v.clone()), Ty::str()], Ty::dict(v))
         }
         Op::H => (vec![Ty::str(), Ty::dict(Ty::str()), Ty::list(Ty::Top), Ty::dict(Ty::str())], Ty::View),
-        Op::Emit => (vec![Ty::str(), Ty::str()], Ty::Emit),
+        Op::Emit => (vec![Ty::str(), Ty::str()], Ty::Effect),
         Op::Trim => (vec![Ty::str()], Ty::str()),
+        Op::Fetch => (vec![Ty::str(), Ty::str(), Ty::str(), Ty::str()], Ty::Effect),
+        Op::Split => (vec![Ty::str(), Ty::str()], Ty::list(Ty::str())),
+        Op::ParseJson => (vec![Ty::str()], json()),
+        Op::ToJson => (vec![Ty::Top], Ty::str()),
+        Op::JsonGet => (vec![json(), Ty::str()], json()),
+        Op::JsonItems => (vec![json()], Ty::list(json())),
+        Op::JsonStr => (vec![json()], Ty::str()),
+        Op::JsonInt => (vec![json()], Ty::int()),
+        Op::JsonBool => (vec![json()], Ty::bool()),
     }
+}
+
+fn json() -> Ty {
+    Ty::Prim(crate::types::Prim::Json)
 }
 
 /// `t | nil`, as a variable with both as lower bounds.
