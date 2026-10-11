@@ -300,6 +300,10 @@
     (if (i64.eq (local.get $v) (i64.const 0x0a)) (then (return (call $lit (i32.const 4) (i32.const 5)))))
     (local.set $k (call $kind (local.get $v)))
     (if (i32.eq (local.get $k) (i32.const 1)) (then (return (call $dup (local.get $v)))))
+    ;; A keyword prints with its colon.
+    (if (i32.eq (local.get $k) (i32.const 9))
+      (then (return (call $concat_owned (call $lit (i32.const 25) (i32.const 1))
+        (call $str_new (call $str_data (local.get $v)) (call $len (local.get $v)))))))
     (if (i32.eq (local.get $k) (i32.const 2))
       (then
         (local.set $out (call $lit (i32.const 9) (i32.const 1)))
@@ -322,7 +326,8 @@
     (if (i32.eqz (i32.and (call $is_obj (local.get $a)) (call $is_obj (local.get $b)))) (then (return (i32.const 0))))
     (local.set $k (call $kind (local.get $a)))
     (if (i32.ne (local.get $k) (call $kind (local.get $b))) (then (return (i32.const 0))))
-    (if (i32.eq (local.get $k) (i32.const 1)) (then (return (call $str_eq (local.get $a) (local.get $b)))))
+    (if (i32.or (i32.eq (local.get $k) (i32.const 1)) (i32.eq (local.get $k) (i32.const 9)))
+      (then (return (call $str_eq (local.get $a) (local.get $b)))))
     (if (i32.eq (local.get $k) (i32.const 4)) (then (return (call $dict_eq (local.get $a) (local.get $b)))))
     (local.set $pa (call $ptr (local.get $a)))
     (local.set $pb (call $ptr (local.get $b)))
@@ -906,6 +911,9 @@
     (if (i64.eq (local.get $v) (i64.const 0x0a)) (then (return (call $lit (i32.const 4) (i32.const 5)))))
     (local.set $k (call $kind (local.get $v)))
     (if (i32.eq (local.get $k) (i32.const 1)) (then (return (call $json_quote (local.get $v)))))
+    ;; A keyword is its name, as JSON has no keywords.
+    ;; It is laid out as a string, so it quotes as one.
+    (if (i32.eq (local.get $k) (i32.const 9)) (then (return (call $json_quote (local.get $v)))))
     (if (i32.eq (local.get $k) (i32.const 2))
       (then
         (local.set $out (call $lit (i32.const 9) (i32.const 1)))

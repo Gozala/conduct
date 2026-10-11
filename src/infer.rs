@@ -1,6 +1,6 @@
 //! Typing rules: the type of every term, with no annotations.
 
-use crate::term::{Hash, Op, Term};
+use crate::term::{Hash, Op, Pattern, Term};
 use crate::types::{Scheme, Solver, Ty, TypeError};
 
 pub enum Binding {
@@ -111,6 +111,60 @@ impl Infer<'_> {
                 let items = items.iter().map(|t| self.term(t, env, level)).collect::<Result<Vec<_>>>()?;
                 Ty::list(self.join(items, level)?)
             }
+            Term::Keyword(k) => Ty::keys([k.clone()]),
+            Term::Match(scrutinee, clauses, default) => {
+                let t = self.term(scrutinee, env, level)?;
+                if default.is_none() {
+                    // No `:else`: the value must be one the patterns
+                    // cover, so the match is exhaustive.
+                    let patterns: Vec<&Pattern> = clauses.iter().map(|(p, _)| p).collect();
+                    if let Some(shape) = cover_type(&patterns) {
+                        s.constrain(&t, &shape).map_err(|e| {
+                            TypeError(format!("a `match` without `:else` must cover every value it is given: {e}"))
+                        })?;
+                    }
+                }
+                // The local the value was read from, and the fields it
+                // was read through, outermost last.
+                let mut path = Vec::new();
+                let mut at = &**scrutinee;
+                while let Term::Field(name, inner) = at {
+                    path.push(name.clone());
+                    at = inner;
+                }
+                path.reverse();
+                let local = if let Term::Local(i) = at { Some(env.len() - 1 - *i as usize) } else { None };
+                let mut results = Vec::new();
+                for (pattern, result) in clauses {
+                    // Each pattern narrows what it tested: in its branch,
+                    // the local has the matched shape.
+                    let narrowed = match local {
+                        Some(slot) => {
+                            let base = match &env[slot] {
+                                Binding::Mono(t) => t.clone(),
+                                Binding::Poly(scheme) => s.instantiate(scheme, level),
+                            };
+                            let shape = self.narrow(base, &path, pattern, level)?;
+                            let bound = s.fresh_ty(level);
+                            s.constrain(&shape, &bound)?;
+                            Some((slot, std::mem::replace(&mut env[slot], Binding::Mono(bound))))
+                        }
+                        None => {
+                            self.narrow(t.clone(), &[], pattern, level)?;
+                            None
+                        }
+                    };
+                    let r = self.term(result, env, level);
+                    if let Some((slot, before)) = narrowed {
+                        env[slot] = before;
+                    }
+                    results.push(r?);
+                }
+                if let Some(d) = default {
+                    results.push(self.term(d, env, level)?);
+                }
+                self.join(results, level)?
+            }
             Term::Prim(op, args) => {
                 let args = args.iter().map(|a| self.term(a, env, level)).collect::<Result<Vec<_>>>()?;
                 let (params, ret) = signature(s, *op, args.len(), level);
@@ -119,6 +173,35 @@ impl Infer<'_> {
                         .map_err(|e| TypeError(format!("argument {} of `{}`: {e}", i + 1, op.name())))?;
                 }
                 ret
+            }
+        })
+    }
+
+    /// `t` as it is known to be where `pattern` matched it, read through
+    /// the fields of `path`: each field read is narrowed in place, as a
+    /// record update narrows one field.
+    fn narrow(&self, t: Ty, path: &[String], pattern: &Pattern, level: u32) -> Result<Ty> {
+        let s = self.solver;
+        if let Some((name, rest)) = path.split_first() {
+            let field = s.fresh_ty(level);
+            s.constrain(&t, &Ty::record([(name.clone(), field.clone())]))?;
+            let inner = self.narrow(field, rest, pattern, level)?;
+            return Ok(Ty::update(t, name.clone(), inner));
+        }
+        Ok(match pattern {
+            Pattern::Keyword(k) => Ty::keys([k.clone()]),
+            Pattern::Str(_) => Ty::str(),
+            Pattern::Int(_) => Ty::int(),
+            Pattern::Nil => Ty::nil(),
+            Pattern::Some => Ty::without(t),
+            Pattern::Fields(fields) => {
+                let mut out = t.clone();
+                for (name, p) in fields {
+                    let field = s.fresh_ty(level);
+                    s.constrain(&t, &Ty::record([(name.clone(), field.clone())]))?;
+                    out = Ty::update(out, name.clone(), self.narrow(field, &[], p, level)?);
+                }
+                out
             }
         })
     }
@@ -209,4 +292,26 @@ fn optional(s: &Solver, t: Ty, level: u32) -> Ty {
     out.lower.borrow_mut().push(t);
     out.lower.borrow_mut().push(Ty::nil());
     Ty::Var(out)
+}
+
+/// The type a value must have for patterns that cover it to cover it:
+/// the keywords named, or a record whose one field is covered. `nil`
+/// with `some?` covers anything.
+fn cover_type(patterns: &[&Pattern]) -> Option<Ty> {
+    if patterns.iter().all(|p| matches!(p, Pattern::Keyword(_))) {
+        return Some(Ty::keys(patterns.iter().filter_map(|p| match p {
+            Pattern::Keyword(k) => Some(k.clone()),
+            _ => None,
+        })));
+    }
+    let Some(Pattern::Fields(first)) = patterns.first() else { return None };
+    let name = first.first()?.0.clone();
+    let inner: Vec<&Pattern> = patterns
+        .iter()
+        .filter_map(|p| match p {
+            Pattern::Fields(fs) => fs.first().map(|f| &f.1),
+            _ => None,
+        })
+        .collect();
+    Some(Ty::record([(name, cover_type(&inner).unwrap_or(Ty::Top))]))
 }

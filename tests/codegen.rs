@@ -192,3 +192,47 @@ fn split_strings() {
     assert_eq!(run(src, "whole", &[]), Value::List(vec![s("abc")]));
     assert_eq!(run(src, "edges", &[]), Value::List(vec![s(""), s("a"), s("")]));
 }
+
+#[test]
+fn keywords_and_match() {
+    let src = r#"
+(defn label [s] (match s :active "Active" :suspended "Paused"))
+(defn handle [h n] (match h "inc" (+ n 1) "dec" (- n 1) :else n))
+(def labels [(label :active) (label :suspended)])
+(def handled [(handle "inc" 1) (handle "dec" 1) (handle "other" 1)])
+(def shown (str :active " " (to-json [:done "x"])))
+(def same [(= :a :a) (= :a :b) (= :a "a")])
+(defn status [job] (match (:status job) :active (str "Since " (:since job)) :suspended "paused"))
+(def described [(status {:status :active :since "May"}) (status {:status :suspended :since ""})])
+(def kept (match {:k [1 2]} :x [] :else [3]))
+"#;
+    let strs = |v: &[&str]| Value::List(v.iter().map(|s| Value::Str(s.to_string())).collect());
+    assert_eq!(run(src, "labels", &[]), strs(&["Active", "Paused"]));
+    assert_eq!(run(src, "handled", &[]), Value::List(vec![Value::Int(2), Value::Int(0), Value::Int(1)]));
+    assert_eq!(run(src, "shown", &[]), Value::Str(r#":active ["done","x"]"#.into()));
+    assert_eq!(run(src, "same", &[]), Value::List(vec![Value::Bool(true), Value::Bool(false), Value::Bool(false)]));
+    assert_eq!(run(src, "described", &[]), strs(&["Since May", "paused"]));
+    assert_eq!(run(src, "kept", &[]), Value::List(vec![Value::Int(3)]));
+    assert_eq!(run("(def k :ok)", "k", &[]), Value::Keyword("ok".into()));
+}
+
+#[test]
+fn matching_shapes() {
+    let src = r#"
+(defn since [job] (match (:started-at job) nil "not started" some? (str "Since " (:started-at job))))
+(defn describe [job]
+  (match job
+    {:status :active :owner {:name "ann"}} "ann's"
+    {:status :active} (str "Since " (:since job))
+    {:status :suspended} "paused"
+    :else "other"))
+(def a [(since {:started-at nil}) (since {:started-at "May"})])
+(def b [(describe {:status :active :since "May" :owner {:name "ann"}})
+        (describe {:status :active :since "May" :owner {:name "bo"}})
+        (describe {:status :suspended :since "" :owner {:name ""}})
+        (describe {:status :gone :since "" :owner {:name ""}})])
+"#;
+    let strs = |v: &[&str]| Value::List(v.iter().map(|s| Value::Str(s.to_string())).collect());
+    assert_eq!(run(src, "a", &[]), strs(&["not started", "Since May"]));
+    assert_eq!(run(src, "b", &[]), strs(&["ann's", "Since May", "paused", "other"]));
+}

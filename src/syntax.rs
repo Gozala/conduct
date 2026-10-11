@@ -3,6 +3,7 @@
 //! name-free terms that can be hashed.
 
 use crate::reader::{Sexp, Span};
+pub use crate::term::Pattern;
 use std::fmt;
 
 #[derive(Clone, Debug)]
@@ -29,6 +30,12 @@ pub enum Expr {
     Update(Box<Expr>, String, Box<Expr>),
     Dict(Vec<(String, Expr)>),
     List(Vec<Expr>),
+    /// `:active`: a keyword, a value whose type is that keyword alone.
+    Keyword(String),
+    /// `(match e p1 r1 p2 r2 ... :else r)`: the result of the first
+    /// pattern `e` matches. Without `:else`, the patterns must be able to
+    /// cover every value (see [`Pattern::cover`]).
+    Match(Box<Expr>, Vec<(Pattern, Expr)>, Option<Box<Expr>>),
 }
 
 /// A top-level definition, before resolution.
@@ -61,7 +68,7 @@ fn err<T>(message: impl Into<String>, span: Span) -> Result<T> {
 
 /// Words that cannot name a definition or a local.
 const RESERVED: &[&str] =
-    &["def", "defn", "fn", "let", "if", "if-some", "??", "and", "or", "cond", "nil", "true", "false"];
+    &["def", "defn", "fn", "let", "if", "if-some", "??", "and", "or", "cond", "match", "nil", "true", "false"];
 
 /// Parse top-level forms into definitions.
 pub fn defs(forms: &[Sexp]) -> Result<Vec<Def>> {
@@ -129,7 +136,7 @@ pub fn expr(form: &Sexp) -> Result<Expr> {
             "false" => Expr::Bool(false),
             _ => Expr::Var(name.clone(), *span),
         }),
-        Sexp::Keyword(k, span) => err(format!("a keyword is not a value; use `(:{k} record)` to read a field"), *span),
+        Sexp::Keyword(k, _) => Ok(Expr::Keyword(k.clone())),
         Sexp::Vector(items, _) => Ok(Expr::List(items.iter().map(expr).collect::<Result<_>>()?)),
         Sexp::Map(items, span) => map_literal(items, *span),
         Sexp::List(items, span) => list_form(items, *span),
@@ -259,6 +266,7 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
                 }
                 return Ok(out);
             }
+            "match" => return match_form(args, span),
             _ => {}
         }
         if name == "assoc"
@@ -270,4 +278,78 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
     let callee = expr(head)?;
     let args = args.iter().map(expr).collect::<Result<Vec<_>>>()?;
     Ok(Expr::App(Box::new(callee), args, span))
+}
+
+fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
+    let Some((scrutinee, clauses)) = args.split_first() else {
+        return err("`match` takes a value and pairs of a pattern and a result", span);
+    };
+    if clauses.is_empty() || !clauses.len().is_multiple_of(2) {
+        return err("`match` takes a value and pairs of a pattern and a result", span);
+    }
+    let mut arms: Vec<(Pattern, Expr)> = Vec::new();
+    let mut default = None;
+    let pairs: Vec<&[Sexp]> = clauses.chunks(2).collect();
+    for (i, pair) in pairs.iter().enumerate() {
+        if let Sexp::Keyword(k, kspan) = &pair[0]
+            && k == "else"
+        {
+            if i + 1 != pairs.len() {
+                return err("`:else` must be the last clause of a `match`", *kspan);
+            }
+            default = Some(boxed(&pair[1])?);
+            continue;
+        }
+        let pattern = pattern(&pair[0])?;
+        if arms.iter().any(|(p, _)| *p == pattern) {
+            return err(format!("the pattern `{}` appears twice", pair[0]), pair[0].span());
+        }
+        arms.push((pattern, expr(&pair[1])?));
+    }
+    if arms.is_empty() {
+        return err("a `match` needs a pattern besides `:else`", span);
+    }
+    // Keywords are a closed set the type checker can see the whole of;
+    // strings and integers never are, so leaving them out must be said.
+    if default.is_none() && !Pattern::cover(&arms.iter().map(|(p, _)| p).collect::<Vec<_>>()) {
+        return err(
+            "this `match` cannot cover every value without `:else`: only keywords, `nil` with `some?`, \
+             or one field matched against those can",
+            span,
+        );
+    }
+    Ok(Expr::Match(boxed(scrutinee)?, arms, default))
+}
+
+fn pattern(form: &Sexp) -> Result<Pattern> {
+    Ok(match form {
+        Sexp::Keyword(k, _) => Pattern::Keyword(k.clone()),
+        Sexp::Str(s, _) => Pattern::Str(s.clone()),
+        Sexp::Int(n, _) => Pattern::Int(*n),
+        Sexp::Symbol(s, _) if s == "nil" => Pattern::Nil,
+        Sexp::Symbol(s, _) if s == "some?" => Pattern::Some,
+        Sexp::Map(items, mspan) if !items.is_empty() && items.len().is_multiple_of(2) => {
+            let mut fields: Vec<(String, Pattern)> = Vec::new();
+            for pair in items.chunks(2) {
+                let Sexp::Keyword(name, kspan) = &pair[0] else {
+                    return err("a record pattern's keys are keywords", pair[0].span());
+                };
+                if fields.iter().any(|(n, _)| n == name) {
+                    return err(format!("field `:{name}` appears twice"), *kspan);
+                }
+                fields.push((name.clone(), pattern(&pair[1])?));
+            }
+            let _ = mspan;
+            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            Pattern::Fields(fields)
+        }
+        other => {
+            return err(
+                format!(
+                    "a `match` pattern is a keyword, string, or integer, `nil`, `some?`, or a record of those, not `{other}`"
+                ),
+                other.span(),
+            );
+        }
+    })
 }

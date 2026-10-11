@@ -188,32 +188,31 @@
 
 (defn update [model handler event attrs]
   (let [value (?? (:value event) "")]
-    (cond
+    (match handler
       ;; Loading the list.
-      (= handler "connected") (with model [(load attrs)])
-      (and (= handler "attribute-changed") (= value "filter")) (with model [(load attrs)])
-      (= handler "loaded") (with (loaded model value) [])
-      (= handler "changed") (with model [(load attrs)])
+      "connected" (with model [(load attrs)])
+      "attribute-changed" (with model (if (= value "filter") [(load attrs)] []))
+      "loaded" (with (loaded model value) [])
+      "changed" (with model [(load attrs)])
       ;; The steps of the reveal, which call no route.
-      (= handler "measured")
+      "measured"
         (with (assoc (assoc model :height value)
                      :phase (if (= (:phase model) "measuring") "revealing" (:phase model)))
               [])
-      (= handler "revealed")
-        (with (assoc model :phase (if (= (:phase model) "revealing") "shown" (:phase model))) [])
-      (= handler "about") (with (assoc model :about (not (:about model))) [])
+      "revealed" (with (assoc model :phase (if (= (:phase model) "revealing") "shown" (:phase model))) [])
+      "about" (with (assoc model :about (not (:about model))) [])
       ;; What a person did.
-      (= handler "add") (with model [(change "POST" "/api/todos" (to-json {"title" value}))])
-      (= handler "toggleAll")
-        (with model [(change "PATCH" "/api/todos" (to-json {"completed" (= value "true")}))])
-      (= handler "toggle")
+      "add" (with model [(change "POST" "/api/todos" (to-json {"title" value}))])
+      "toggleAll" (with model [(change "PATCH" "/api/todos" (to-json {"completed" (= value "true")}))])
+      "toggle"
         (if-some [todo (find-todo model value)]
           (with model [(change "PATCH" (str "/api/todos/" (:id todo))
                                (to-json {"completed" (not (:completed todo))}))])
           (with model []))
-      (= handler "destroy") (with model [(change "DELETE" (str "/api/todos/" value) "")])
-      (= handler "edit") (with model [(edit value)])
-      (= handler "clear") (with model [(change "DELETE" "/api/todos" "")])
+      "destroy" (with model [(change "DELETE" (str "/api/todos/" value) "")])
+      "edit" (with model [(edit value)])
+      "clear" (with model [(change "DELETE" "/api/todos" "")])
+      ;; A handler the element does not know changes nothing.
       :else (with model []))))
 
 ;; The view

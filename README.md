@@ -83,6 +83,17 @@ generator on Wasmtime, and the element on the polyfill.
 (str "id: " 42)                         ; any values, as text
 (= a b)                                 ; structural, for every value
 
+:active                                 ; a keyword: its type is :active
+
+(match status                           ; the first pattern that matches
+  :active "Active"
+  :suspended "Paused")                  ; no :else: status is :active | :suspended
+(match handler "add" 1 "clear" 2 :else 0)   ; strings need :else
+(match job                              ; record patterns narrow `job`
+  {:status :active} (str "Since " (:since job))
+  {:status :suspended} "paused")
+(match (:n job) nil 0 some? (+ (:n job) 1)) ; here (:n job) is not nil
+
 (?? (get attrs "title") "untitled")     ; nil-coalescing
 (if-some [t (get attrs "title")]        ; t is a String here, not String | nil
   t
@@ -126,6 +137,31 @@ optional is expected, and nothing is wrapped. To use the value,
 `if-some` and `??` remove `nil` from its type. That is one addition to
 Simple-sub, a type `t \ nil` that may only flow into things: the one case
 of MLstruct's negation types (`t & ¬nil`) that optionals need first.
+
+### Matching
+
+A keyword is a value whose type is the set of just itself, and keyword
+sets are ordered by inclusion, so `(if b :active :suspended)` is
+`:active | :suspended`. `match` tests a value against patterns in order:
+keyword, string, and integer literals, `nil`, `some?`, and records of
+patterns. Each clause narrows what it tested inside its branch, the way
+a check narrows a value in TypeScript: matching `(:n job)` against
+`some?` makes `(:n job)` not nil in that branch, and matching `job`
+against `{:status :active}` makes its status `:active`. A narrowed field
+is typed like a record update, so this needed no new machinery.
+
+A `match` without `:else` must be able to cover every value: its
+patterns are all keywords, or `nil` and `some?`, or one field matched
+against those in every clause. Then the match constrains its value to
+what it covers, and leaving a case out is a type error. With no
+annotations, nothing else says what the value may be, so that error
+appears where a value outside the cases flows in, `(describe {:status
+:done})`, not at the match. Any other `match` must end with `:else`.
+
+What narrowing does not cover is a predicate you define:
+`(defn active? [j] ...)` returns a `Bool`, and what its being true says
+about its argument is not part of its type. That would take Typed
+Racket's occurrence typing, inferred without annotations.
 
 Equality and `str` work on any value, so there is no type class
 machinery: `=` takes `(Any, Any)`.
@@ -243,8 +279,9 @@ The demo's other parts each need something this slice does not have:
    world's imports) has to exist.
 2. **In-place reuse**: Perceus's reuse analysis, so that updating a
    uniquely owned list or record writes into it instead of copying.
-3. **Sum types**: matching on variants needs MLstruct's negation types in
-   general, not just `t \ nil`.
+3. **Narrowing in later clauses**: a clause does not learn that the ones
+   before it failed. That needs MLstruct's negation types in general,
+   not just `t \ nil`.
 4. **The codebase in Dialog**: definitions as facts, names as assertions
    that point at hashes.
 5. **The compiler in the browser**: its dependencies are pure Rust, but

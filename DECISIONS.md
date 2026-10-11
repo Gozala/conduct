@@ -3,6 +3,29 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Slice 5: keywords and match
+
+- **A keyword is its own type, and keyword sets form a lattice by
+  inclusion.** No general unions are needed for them, and the solver
+  checks one set against another directly.
+- **Exhaustiveness by construction.** A `match` without `:else`
+  constrains its value to what its patterns cover, so a missing case is
+  an error where an uncovered value flows in. With no annotations there
+  is nothing else to check the match against; a Dialog schema's listed
+  domain could be that something later.
+- **`:else` is required wherever the patterns cannot cover** (strings,
+  integers, mixed shapes), as `cond` requires it.
+- **Narrowing from patterns, not predicates.** Each clause narrows the
+  local it tested, directly or through a path of fields, by typing the
+  narrowed fields as a record update does. Narrowing from user-defined
+  predicates would need propositions in function types (Typed Racket's
+  occurrence typing). Named patterns are the cheaper way to name a shape.
+- **A clause learns nothing from the ones before it.** That needs
+  negation types. With exhaustive matches on one field, it rarely
+  matters.
+- **Keywords print with their colon in `str` and as their name in
+  JSON.** A view attribute wanting the bare name has to match on it.
+
 ## Slice 4: requests
 
 - **The async ABI's callback form, not blocking.** A synchronously

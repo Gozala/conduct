@@ -13,7 +13,7 @@
 //! (`t & ¬nil`) that set-style optionals need first.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -67,6 +67,10 @@ pub enum Ty {
     /// A record with one field set: what `(assoc r :k v)` returns. Like
     /// `Without`, it only flows into things.
     Update(Rc<Ty>, String, Rc<Ty>),
+    /// One of a finite set of keywords. A keyword literal is the set of
+    /// itself; sets are ordered by inclusion, so they form a lattice of
+    /// their own and a union of them is never needed.
+    Keys(Rc<BTreeSet<String>>),
 }
 
 impl Ty {
@@ -101,6 +105,10 @@ impl Ty {
         }
     }
 
+    pub fn keys(keys: impl IntoIterator<Item = String>) -> Ty {
+        Ty::Keys(Rc::new(keys.into_iter().collect()))
+    }
+
     pub fn update(record: Ty, field: String, value: Ty) -> Ty {
         Ty::Update(Rc::new(record), field, Rc::new(value))
     }
@@ -133,6 +141,7 @@ impl Ty {
             Ty::Dict(t) => (9, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Without(t) => (10, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Update(r, _, _) => (11, Rc::as_ptr(r) as *const u8 as usize),
+            Ty::Keys(k) => (12, Rc::as_ptr(k) as *const u8 as usize),
         }
     }
 }
@@ -209,6 +218,17 @@ impl Solver {
             // JSON's `null` is nil, so nil is a JSON value.
             (Ty::Prim(Prim::Nil), Ty::Prim(Prim::Json)) => Ok(()),
             (Ty::View, Ty::View) | (Ty::Effect, Ty::Effect) => Ok(()),
+            (Ty::Keys(a), Ty::Keys(b)) => {
+                let missing: Vec<&String> = a.difference(b).collect();
+                if missing.is_empty() {
+                    return Ok(());
+                }
+                Err(TypeError(format!(
+                    "{} is not one of {}",
+                    missing.iter().map(|k| format!(":{k}")).collect::<Vec<_>>().join(" | "),
+                    keys_text(b)
+                )))
+            }
             (Ty::Fn(p0, r0), Ty::Fn(p1, r1)) => {
                 if p0.len() != p1.len() {
                     return Err(TypeError(format!(
@@ -426,8 +446,13 @@ impl fmt::Display for Shallow<'_> {
             Ty::Dict(_) => write!(f, "Dict"),
             Ty::Without(t) => write!(f, "{} without nil", Shallow(t)),
             Ty::Update(r, k, _) => write!(f, "{} with `:{k}` set", Shallow(r)),
+            Ty::Keys(k) => write!(f, "{}", keys_text(k)),
         }
     }
+}
+
+fn keys_text(keys: &BTreeSet<String>) -> String {
+    keys.iter().map(|k| format!(":{k}")).collect::<Vec<_>>().join(" | ")
 }
 
 /// A type as shown to a person: variables' bounds turned into unions
@@ -449,6 +474,7 @@ pub enum Type {
     Rec(u32, Box<Type>),
     Without(Box<Type>),
     Update(Box<Type>, String, Box<Type>),
+    Keys(BTreeSet<String>),
 }
 
 /// Turn an inferred type into a displayable one and simplify it.
@@ -472,6 +498,7 @@ fn coalesce_go(
         Ty::Prim(p) => Type::Prim(*p),
         Ty::View => Type::View,
         Ty::Effect => Type::Effect,
+        Ty::Keys(k) => Type::Keys((**k).clone()),
         Ty::Fn(params, ret) => Type::Fn(
             params.iter().map(|p| coalesce_go(p, !pol, in_process, recursive, next)).collect(),
             Box::new(coalesce_go(ret, pol, in_process, recursive, next)),
@@ -748,6 +775,7 @@ fn normalize(ty: Type) -> Type {
             }
             merge_records(&mut out, true);
             merge_containers(&mut out, true);
+            merge_keys(&mut out, true);
             out.sort_by(display_order);
             out.dedup();
             match out.len() {
@@ -770,6 +798,10 @@ fn normalize(ty: Type) -> Type {
             }
             merge_records(&mut out, false);
             merge_containers(&mut out, false);
+            merge_keys(&mut out, false);
+            if out.contains(&Type::Bot) {
+                return Type::Bot;
+            }
             out.sort_by(display_order);
             out.dedup();
             match out.len() {
@@ -793,6 +825,23 @@ fn display_order(a: &Type, b: &Type) -> std::cmp::Ordering {
         }
     }
     rank(a).cmp(&rank(b)).then_with(|| a.cmp(b))
+}
+
+/// Keyword sets: a union of sets is their union, an intersection their
+/// intersection, which may be empty.
+fn merge_keys(parts: &mut Vec<Type>, union: bool) {
+    let sets: Vec<BTreeSet<String>> =
+        parts.iter().filter_map(|t| if let Type::Keys(k) = t { Some(k.clone()) } else { None }).collect();
+    if sets.len() < 2 {
+        return;
+    }
+    parts.retain(|t| !matches!(t, Type::Keys(_)));
+    let mut sets = sets.into_iter();
+    let first = sets.next().unwrap();
+    let merged = sets.fold(first, |acc, s| {
+        if union { acc.union(&s).cloned().collect() } else { acc.intersection(&s).cloned().collect() }
+    });
+    parts.push(if merged.is_empty() { Type::Bot } else { Type::Keys(merged) });
 }
 
 /// Lists and dictionaries are covariant: a union of lists is a list of
@@ -931,6 +980,8 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
         Type::Prim(p) => write!(f, "{}", p.name()),
         Type::View => write!(f, "View"),
         Type::Effect => write!(f, "Effect"),
+        Type::Keys(k) if k.len() == 1 || prec <= 1 => write!(f, "{}", keys_text(k)),
+        Type::Keys(k) => write!(f, "({})", keys_text(k)),
         Type::Var(v) => write!(f, "{}", var(*v)),
         Type::Fn(params, ret) => {
             if prec > 0 {
@@ -980,7 +1031,11 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
                 if i > 0 {
                     write!(f, "{sep}")?;
                 }
-                write_type(t, f, my + 1)?;
+                match t {
+                    // A keyword set is already a union.
+                    Type::Keys(k) if my == 1 => write!(f, "{}", keys_text(k))?,
+                    _ => write_type(t, f, my + 1)?,
+                }
             }
             if prec > my {
                 write!(f, ")")?;
