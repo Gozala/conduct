@@ -13,8 +13,12 @@ it. Newest first.
   an error where an uncovered value flows in. With no annotations there
   is nothing else to check the match against; a Dialog schema's listed
   domain could be that something later.
-- **`:else` is required wherever the patterns cannot cover** (strings,
-  integers, mixed shapes), as `cond` requires it.
+- **`_`, not `:else`, ends a `match`.** In Dialog's notation a keyword
+  is an entity (`:uri` is `uri:`), so `:else` must stay a value a match
+  can test for. `_` is the default clause and, in a record pattern, a
+  field that only has to be there. It is required wherever the patterns
+  cannot cover (strings, integers, mixed shapes). `cond` still ends with
+  `:else`, which it reads as syntax; it should follow.
 - **Narrowing from patterns, not predicates.** Each clause narrows the
   local it tested, directly or through a path of fields, by typing the
   narrowed fields as a record update does. Narrowing from user-defined

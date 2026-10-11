@@ -197,14 +197,14 @@ fn split_strings() {
 fn keywords_and_match() {
     let src = r#"
 (defn label [s] (match s :active "Active" :suspended "Paused"))
-(defn handle [h n] (match h "inc" (+ n 1) "dec" (- n 1) :else n))
+(defn handle [h n] (match h "inc" (+ n 1) "dec" (- n 1) _ n))
 (def labels [(label :active) (label :suspended)])
 (def handled [(handle "inc" 1) (handle "dec" 1) (handle "other" 1)])
 (def shown (str :active " " (to-json [:done "x"])))
 (def same [(= :a :a) (= :a :b) (= :a "a")])
 (defn status [job] (match (:status job) :active (str "Since " (:since job)) :suspended "paused"))
 (def described [(status {:status :active :since "May"}) (status {:status :suspended :since ""})])
-(def kept (match {:k [1 2]} :x [] :else [3]))
+(def kept (match {:k [1 2]} :x [] _ [3]))
 "#;
     let strs = |v: &[&str]| Value::List(v.iter().map(|s| Value::Str(s.to_string())).collect());
     assert_eq!(run(src, "labels", &[]), strs(&["Active", "Paused"]));
@@ -225,7 +225,7 @@ fn matching_shapes() {
     {:status :active :owner {:name "ann"}} "ann's"
     {:status :active} (str "Since " (:since job))
     {:status :suspended} "paused"
-    :else "other"))
+    {:status _} "other"))
 (def a [(since {:started-at nil}) (since {:started-at "May"})])
 (def b [(describe {:status :active :since "May" :owner {:name "ann"}})
         (describe {:status :active :since "May" :owner {:name "bo"}})

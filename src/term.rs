@@ -224,8 +224,8 @@ pub enum Term {
     List(Vec<Term>),
     Prim(Op, Vec<Term>),
     Keyword(String),
-    /// The scrutinee, each clause's pattern and result, and the `:else`
-    /// result if there is one.
+    /// The scrutinee, each clause's pattern and result, and the result of
+    /// the final `_` clause if there is one.
     Match(Box<Term>, Vec<(Pattern, Term)>, Option<Box<Term>>),
 }
 
@@ -239,6 +239,9 @@ pub enum Pattern {
     Nil,
     /// The value is not `nil`: `some?`.
     Some,
+    /// Any value: `_`. At the top of a clause it is the last clause; in
+    /// a record pattern it only asks that the field be there.
+    Any,
     /// A record whose fields match their patterns, sorted by name.
     Fields(Vec<(String, Pattern)>),
 }
@@ -264,6 +267,7 @@ impl Pattern {
             }
             Pattern::Nil => out.push(3),
             Pattern::Some => out.push(4),
+            Pattern::Any => out.push(6),
             Pattern::Fields(fields) => {
                 out.push(5);
                 out.extend_from_slice(&(fields.len() as u32).to_le_bytes());
@@ -275,11 +279,21 @@ impl Pattern {
         }
     }
 
-    /// Whether these patterns, without `:else`, can cover every value
+    /// Whether the pattern matches every value its fields' reads accept:
+    /// `_`, or a record of `_`s.
+    pub fn irrefutable(&self) -> bool {
+        match self {
+            Pattern::Any => true,
+            Pattern::Fields(fields) => fields.iter().all(|(_, p)| p.irrefutable()),
+            _ => false,
+        }
+    }
+
+    /// Whether these patterns, without a `_` clause, can cover every value
     /// the match is given: all keywords, or `nil` and `some?`, or one
     /// field, the same in each, whose patterns cover.
     pub fn cover(patterns: &[&Pattern]) -> bool {
-        if patterns.iter().all(|p| matches!(p, Pattern::Keyword(_))) {
+        if patterns.iter().all(|p| matches!(p, Pattern::Keyword(_))) || patterns.iter().any(|p| p.irrefutable()) {
             return true;
         }
         if patterns.len() == 2 && patterns.contains(&&Pattern::Nil) && patterns.contains(&&Pattern::Some) {
