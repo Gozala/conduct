@@ -56,7 +56,8 @@ pub enum Ty {
     Top,
     Bot,
     Prim(Prim),
-    Fn(Rc<Vec<Ty>>, Rc<Ty>),
+    /// Parameters, result, and effect: the capabilities a call may use.
+    Fn(Rc<Vec<Ty>>, Rc<Ty>, Rc<Ty>),
     Record(Rc<BTreeMap<String, Ty>>),
     List(Rc<Ty>),
     Dict(Rc<Ty>),
@@ -71,6 +72,9 @@ pub enum Ty {
     /// itself; sets are ordered by inclusion, so they form a lattice of
     /// their own and a union of them is never needed.
     Keys(Rc<BTreeSet<String>>),
+    /// A set of capabilities, ordered by inclusion like keyword sets. The
+    /// empty set is pure.
+    Caps(Rc<BTreeSet<String>>),
 }
 
 impl Ty {
@@ -87,7 +91,17 @@ impl Ty {
         Ty::Prim(Prim::Nil)
     }
     pub fn func(params: Vec<Ty>, ret: Ty) -> Ty {
-        Ty::Fn(Rc::new(params), Rc::new(ret))
+        Ty::Fn(Rc::new(params), Rc::new(ret), Rc::new(Ty::pure()))
+    }
+    /// A function that may use the capabilities of `effect`.
+    pub fn func_eff(params: Vec<Ty>, ret: Ty, effect: Ty) -> Ty {
+        Ty::Fn(Rc::new(params), Rc::new(ret), Rc::new(effect))
+    }
+    pub fn pure() -> Ty {
+        Ty::Caps(Rc::new(BTreeSet::new()))
+    }
+    pub fn caps(caps: impl IntoIterator<Item = String>) -> Ty {
+        Ty::Caps(Rc::new(caps.into_iter().collect()))
     }
     pub fn record(fields: impl IntoIterator<Item = (String, Ty)>) -> Ty {
         Ty::Record(Rc::new(fields.into_iter().collect()))
@@ -117,7 +131,9 @@ impl Ty {
     pub fn level(&self) -> u32 {
         match self {
             Ty::Var(v) => v.level,
-            Ty::Fn(params, ret) => params.iter().map(Ty::level).max().unwrap_or(0).max(ret.level()),
+            Ty::Fn(params, ret, eff) => {
+                params.iter().map(Ty::level).max().unwrap_or(0).max(ret.level()).max(eff.level())
+            }
             Ty::Record(fields) => fields.values().map(Ty::level).max().unwrap_or(0),
             Ty::List(t) | Ty::Dict(t) | Ty::Without(t) => t.level(),
             Ty::Update(r, _, v) => r.level().max(v.level()),
@@ -135,13 +151,14 @@ impl Ty {
             Ty::View => (3, 0),
             Ty::Effect => (4, 0),
             Ty::Var(v) => (5, v.id as usize),
-            Ty::Fn(params, _) => (6, Rc::as_ptr(params) as *const u8 as usize),
+            Ty::Fn(params, _, _) => (6, Rc::as_ptr(params) as *const u8 as usize),
             Ty::Record(fields) => (7, Rc::as_ptr(fields) as *const u8 as usize),
             Ty::List(t) => (8, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Dict(t) => (9, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Without(t) => (10, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Update(r, _, _) => (11, Rc::as_ptr(r) as *const u8 as usize),
             Ty::Keys(k) => (12, Rc::as_ptr(k) as *const u8 as usize),
+            Ty::Caps(c) => (13, Rc::as_ptr(c) as *const u8 as usize),
         }
     }
 }
@@ -229,7 +246,7 @@ impl Solver {
                     keys_text(b)
                 )))
             }
-            (Ty::Fn(p0, r0), Ty::Fn(p1, r1)) => {
+            (Ty::Fn(p0, r0, e0), Ty::Fn(p1, r1, e1)) => {
                 if p0.len() != p1.len() {
                     return Err(TypeError(format!(
                         "a function of {} argument(s) is called with {}",
@@ -240,7 +257,20 @@ impl Solver {
                 for (a, b) in p0.iter().zip(p1.iter()) {
                     self.go(b, a, cache)?;
                 }
-                self.go(r0, r1, cache)
+                self.go(r0, r1, cache)?;
+                self.go(e0, e1, cache)
+            }
+            (Ty::Caps(a), Ty::Caps(b)) => {
+                let extra: Vec<&String> = a.difference(b).collect();
+                if extra.is_empty() {
+                    return Ok(());
+                }
+                let named = extra.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ");
+                Err(TypeError(if b.is_empty() {
+                    format!("this uses {named}, where only pure code is allowed")
+                } else {
+                    format!("this uses {named}, where only {} may be used", caps_text(b))
+                }))
             }
             (Ty::Record(f0), Ty::Record(f1)) => {
                 for (name, t1) in f1.iter() {
@@ -334,9 +364,10 @@ impl Solver {
             return ty.clone();
         }
         match ty {
-            Ty::Fn(params, ret) => Ty::func(
+            Ty::Fn(params, ret, eff) => Ty::func_eff(
                 params.iter().map(|p| self.extrude(p, !pol, level, cache)).collect(),
                 self.extrude(ret, pol, level, cache),
+                self.extrude(eff, pol, level, cache),
             ),
             Ty::Record(fields) => {
                 Ty::record(fields.iter().map(|(k, t)| (k.clone(), self.extrude(t, pol, level, cache))))
@@ -401,9 +432,10 @@ impl Solver {
                 *nv.filtered.borrow_mut() = f;
                 Ty::Var(nv)
             }
-            Ty::Fn(params, ret) => Ty::func(
+            Ty::Fn(params, ret, eff) => Ty::func_eff(
                 params.iter().map(|p| self.freshen(p, limit, level, map)).collect(),
                 self.freshen(ret, limit, level, map),
+                self.freshen(eff, limit, level, map),
             ),
             Ty::Record(fields) => {
                 Ty::record(fields.iter().map(|(k, t)| (k.clone(), self.freshen(t, limit, level, map))))
@@ -431,7 +463,8 @@ impl fmt::Display for Shallow<'_> {
             Ty::View => write!(f, "View"),
             Ty::Effect => write!(f, "Effect"),
             Ty::Var(_) => write!(f, "a value whose type is still being inferred"),
-            Ty::Fn(params, _) => write!(f, "a function of {} argument(s)", params.len()),
+            Ty::Fn(params, _, _) => write!(f, "a function of {} argument(s)", params.len()),
+            Ty::Caps(c) => write!(f, "{}", caps_text(c)),
             Ty::Record(fields) => {
                 write!(f, "{{")?;
                 for (i, name) in fields.keys().enumerate() {
@@ -451,6 +484,10 @@ impl fmt::Display for Shallow<'_> {
     }
 }
 
+fn caps_text(caps: &BTreeSet<String>) -> String {
+    format!("{{{}}}", caps.iter().cloned().collect::<Vec<_>>().join(", "))
+}
+
 fn keys_text(keys: &BTreeSet<String>) -> String {
     keys.iter().map(|k| format!(":{k}")).collect::<Vec<_>>().join(" | ")
 }
@@ -465,7 +502,7 @@ pub enum Type {
     View,
     Effect,
     Var(u32),
-    Fn(Vec<Type>, Box<Type>),
+    Fn(Vec<Type>, Box<Type>, Box<Type>),
     Record(BTreeMap<String, Type>),
     List(Box<Type>),
     Dict(Box<Type>),
@@ -475,6 +512,7 @@ pub enum Type {
     Without(Box<Type>),
     Update(Box<Type>, String, Box<Type>),
     Keys(BTreeSet<String>),
+    Caps(BTreeSet<String>),
 }
 
 /// Turn an inferred type into a displayable one and simplify it.
@@ -499,9 +537,11 @@ fn coalesce_go(
         Ty::View => Type::View,
         Ty::Effect => Type::Effect,
         Ty::Keys(k) => Type::Keys((**k).clone()),
-        Ty::Fn(params, ret) => Type::Fn(
+        Ty::Caps(c) => Type::Caps((**c).clone()),
+        Ty::Fn(params, ret, eff) => Type::Fn(
             params.iter().map(|p| coalesce_go(p, !pol, in_process, recursive, next)).collect(),
             Box::new(coalesce_go(ret, pol, in_process, recursive, next)),
+            Box::new(coalesce_go(eff, pol, in_process, recursive, next)),
         ),
         Ty::Record(fields) => Type::Record(
             fields.iter().map(|(k, t)| (k.clone(), coalesce_go(t, pol, in_process, recursive, next))).collect(),
@@ -598,9 +638,10 @@ fn cooccurrence(ty: Type) -> Type {
             }
         }
         match ty {
-            Type::Fn(params, ret) => {
+            Type::Fn(params, ret, eff) => {
                 params.iter().for_each(|p| visit(p, !pol, co, bound));
                 visit(ret, pol, co, bound);
+                visit(eff, pol, co, bound);
             }
             Type::Record(fields) => fields.values().for_each(|t| visit(t, pol, co, bound)),
             Type::List(t) | Type::Dict(t) | Type::Without(t) => visit(t, pol, co, bound),
@@ -660,9 +701,11 @@ fn drop_var(ty: Type, v: u32, pol: bool) -> Type {
                 Type::Top
             }
         }
-        Type::Fn(params, ret) => {
-            Type::Fn(params.into_iter().map(|p| drop_var(p, v, !pol)).collect(), Box::new(drop_var(*ret, v, pol)))
-        }
+        Type::Fn(params, ret, eff) => Type::Fn(
+            params.into_iter().map(|p| drop_var(p, v, !pol)).collect(),
+            Box::new(drop_var(*ret, v, pol)),
+            Box::new(drop_var(*eff, v, pol)),
+        ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, drop_var(t, v, pol))).collect()),
         Type::List(t) => Type::List(Box::new(drop_var(*t, v, pol))),
         Type::Dict(t) => Type::Dict(Box::new(drop_var(*t, v, pol))),
@@ -680,9 +723,11 @@ fn map_type(ty: Type, f: &dyn Fn(&Type) -> Option<Type>) -> Type {
         return t;
     }
     match ty {
-        Type::Fn(params, ret) => {
-            Type::Fn(params.into_iter().map(|p| map_type(p, f)).collect(), Box::new(map_type(*ret, f)))
-        }
+        Type::Fn(params, ret, eff) => Type::Fn(
+            params.into_iter().map(|p| map_type(p, f)).collect(),
+            Box::new(map_type(*ret, f)),
+            Box::new(map_type(*eff, f)),
+        ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, map_type(t, f))).collect()),
         Type::List(t) => Type::List(Box::new(map_type(*t, f))),
         Type::Dict(t) => Type::Dict(Box::new(map_type(*t, f))),
@@ -704,9 +749,10 @@ fn occurrences(ty: &Type, pol: bool, pos: &mut HashSet<u32>, neg: &mut HashSet<u
                 neg.insert(*v);
             }
         }
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, eff) => {
             params.iter().for_each(|p| occurrences(p, !pol, pos, neg));
             occurrences(ret, pol, pos, neg);
+            occurrences(eff, pol, pos, neg);
         }
         Type::Record(fields) => fields.values().for_each(|t| occurrences(t, pol, pos, neg)),
         Type::List(t) | Type::Dict(t) | Type::Without(t) => occurrences(t, pol, pos, neg),
@@ -734,9 +780,11 @@ fn prune(ty: Type, pol: bool, keep: &HashSet<u32>) -> Type {
                 Type::Top
             }
         }
-        Type::Fn(params, ret) => {
-            Type::Fn(params.into_iter().map(|p| prune(p, !pol, keep)).collect(), Box::new(prune(*ret, pol, keep)))
-        }
+        Type::Fn(params, ret, eff) => Type::Fn(
+            params.into_iter().map(|p| prune(p, !pol, keep)).collect(),
+            Box::new(prune(*ret, pol, keep)),
+            Box::new(prune(*eff, pol, keep)),
+        ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, prune(t, pol, keep))).collect()),
         Type::List(t) => Type::List(Box::new(prune(*t, pol, keep))),
         Type::Dict(t) => Type::Dict(Box::new(prune(*t, pol, keep))),
@@ -751,7 +799,9 @@ fn prune(ty: Type, pol: bool, keep: &HashSet<u32>) -> Type {
 
 fn normalize(ty: Type) -> Type {
     match ty {
-        Type::Fn(params, ret) => Type::Fn(params.into_iter().map(normalize).collect(), Box::new(normalize(*ret))),
+        Type::Fn(params, ret, eff) => {
+            Type::Fn(params.into_iter().map(normalize).collect(), Box::new(normalize(*ret)), Box::new(normalize(*eff)))
+        }
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, normalize(t))).collect()),
         Type::List(t) => Type::List(Box::new(normalize(*t))),
         Type::Dict(t) => Type::Dict(Box::new(normalize(*t))),
@@ -776,6 +826,7 @@ fn normalize(ty: Type) -> Type {
             merge_records(&mut out, true);
             merge_containers(&mut out, true);
             merge_keys(&mut out, true);
+            merge_caps(&mut out, true);
             out.sort_by(display_order);
             out.dedup();
             match out.len() {
@@ -799,6 +850,7 @@ fn normalize(ty: Type) -> Type {
             merge_records(&mut out, false);
             merge_containers(&mut out, false);
             merge_keys(&mut out, false);
+            merge_caps(&mut out, false);
             if out.contains(&Type::Bot) {
                 return Type::Bot;
             }
@@ -842,6 +894,27 @@ fn merge_keys(parts: &mut Vec<Type>, union: bool) {
         if union { acc.union(&s).cloned().collect() } else { acc.intersection(&s).cloned().collect() }
     });
     parts.push(if merged.is_empty() { Type::Bot } else { Type::Keys(merged) });
+}
+
+/// Capability sets merge like keyword sets, except that an empty
+/// intersection is the pure set, not nothing.
+fn merge_caps(parts: &mut Vec<Type>, union: bool) {
+    // In a union, the pure set adds nothing beside anything else.
+    if union && parts.len() > 1 {
+        parts.retain(|t| !matches!(t, Type::Caps(c) if c.is_empty()));
+    }
+    let sets: Vec<BTreeSet<String>> =
+        parts.iter().filter_map(|t| if let Type::Caps(c) = t { Some(c.clone()) } else { None }).collect();
+    if sets.len() < 2 {
+        return;
+    }
+    parts.retain(|t| !matches!(t, Type::Caps(_)));
+    let mut sets = sets.into_iter();
+    let first = sets.next().unwrap();
+    let merged = sets.fold(first, |acc, s| {
+        if union { acc.union(&s).cloned().collect() } else { acc.intersection(&s).cloned().collect() }
+    });
+    parts.push(Type::Caps(merged));
 }
 
 /// Lists and dictionaries are covariant: a union of lists is a list of
@@ -920,7 +993,7 @@ fn update(record: Type, field: String, value: Type) -> Type {
 fn mentions(ty: &Type, v: u32) -> bool {
     match ty {
         Type::Var(x) => *x == v,
-        Type::Fn(params, ret) => params.iter().any(|p| mentions(p, v)) || mentions(ret, v),
+        Type::Fn(params, ret, eff) => params.iter().any(|p| mentions(p, v)) || mentions(ret, v) || mentions(eff, v),
         Type::Record(fields) => fields.values().any(|t| mentions(t, v)),
         Type::List(t) | Type::Dict(t) | Type::Without(t) | Type::Rec(_, t) => mentions(t, v),
         Type::Update(r, _, x) => mentions(r, v) || mentions(x, v),
@@ -941,9 +1014,10 @@ fn rename(ty: Type) -> Type {
                 let v = name(v, map);
                 Type::Rec(v, Box::new(go(*body, map)))
             }
-            Type::Fn(params, ret) => {
+            Type::Fn(params, ret, eff) => {
                 let params = params.into_iter().map(|p| go(p, map)).collect();
-                Type::Fn(params, Box::new(go(*ret, map)))
+                let ret = go(*ret, map);
+                Type::Fn(params, Box::new(ret), Box::new(go(*eff, map)))
             }
             Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, go(t, map))).collect()),
             Type::List(t) => Type::List(Box::new(go(*t, map))),
@@ -980,10 +1054,11 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
         Type::Prim(p) => write!(f, "{}", p.name()),
         Type::View => write!(f, "View"),
         Type::Effect => write!(f, "Effect"),
+        Type::Caps(c) => write!(f, "{}", caps_text(c)),
         Type::Keys(k) if k.len() == 1 || prec <= 1 => write!(f, "{}", keys_text(k)),
         Type::Keys(k) => write!(f, "({})", keys_text(k)),
         Type::Var(v) => write!(f, "{}", var(*v)),
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, eff) => {
             if prec > 0 {
                 write!(f, "(")?;
             }
@@ -994,8 +1069,19 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
                 }
                 write_type(p, f, 0)?;
             }
-            write!(f, ") -> ")?;
+            // Roc's arrows: `->` for a pure function, `=>` for one that
+            // may use capabilities, which follow its result after `!`.
+            let pure = match &**eff {
+                Type::Bot => true,
+                Type::Caps(c) => c.is_empty(),
+                _ => false,
+            };
+            write!(f, "{}", if pure { ") -> " } else { ") => " })?;
             write_type(ret, f, 0)?;
+            if !pure {
+                write!(f, " ! ")?;
+                write_type(eff, f, 3)?;
+            }
             if prec > 0 {
                 write!(f, ")")?;
             }

@@ -19,6 +19,9 @@ pub struct Infer<'a> {
     pub globals: &'a dyn Globals,
     /// The types of the members of the cycle being checked.
     pub cycle: Vec<Ty>,
+    /// The effect of each function body being checked, innermost last:
+    /// every call adds the callee's effect to the innermost.
+    pub effects: std::cell::RefCell<Vec<Ty>>,
 }
 
 type Result<T> = std::result::Result<T, TypeError>;
@@ -44,15 +47,21 @@ impl Infer<'_> {
             Term::Fn(arity, body) => {
                 let params: Vec<Ty> = (0..*arity).map(|_| s.fresh_ty(level)).collect();
                 env.extend(params.iter().cloned().map(Binding::Mono));
+                // The body's effect is the function's, not its creator's.
+                let effect = s.fresh_ty(level);
+                self.effects.borrow_mut().push(effect.clone());
                 let ret = self.term(body, env, level);
+                self.effects.borrow_mut().pop();
                 env.truncate(env.len() - *arity as usize);
-                Ty::func(params, ret?)
+                Ty::func_eff(params, ret?, effect)
             }
             Term::App(callee, args) => {
                 let f = self.term(callee, env, level)?;
                 let args = args.iter().map(|a| self.term(a, env, level)).collect::<Result<Vec<_>>>()?;
                 let ret = s.fresh_ty(level);
-                s.constrain(&f, &Ty::func(args, ret.clone()))?;
+                let effect = s.fresh_ty(level);
+                s.constrain(&f, &Ty::func_eff(args, ret.clone(), effect.clone()))?;
+                self.perform(effect)?;
                 ret
             }
             Term::Let(value, body) => {
@@ -112,6 +121,8 @@ impl Infer<'_> {
                 Ty::list(self.join(items, level)?)
             }
             Term::Keyword(k) => Ty::keys([k.clone()]),
+            // A host definition's type is declared, never inferred.
+            Term::Host(name, _) => return Err(TypeError(format!("`{name}` is provided by the host"))),
             Term::Match(scrutinee, clauses, default) => {
                 let t = self.term(scrutinee, env, level)?;
                 if default.is_none() {
@@ -167,11 +178,12 @@ impl Infer<'_> {
             }
             Term::Prim(op, args) => {
                 let args = args.iter().map(|a| self.term(a, env, level)).collect::<Result<Vec<_>>>()?;
-                let (params, ret) = signature(s, *op, args.len(), level);
+                let (params, ret, effect) = signature(s, *op, args.len(), level);
                 for (i, (arg, param)) in args.iter().zip(params.iter()).enumerate() {
                     s.constrain(arg, param)
                         .map_err(|e| TypeError(format!("argument {} of `{}`: {e}", i + 1, op.name())))?;
                 }
+                self.perform(effect)?;
                 ret
             }
         })
@@ -207,6 +219,15 @@ impl Infer<'_> {
         })
     }
 
+    /// The innermost function body may use what `effect` uses.
+    fn perform(&self, effect: Ty) -> Result<()> {
+        let current = self.effects.borrow().last().cloned();
+        match current {
+            Some(body) => self.solver.constrain(&effect, &body),
+            None => Ok(()),
+        }
+    }
+
     /// A variable that every one of `types` flows into.
     fn join(&self, types: impl IntoIterator<Item = Ty>, level: u32) -> Result<Ty> {
         let out = self.solver.fresh_ty(level);
@@ -219,7 +240,20 @@ impl Infer<'_> {
 
 /// The parameter types and result type of a built-in, with fresh
 /// variables for its generic parts.
-pub fn signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) {
+pub fn signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty, Ty) {
+    let var = || s.fresh_ty(level);
+    // `map` and `filter` use whatever their function uses.
+    if let Op::Map | Op::Filter = op {
+        let (a, b, e) = (var(), var(), var());
+        let f_ret = if op == Op::Map { b.clone() } else { Ty::bool() };
+        let out = if op == Op::Map { Ty::list(b) } else { Ty::list(a.clone()) };
+        return (vec![Ty::func_eff(vec![a.clone()], f_ret, e.clone()), Ty::list(a)], out, e);
+    }
+    let (params, ret) = pure_signature(s, op, argc, level);
+    (params, ret, Ty::pure())
+}
+
+fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) {
     let var = || s.fresh_ty(level);
     let int2 = || vec![Ty::int(), Ty::int()];
     match op {
