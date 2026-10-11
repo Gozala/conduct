@@ -21,17 +21,15 @@
     :else nil))
 
 (defn change! [id request]
-  (let [body (parse-json (:body request))
-        updated (update! id (text (json-get body "title")) (flag (json-get body "completed")))]
-    (match updated
-      {:todo some?} (json (todo-json (:todo updated)) 200)
-      _ (problem (:error updated)))))
+  (let [body (parse-json (:body request))]
+    (match (update! id (text (json-get body "title")) (flag (json-get body "completed")))
+      {:ok todo} (json (todo-json todo) 200)
+      {:error why} (problem why))))
 
 (defn delete! [id]
-  (let [removed (remove! id)]
-    (match removed
-      {:error nil} (status 204)
-      _ (problem (:error removed)))))
+  (match (remove! id)
+    :ok (status 204)
+    {:error why} (problem why)))
 
 (defn handle! [request]
   (let [id (?? (get (:params request) "id") "")]

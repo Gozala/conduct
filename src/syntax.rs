@@ -301,6 +301,11 @@ fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
             continue;
         }
         let pattern = pattern(&pair[0])?;
+        let mut names = pattern.binders();
+        names.sort();
+        if let Some(w) = names.windows(2).find(|w| w[0] == w[1]) {
+            return err(format!("the pattern binds `{}` twice", w[0]), pair[0].span());
+        }
         if arms.iter().any(|(p, _)| *p == pattern) {
             return err(format!("the pattern `{}` appears twice", pair[0]), pair[0].span());
         }
@@ -313,8 +318,8 @@ fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
     // strings and integers never are, so leaving them out must be said.
     if default.is_none() && !Pattern::cover(&arms.iter().map(|(p, _)| p).collect::<Vec<_>>()) {
         return err(
-            "this `match` cannot cover every value without a `_` clause: only keywords, `nil` with `some?`, \
-             or one field matched against those can",
+            "this `match` cannot cover every value without a `_` clause: only variants (keywords and \
+             one-field records) whose payloads are covered, or `nil` with `some?`, can",
             span,
         );
     }
@@ -329,6 +334,12 @@ fn pattern(form: &Sexp) -> Result<Pattern> {
         Sexp::Symbol(s, _) if s == "nil" => Pattern::Nil,
         Sexp::Symbol(s, _) if s == "some?" => Pattern::Some,
         Sexp::Symbol(s, _) if s == "_" => Pattern::Any,
+        Sexp::Symbol(s, sspan) => {
+            if RESERVED.contains(&s.as_str()) {
+                return err(format!("`{s}` is reserved, so it cannot name a value a pattern binds"), *sspan);
+            }
+            Pattern::Bind(s.clone())
+        }
         Sexp::Map(items, mspan) if !items.is_empty() && items.len().is_multiple_of(2) => {
             let mut fields: Vec<(String, Pattern)> = Vec::new();
             for pair in items.chunks(2) {
@@ -347,7 +358,7 @@ fn pattern(form: &Sexp) -> Result<Pattern> {
         other => {
             return err(
                 format!(
-                    "a `match` pattern is a keyword, string, or integer, `nil`, `some?`, `_`, or a record of those, not `{other}`"
+                    "a `match` pattern is a keyword, string, or integer, `nil`, `some?`, `_`, a name to bind, or a record of those, not `{other}`"
                 ),
                 other.span(),
             );

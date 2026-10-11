@@ -409,7 +409,13 @@ fn resolve(
             b(scrutinee, scope)?,
             clauses
                 .iter()
-                .map(|(p, r)| Ok((p.clone(), resolve(r, scope, lookup)?)))
+                .map(|(p, r)| {
+                    let names = p.binders();
+                    scope.extend(names.iter().cloned());
+                    let r = resolve(r, scope, lookup);
+                    scope.truncate(scope.len() - names.len());
+                    Ok((p.clone(), r?))
+                })
                 .collect::<Result<_, ResolveError>>()?,
             match default {
                 Some(d) => Some(b(d, scope)?),
@@ -501,7 +507,12 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
         Expr::List(items) => items.iter().for_each(|e| free_names(e, scope, out)),
         Expr::Match(scrutinee, clauses, default) => {
             free_names(scrutinee, scope, out);
-            clauses.iter().for_each(|(_, r)| free_names(r, scope, out));
+            for (p, r) in clauses {
+                let names = p.binders();
+                scope.extend(names.iter().cloned());
+                free_names(r, scope, out);
+                scope.truncate(scope.len() - names.len());
+            }
             if let Some(d) = default {
                 free_names(d, scope, out);
             }

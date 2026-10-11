@@ -98,6 +98,11 @@ impl Infer<'_> {
                 }
                 Ty::bool()
             }
+            // A record of one field is a variant, which reads as a record
+            // but joins with other variants without losing its field.
+            Term::Record(fields) if fields.len() == 1 => {
+                Ty::variant(fields[0].0.clone(), self.term(&fields[0].1, env, level)?)
+            }
             Term::Record(fields) => Ty::record(
                 fields.iter().map(|(k, t)| Ok((k.clone(), self.term(t, env, level)?))).collect::<Result<Vec<_>>>()?,
             ),
@@ -149,23 +154,24 @@ impl Infer<'_> {
                 for (pattern, result) in clauses {
                     // Each pattern narrows what it tested: in its branch,
                     // the local has the matched shape.
-                    let narrowed = match local {
+                    let (narrowed, binders) = match local {
                         Some(slot) => {
                             let base = match &env[slot] {
                                 Binding::Mono(t) => t.clone(),
                                 Binding::Poly(scheme) => s.instantiate(scheme, level),
                             };
-                            let shape = self.narrow(base, &path, pattern, level)?;
+                            let (shape, binders) = self.narrow(base, &path, pattern, level)?;
                             let bound = s.fresh_ty(level);
                             s.constrain(&shape, &bound)?;
-                            Some((slot, std::mem::replace(&mut env[slot], Binding::Mono(bound))))
+                            (Some((slot, std::mem::replace(&mut env[slot], Binding::Mono(bound)))), binders)
                         }
-                        None => {
-                            self.narrow(t.clone(), &[], pattern, level)?;
-                            None
-                        }
+                        None => (None, self.narrow(t.clone(), &[], pattern, level)?.1),
                     };
+                    // The pattern's names, the last innermost.
+                    let n = binders.len();
+                    env.extend(binders.into_iter().map(Binding::Mono));
                     let r = self.term(result, env, level);
+                    env.truncate(env.len() - n);
                     if let Some((slot, before)) = narrowed {
                         env[slot] = before;
                     }
@@ -192,29 +198,35 @@ impl Infer<'_> {
     /// `t` as it is known to be where `pattern` matched it, read through
     /// the fields of `path`: each field read is narrowed in place, as a
     /// record update narrows one field.
-    fn narrow(&self, t: Ty, path: &[String], pattern: &Pattern, level: u32) -> Result<Ty> {
+    fn narrow(&self, t: Ty, path: &[String], pattern: &Pattern, level: u32) -> Result<(Ty, Vec<Ty>)> {
         let s = self.solver;
         if let Some((name, rest)) = path.split_first() {
             let field = s.fresh_ty(level);
             s.constrain(&t, &Ty::record([(name.clone(), field.clone())]))?;
-            let inner = self.narrow(field, rest, pattern, level)?;
-            return Ok(Ty::update(t, name.clone(), inner));
+            let (inner, binders) = self.narrow(field, rest, pattern, level)?;
+            return Ok((Ty::update(t, name.clone(), inner), binders));
         }
         Ok(match pattern {
-            Pattern::Keyword(k) => Ty::keys([k.clone()]),
-            Pattern::Str(_) => Ty::str(),
-            Pattern::Int(_) => Ty::int(),
-            Pattern::Nil => Ty::nil(),
-            Pattern::Some => Ty::without(t),
-            Pattern::Any => t,
+            Pattern::Keyword(k) => (Ty::keys([k.clone()]), vec![]),
+            Pattern::Str(_) => (Ty::str(), vec![]),
+            Pattern::Int(_) => (Ty::int(), vec![]),
+            Pattern::Nil => (Ty::nil(), vec![]),
+            Pattern::Some => (Ty::without(t), vec![]),
+            Pattern::Any => (t, vec![]),
+            Pattern::Bind(_) => (t.clone(), vec![t]),
             Pattern::Fields(fields) => {
+                // A field is read only where the value has it, so a
+                // variant pattern asks nothing of the other variants.
                 let mut out = t.clone();
+                let mut binders = Vec::new();
                 for (name, p) in fields {
                     let field = s.fresh_ty(level);
-                    s.constrain(&t, &Ty::record([(name.clone(), field.clone())]))?;
-                    out = Ty::update(out, name.clone(), self.narrow(field, &[], p, level)?);
+                    s.constrain(&t, &Ty::if_has(name.clone(), field.clone()))?;
+                    let (inner, bound) = self.narrow(field, &[], p, level)?;
+                    out = Ty::update(out, name.clone(), inner);
+                    binders.extend(bound);
                 }
-                out
+                (out, binders)
             }
         })
     }
@@ -314,6 +326,7 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         Op::JsonStr => (vec![json()], Ty::str()),
         Op::JsonInt => (vec![json()], Ty::int()),
         Op::JsonBool => (vec![json()], Ty::bool()),
+        Op::HasField => (vec![Ty::Top, Ty::str()], Ty::bool()),
     }
 }
 
@@ -338,20 +351,21 @@ fn cover_type(patterns: &[&Pattern]) -> Option<Ty> {
     if patterns.iter().any(|p| p.irrefutable()) {
         return None;
     }
-    if patterns.iter().all(|p| matches!(p, Pattern::Keyword(_))) {
-        return Some(Ty::keys(patterns.iter().filter_map(|p| match p {
-            Pattern::Keyword(k) => Some(k.clone()),
-            _ => None,
-        })));
+    let Some(variants) = patterns.iter().map(|p| p.variant()).collect::<Option<Vec<_>>>() else {
+        // A record pattern of `_`s: the value must have its fields.
+        let Some(Pattern::Fields(fields)) = patterns.iter().find(|p| p.fields_only()) else { return None };
+        return Some(Ty::record(fields.iter().map(|(k, _)| (k.clone(), Ty::Top))));
+    };
+    let payload = |k: &str| -> Option<Ty> {
+        let inner: Vec<&Pattern> = variants.iter().filter(|v| v.0 == k).filter_map(|v| v.1).collect();
+        if inner.is_empty() { None } else { Some(cover_type(&inner).unwrap_or(Ty::Top)) }
+    };
+    // One field named in every clause: a record's field, which a variant
+    // with that key also has.
+    if let [(k, Some(_)), rest @ ..] = variants.as_slice()
+        && rest.iter().all(|v| v.0 == *k && v.1.is_some())
+    {
+        return Some(Ty::record([(k.to_string(), payload(k).unwrap_or(Ty::Top))]));
     }
-    let Some(Pattern::Fields(first)) = patterns.first() else { return None };
-    let name = first.first()?.0.clone();
-    let inner: Vec<&Pattern> = patterns
-        .iter()
-        .filter_map(|p| match p {
-            Pattern::Fields(fs) => fs.first().map(|f| &f.1),
-            _ => None,
-        })
-        .collect();
-    Some(Ty::record([(name, cover_type(&inner).unwrap_or(Ty::Top))]))
+    Some(Ty::tags(variants.iter().map(|v| (v.0.to_string(), payload(v.0)))))
 }

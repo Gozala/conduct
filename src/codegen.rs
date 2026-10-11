@@ -509,7 +509,16 @@ impl<'a> Builder<'a> {
                 };
                 for (pattern, result) in clauses.iter().rev() {
                     let test = pattern_test(Term::Local(0), pattern);
-                    chain = Term::If(Box::new(test), Box::new(shift(result, 1, 0)), Box::new(chain));
+                    // Each binder is a `let` of what it read, in pattern
+                    // order, under the value's own `let`.
+                    let paths = pattern.binder_paths();
+                    let n = paths.len() as u32;
+                    let mut body = shift(result, 1, n);
+                    for (j, path) in paths.iter().enumerate().rev() {
+                        let read = path.iter().fold(Term::Local(j as u32), |v, k| Term::Field(k.clone(), Box::new(v)));
+                        body = Term::Let(Box::new(read), Box::new(body));
+                    }
+                    chain = Term::If(Box::new(test), Box::new(body), Box::new(chain));
                 }
                 let lowered = Term::Let(scrutinee.clone(), Box::new(chain));
                 self.expr(&lowered, env, frame, cycle, live)?
@@ -714,6 +723,17 @@ impl<'a> Builder<'a> {
                 let _ = write!(out, " (i64.extend_i32_u (local.get {p})))");
                 out
             }
+            Term::Prim(Op::HasField, args) => {
+                let [value, Term::Str(name)] = args.as_slice() else {
+                    return Err(CodegenError("internal: a field test names its field".into()));
+                };
+                let v = self.expr(value, env, frame, cycle, live)?;
+                let t = frame.local();
+                format!(
+                    "(block (result i64) (local.set {t} {v}) (call $has_field (local.get {t}) (i64.const {})) (call $drop (local.get {t})))",
+                    field_id(name)
+                )
+            }
             Term::Prim(op, args) => {
                 let refs: Vec<&Term> = args.iter().collect();
                 let values = self.sequence(&refs, env, frame, cycle, live)?;
@@ -901,6 +921,7 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::JsonStr => format!("(call $json_str {})", a[0]),
         Op::JsonInt => format!("(call $json_int {})", a[0]),
         Op::JsonBool => format!("(call $json_bool {})", a[0]),
+        Op::HasField => unreachable!("a field test is compiled where it is met"),
     }
 }
 
@@ -944,7 +965,7 @@ fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
         Term::Host(_, args) => args.iter().for_each(|t| free_locals(t, binders, out)),
         Term::Match(scrutinee, clauses, default) => {
             free_locals(scrutinee, binders, out);
-            clauses.iter().for_each(|(_, r)| free_locals(r, binders, out));
+            clauses.iter().for_each(|(p, r)| free_locals(r, binders + p.binders().len() as u32, out));
             if let Some(d) = default {
                 free_locals(d, binders, out);
             }
@@ -968,10 +989,18 @@ fn pattern_test(value: Term, pattern: &Pattern) -> Term {
         Pattern::Int(n) => Term::Prim(Op::Eq, vec![value, Term::Int(*n)]),
         Pattern::Nil => is_nil(value),
         Pattern::Some => Term::Prim(Op::Not, vec![is_nil(value)]),
-        Pattern::Any => Term::Bool(true),
+        Pattern::Any | Pattern::Bind(_) => Term::Bool(true),
         Pattern::Fields(fields) => {
-            let mut tests =
-                fields.iter().map(|(name, p)| pattern_test(Term::Field(name.clone(), Box::new(value.clone())), p));
+            // The value may be a keyword or a variant with another key,
+            // so a field is read only once it is known to be there.
+            let mut tests = fields.iter().map(|(name, p)| {
+                let has = Term::Prim(Op::HasField, vec![value.clone(), Term::Str(name.clone())]);
+                let test = pattern_test(Term::Field(name.clone(), Box::new(value.clone())), p);
+                match test {
+                    Term::Bool(true) => has,
+                    test => Term::And(Box::new(has), Box::new(test)),
+                }
+            });
             let first = tests.next().expect("a record pattern has a field");
             tests.fold(first, |acc, t| Term::And(Box::new(acc), Box::new(t)))
         }
@@ -1003,7 +1032,7 @@ fn shift(term: &Term, by: u32, cutoff: u32) -> Term {
         Term::Host(name, args) => Term::Host(name.clone(), all(args)),
         Term::Match(x, clauses, default) => Term::Match(
             s(x),
-            clauses.iter().map(|(p, r)| (p.clone(), shift(r, by, cutoff))).collect(),
+            clauses.iter().map(|(p, r)| (p.clone(), shift(r, by, cutoff + p.binders().len() as u32))).collect(),
             default.as_ref().map(|d| s(d)),
         ),
         other => other.clone(),

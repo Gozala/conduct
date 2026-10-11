@@ -78,6 +78,9 @@ pub enum Op {
     JsonStr,
     JsonInt,
     JsonBool,
+    /// Whether a value is a record with a field: only `match` uses it,
+    /// so it has no name in source and is not in [`Op::ALL`].
+    HasField,
 }
 
 impl Op {
@@ -158,6 +161,7 @@ impl Op {
             Op::JsonStr => "json-str",
             Op::JsonInt => "json-int",
             Op::JsonBool => "json-bool",
+            Op::HasField => "has-field?",
         }
     }
 
@@ -245,8 +249,12 @@ pub enum Pattern {
     /// Any value: `_`. At the top of a clause it is the last clause; in
     /// a record pattern it only asks that the field be there.
     Any,
-    /// A record whose fields match their patterns, sorted by name.
+    /// A record whose fields match their patterns, sorted by name. With
+    /// one field it is also a variant: `{:ok t}`.
     Fields(Vec<(String, Pattern)>),
+    /// Any value, bound to a name in the clause's result. The name is
+    /// not part of the hash, as a parameter's is not.
+    Bind(String),
 }
 
 impl Pattern {
@@ -271,6 +279,7 @@ impl Pattern {
             Pattern::Nil => out.push(3),
             Pattern::Some => out.push(4),
             Pattern::Any => out.push(6),
+            Pattern::Bind(_) => out.push(7),
             Pattern::Fields(fields) => {
                 out.push(5);
                 out.extend_from_slice(&(fields.len() as u32).to_le_bytes());
@@ -282,36 +291,92 @@ impl Pattern {
         }
     }
 
-    /// Whether the pattern matches every value its fields' reads accept:
-    /// `_`, or a record of `_`s.
+    /// Whether the pattern matches every value: `_` or a name.
     pub fn irrefutable(&self) -> bool {
+        matches!(self, Pattern::Any | Pattern::Bind(_))
+    }
+
+    /// Whether the pattern matches every record that has its fields: a
+    /// record pattern of irrefutable fields.
+    pub fn fields_only(&self) -> bool {
+        matches!(self, Pattern::Fields(fields) if fields.iter().all(|(_, p)| p.irrefutable()))
+    }
+
+    /// The names the pattern binds, in order: the last is local 0 in the
+    /// clause's result.
+    pub fn binders(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        fn go(p: &Pattern, out: &mut Vec<String>) {
+            match p {
+                Pattern::Bind(name) => out.push(name.clone()),
+                Pattern::Fields(fields) => fields.iter().for_each(|(_, p)| go(p, out)),
+                _ => {}
+            }
+        }
+        go(self, &mut out);
+        out
+    }
+
+    /// The field path each binder reads its value from, in the order of
+    /// [`Pattern::binders`].
+    pub fn binder_paths(&self) -> Vec<Vec<String>> {
+        let mut out = Vec::new();
+        fn go(p: &Pattern, path: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+            match p {
+                Pattern::Bind(_) => out.push(path.clone()),
+                Pattern::Fields(fields) => {
+                    for (name, p) in fields {
+                        path.push(name.clone());
+                        go(p, path, out);
+                        path.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
+        go(self, &mut Vec::new(), &mut out);
+        out
+    }
+
+    /// A variant pattern's key and payload pattern: a keyword, or a
+    /// record pattern of one field.
+    pub fn variant(&self) -> Option<(&str, Option<&Pattern>)> {
         match self {
-            Pattern::Any => true,
-            Pattern::Fields(fields) => fields.iter().all(|(_, p)| p.irrefutable()),
-            _ => false,
+            Pattern::Keyword(k) => Some((k, None)),
+            Pattern::Fields(fs) if fs.len() == 1 => Some((&fs[0].0, Some(&fs[0].1))),
+            _ => None,
         }
     }
 
     /// Whether these patterns, without a `_` clause, can cover every value
-    /// the match is given: all keywords, or `nil` and `some?`, or one
-    /// field, the same in each, whose patterns cover.
+    /// the match is given: `nil` and `some?`, or variants (keywords and
+    /// one-field records) whose payload patterns cover, key by key, or a
+    /// record pattern of `_`s among others. When every clause names the
+    /// same one field, that is a field of a record as much as a variant,
+    /// and the same test holds.
     pub fn cover(patterns: &[&Pattern]) -> bool {
-        if patterns.iter().all(|p| matches!(p, Pattern::Keyword(_))) || patterns.iter().any(|p| p.irrefutable()) {
+        if patterns.iter().any(|p| p.irrefutable()) {
             return true;
         }
         if patterns.len() == 2 && patterns.contains(&&Pattern::Nil) && patterns.contains(&&Pattern::Some) {
             return true;
         }
-        let Some(Pattern::Fields(first)) = patterns.first() else { return false };
-        let [(name, _)] = first.as_slice() else { return false };
-        let mut inner = Vec::new();
-        for p in patterns {
-            match p {
-                Pattern::Fields(fs) if fs.len() == 1 && fs[0].0 == *name => inner.push(&fs[0].1),
-                _ => return false,
+        // Otherwise a record pattern of `_`s covers what has its fields,
+        // which the type checker then requires of every value.
+        let Some(variants) = patterns.iter().map(|p| p.variant()).collect::<Option<Vec<_>>>() else {
+            return patterns.iter().any(|p| p.fields_only());
+        };
+        let mut keys: Vec<&str> = variants.iter().map(|v| v.0).collect();
+        keys.dedup();
+        keys.iter().all(|k| {
+            let payloads: Vec<Option<&Pattern>> = variants.iter().filter(|v| v.0 == *k).map(|v| v.1).collect();
+            match payloads.iter().copied().collect::<Option<Vec<&Pattern>>>() {
+                Some(inner) => Pattern::cover(&inner),
+                // A keyword covers its key; a keyword and a variant of the
+                // same name cannot both be.
+                None => payloads.iter().all(|p| p.is_none()),
             }
-        }
-        Pattern::cover(&inner)
+        })
     }
 }
 

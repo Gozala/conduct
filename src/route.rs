@@ -17,9 +17,9 @@
 //! The route calls the demo's todo model directly, through host
 //! functions that use the `model` capability: `query!`, `add!`,
 //! `update!`, `remove!`, `toggle-all!` and `clear-completed!`. A model
-//! result is a record rather than a tagged union: `{todo: Todo | nil,
-//! error: :not-found | :empty-title | nil}`, since a union of records
-//! with different fields keeps only the fields they share.
+//! `result` is a union of variants: `{:ok todo}` or `{:error why}`,
+//! where `why` is `:not-found` or `:empty-title`, and a `result` with no
+//! value is `:ok` itself.
 //!
 //! The glue exports `wasi:http/handler@0.3.0#handle`, lifted with the
 //! async ABI's callback form. It reads the request, body and all, runs
@@ -88,9 +88,9 @@ fn model_error() -> Ty {
     Ty::keys(["not-found".to_string(), "empty-title".to_string()])
 }
 
-/// What `add!` and `update!` answer: the todo, or why there is none.
+/// What `add!` and `update!` answer: `{:ok todo}`, or `{:error why}`.
 fn todo_result() -> Ty {
-    Ty::record([("todo".to_string(), Ty::maybe(todo_type())), ("error".to_string(), Ty::maybe(model_error()))])
+    Ty::tags([("ok".to_string(), Some(todo_type())), ("error".to_string(), Some(model_error()))])
 }
 
 /// The model's functions, as host functions: each name, the WIT
@@ -107,7 +107,12 @@ fn model_functions() -> Vec<(&'static str, &'static str, Vec<Ty>, Ty)> {
         ),
         ("add!", "add", vec![Ty::str()], todo_result()),
         ("update!", "update", vec![Ty::str(), Ty::maybe(Ty::str()), Ty::maybe(Ty::bool())], todo_result()),
-        ("remove!", "remove", vec![Ty::str()], Ty::record([("error".to_string(), Ty::maybe(model_error()))])),
+        (
+            "remove!",
+            "remove",
+            vec![Ty::str()],
+            Ty::tags([("ok".to_string(), None), ("error".to_string(), Some(model_error()))]),
+        ),
         ("toggle-all!", "toggle-all", vec![Ty::bool()], Ty::nil()),
         ("clear-completed!", "clear-completed", vec![], Ty::nil()),
     ]
@@ -209,13 +214,14 @@ fn model_glue(b: &mut Builder, used: &BTreeSet<String>) -> String {
     let active = b.static_keyword("active");
     let not_found = b.static_keyword("not-found");
     let empty_title = b.static_keyword("empty-title");
+    let ok = b.static_keyword("ok");
     let model = "demo:todo/model";
     let mut out = String::new();
     out.push_str(&record_func("$todo_new", &["id", "title", "completed"]));
     out.push_str(&record_func("$counts_new", &["active", "completed"]));
     out.push_str(&record_func("$query_new", &["todos", "counts"]));
-    out.push_str(&record_func("$result_new", &["todo", "error"]));
-    out.push_str(&record_func("$removed_new", &["error"]));
+    out.push_str(&record_func("$ok_new", &["ok"]));
+    out.push_str(&record_func("$error_new", &["error"]));
     let _ = write!(
         out,
         r#"  (func $int_of (param $n i32) (result i64)
@@ -231,8 +237,8 @@ fn model_glue(b: &mut Builder, used: &BTreeSet<String>) -> String {
   (func $todo_result (param $at i32) (result i64)
     ;; Lift a `result<todo, model-error>` at `at`.
     (if (result i64) (i32.load8_u (local.get $at))
-      (then (call $result_new (i64.const {NIL}) (call $error_at (i32.add (local.get $at) (i32.const 4)))))
-      (else (call $result_new (call $todo_at (i32.add (local.get $at) (i32.const 4))) (i64.const {NIL})))))
+      (then (call $error_new (call $error_at (i32.add (local.get $at) (i32.const 4)))))
+      (else (call $ok_new (call $todo_at (i32.add (local.get $at) (i32.const 4)))))))
   (func $ret_area (result i32)
     ;; Where a model call writes its result: freed by the caller.
     (local $p i32)
@@ -307,10 +313,10 @@ fn model_glue(b: &mut Builder, used: &BTreeSet<String>) -> String {
                     r#"    (local $ret i32) (local $v i64)
     (local.set $ret (call $ret_area))
     (call $m_remove (call $str_data (local.get $a0)) (call $len (local.get $a0)) (local.get $ret))
-    (local.set $v (call $removed_new
+    (local.set $v
       (if (result i64) (i32.load8_u (local.get $ret))
-        (then (call $error_at (i32.add (local.get $ret) (i32.const 1))))
-        (else (i64.const {NIL})))))
+        (then (call $error_new (call $error_at (i32.add (local.get $ret) (i32.const 1)))))
+        (else (i64.const {ok}))))
     (call $free (local.get $ret))
     (local.get $v)"#
                 ),

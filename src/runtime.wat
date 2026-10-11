@@ -544,6 +544,23 @@
     ;; The type checker rules this out.
     unreachable)
 
+  (func $has_field (param $v i64) (param $id i64) (result i64)
+    ;; Whether `v` is a record with the field `id`: a variant with that
+    ;; key, or a record that has it.
+    (local $p i32) (local $n i32) (local $i i32)
+    (if (i32.eqz (call $is_obj (local.get $v))) (then (return (i64.const 0x0a))))
+    (if (i32.ne (call $kind (local.get $v)) (i32.const 3)) (then (return (i64.const 0x0a))))
+    (local.set $p (call $ptr (local.get $v)))
+    (local.set $n (call $len (local.get $v)))
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (if (i64.eq (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 4)))) (local.get $id))
+          (then (return (i64.const 0x12))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))
+    (i64.const 0x0a))
+
   (func $rec_assoc (param $r i64) (param $id i64) (param $v i64) (result i64)
     ;; A copy of record `r` (borrowed) with field `id` set to `v`
     ;; (consumed), keeping fields sorted by id.

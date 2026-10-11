@@ -3,6 +3,41 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Unions
+
+- **Variants are records of one field,** as asked: `{:ok t}`. Keywords
+  are the variants without a payload, so `:ok | {:error e}` is one type.
+  The keyword-set lattice became a variant-set lattice: inclusion of
+  keys, payloads covariant.
+- **A record literal of one field is always a variant.** Records keep
+  width subtyping, which is what makes two records with different
+  fields join to their shared fields; a variant has to be a type of its
+  own to join without loss. It reads as a record, so existing code that
+  uses one-field records as models still type checks. Alternative:
+  syntax that marks a variant. Reverse if one-field records that are
+  meant as records start to confuse inference.
+- **One payload per variant.** Records are the product type; WIT's
+  variants have one payload too.
+- **Patterns bind names.** A symbol in a pattern binds; the name is not
+  in the hash, as a parameter's is not.
+- **`{k?: t}`, an upper bound only, types a pattern's read.** It is
+  CUE's optional field: a value without `k` fits. So a record pattern
+  no longer requires its field everywhere: with a `_` clause, `(match
+  job {:status :active} ..)` accepts anything. The requirement comes
+  back from exhaustiveness when there is no `_`.
+- **Exhaustiveness is per key.** Without `_`, a match on variants
+  constrains its value to exactly those keys, each payload to what its
+  patterns cover. When every clause names the same single key, that is
+  read as a record field (`{:status :active}` / `{:status :suspended}`),
+  which also accepts variants with that key.
+- **Openness needs no rows.** Roc writes `[A, B]*` to keep a union
+  open; with subtyping a match with `_` simply puts no upper bound on
+  its value.
+- **`assoc` of a variant's own key is still that variant;** any other
+  `assoc` makes a record.
+- **Display:** a lone variant beside records is shown as the record it
+  is, so element models print as before.
+
 ## Routes
 
 - **Routes call the model directly.** An element returns effects as
@@ -27,10 +62,8 @@ it. Newest first.
   type. Two spellings of an optional now exist (an inferred union and
   this), and they display the same. If source annotations come, they
   would produce this one.
-- **Results as records with optional fields.** `{todo, error}` instead
-  of a tagged union, because joining records with different fields
-  drops fields. The language proposal's "absence is failure" would
-  replace this; it is the design question this slice leaves sharpest.
+- **Results as records with optional fields** (superseded by Unions:
+  results are now `{:ok v} | {:error e}`).
 - **`pattern` must be a string literal,** read at compile time, so the
   glue matches it with code specific to it.
 - **The glue adds `x-demo-route`,** as the Zena authoring library's

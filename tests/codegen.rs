@@ -313,3 +313,23 @@ fn record_fields_are_evaluated_in_source_order() {
                  (def r (f (parse-json "{\"id\":\"a\"}")))"#;
     run(src, "r", &[]);
 }
+
+#[test]
+fn variants_match_and_bind() {
+    let src = r#"
+(defn check [t] (if (= t "") {:error :empty-title} {:ok {:title t :n (count (split t " "))}}))
+(defn find [id] (if (= id "x") {:error :not-found} (check id)))
+(defn show [r]
+  (match r
+    {:ok {:title t :n n}} (str t " (" n ")")
+    {:error :not-found} "missing"
+    {:error e} (str "bad " e)))
+(defn done [x] (if x :ok {:error "late"}))
+(defn status [r] (match r :ok "fine" {:error why} why))
+(def a [(show (find "buy milk")) (show (find "x")) (show (find "")) (status (done true)) (status (done false))])
+(def b (map (fn [r] (match r {:ok {:title t}} t _ "?")) [(find "a") (find "") :other {:n 1}]))
+"#;
+    let strs = |v: &[&str]| Value::List(v.iter().map(|s| Value::Str(s.to_string())).collect());
+    assert_eq!(run(src, "a", &[]), strs(&["buy milk (2)", "missing", "bad :empty-title", "fine", "late"]));
+    assert_eq!(run(src, "b", &[]), strs(&["a", "?", "?", "?"]));
+}
