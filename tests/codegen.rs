@@ -4,6 +4,8 @@ use conduct::Codebase;
 use conduct::codegen::{self, Value, decode, name_fields};
 use wasmtime::{Engine, Instance, Module, Store, Val};
 
+/// Compile `entry`, call it, decode the result, then give the result
+/// back and check that every block the call allocated was freed.
 fn run(src: &str, entry: &str, args: &[i64]) -> Value {
     let mut cb = Codebase::new();
     cb.add_source(src).unwrap_or_else(|e| panic!("{e}"));
@@ -17,9 +19,14 @@ fn run(src: &str, entry: &str, args: &[i64]) -> Value {
     let f = instance.get_func(&mut store, entry).unwrap();
     let params: Vec<Val> = args.iter().map(|a| Val::I64(*a)).collect();
     let mut results = [Val::I64(0)];
-    f.call(&mut store, &params, &mut results).unwrap();
+    f.call(&mut store, &params, &mut results).unwrap_or_else(|e| panic!("{e:?}\n{wat}"));
     let memory = instance.get_memory(&mut store, "memory").unwrap();
-    decode(memory.data(&store), results[0].unwrap_i64())
+    let value = decode(memory.data(&store), results[0].unwrap_i64());
+    let drop = instance.get_typed_func::<i64, ()>(&mut store, "conduct_drop").unwrap();
+    drop.call(&mut store, results[0].unwrap_i64()).unwrap();
+    let live = instance.get_typed_func::<(), i32>(&mut store, "conduct_live").unwrap();
+    assert_eq!(live.call(&mut store, ()).unwrap(), 0, "blocks leaked by {entry}");
+    value
 }
 
 fn int(n: i64) -> i64 {
@@ -90,4 +97,43 @@ fn views() {
     assert_eq!(attrs, vec![("class".into(), Value::Str("done".into()))]);
     assert_eq!(children.len(), 2);
     assert_eq!(events, vec![("click".into(), Value::Str("go".into()))]);
+}
+
+#[test]
+fn ownership_edge_cases() {
+    // A list used in one branch only, an unused parameter, and an
+    // unused binding: each must be freed exactly once.
+    let src = "(defn pick [b xs ys] (if b (count xs) (count ys)))
+               (defn ignore [x y] 1)
+               (def a (pick true [\"a\" \"b\"] [\"c\"]))
+               (def b (ignore [1 2] (let [unused [3 4]] \"kept\")))";
+    assert_eq!(run(src, "a", &[]), Value::Int(2));
+    assert_eq!(run(src, "b", &[]), Value::Int(1));
+
+    // A value shared by several uses and a closure that outlives it.
+    let src = "(defn twice [xs] (concat xs xs))
+               (defn keep [xs] (fn [ys] (concat xs ys)))
+               (def c (count (twice (twice [\"x\" \"y\"]))))
+               (def d ((keep [\"l\"]) [\"r\"]))";
+    assert_eq!(run(src, "c", &[]), Value::Int(8));
+    assert_eq!(run(src, "d", &[]), Value::List(vec![Value::Str("l".into()), Value::Str("r".into())]));
+
+    // Optionals: the bound value is dropped when its arm ignores it,
+    // and the fallback's values are dropped when it is not taken.
+    let src = "(defn f [d fallback] (?? (get d \"k\") (str fallback \"!\")))
+               (defn g [d] (if-some [x (get d \"k\")] 1 0))
+               (def e (f {\"k\" \"v\"} \"unused\"))
+               (def k (g {\"k\" [\"heap\"]}))";
+    assert_eq!(run(src, "e", &[]), Value::Str("v".into()));
+    assert_eq!(run(src, "k", &[]), Value::Int(1));
+
+    // Short circuits drop what the skipped side would have consumed.
+    let src = "(defn both [a xs] (and a (= (count xs) 2)))
+               (def i (both false [\"p\" \"q\"]))";
+    assert_eq!(run(src, "i", &[]), Value::Bool(false));
+
+    // Recursion building and tearing down a structure.
+    let src = "(defn range [n acc] (if (= n 0) acc (range (- n 1) (conj acc (str n)))))
+               (def j (count (filter (fn [s] (not= s \"3\")) (range 50 []))))";
+    assert_eq!(run(src, "j", &[]), Value::Int(49));
 }

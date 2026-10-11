@@ -123,7 +123,27 @@ compiles to a Wasm function and a closure object in static data;
 lambdas compile to functions in a table, called through the closures
 that capture their free variables.
 
-Memory is a bump arena and nothing is freed yet.
+### Memory
+
+Values are reference counted, after [Perceus]: no garbage collector, and
+no lifetimes to write. Every function owns its parameters and returns a
+value its caller owns, and the code generator tracks which locals a
+function still owns as it compiles it. A use of a local that is needed
+again duplicates it, and its last use moves it. A local nothing will use
+again is dropped as early as that is known: on entry for an unused
+parameter, right after an unused `let`, and at the start of each branch
+for what only the other branch uses. A closure owns copies of what it
+captures. So every value is freed when its last reference goes, at a
+point the compiler fixed.
+
+Freed blocks go on free lists by size class, and are poisoned so a use
+after free reads garbage loudly. The tests count live blocks: every pure
+test checks that a call frees all it allocated, and an element driven
+through 200 rounds of rendering and events ends with exactly the blocks
+it started with.
+
+Perceus's other half, reusing a block in place when its count is one,
+is not done yet.
 
 ## Elements
 
@@ -143,7 +163,10 @@ pure, and the glue is the only code with effects. `element::check`
 checks the definitions against this contract by subtyping, with the
 model type being whatever `init` returns.
 
-The glue keeps each element's model and attributes between calls, and
+The glue keeps each element's model and attributes between calls, owned
+by its element table, frees the argument buffers the host allocated
+through `cabi_realloc`, and releases what it lent the host (a rendered
+node list, the styles) in each export's canonical ABI `post-return`. It
 lowers a view into the world's flattened `list<node>` with the same
 rules as the Zena authoring library: `key` names a node, `checked` and
 `value` become properties, and lists among a view's children are spliced
@@ -166,10 +189,8 @@ The demo's other parts each need something this slice does not have:
    imports. Effects stop being data returned from `update`, and the
    effect system (inferred, as Roc infers purity, and mapped to the
    world's imports) has to exist.
-4. **Memory**: an element keeps its model across calls, so a bump arena
-   only grows. Copying what the element table holds into a fresh arena
-   after each call would be deterministic and simple; Perceus-style
-   reference counting is the longer-term plan.
+4. **In-place reuse**: Perceus's reuse analysis, so that updating a
+   uniquely owned list or record writes into it instead of copying.
 5. **Sum types**: matching on variants needs MLstruct's negation types in
    general, not just `t \ nil`.
 6. **The codebase in Dialog**: definitions as facts, names as assertions
@@ -181,3 +202,4 @@ The demo's other parts each need something this slice does not have:
 [`examples/todo-item.cdt`]: examples/todo-item.cdt
 [Simple-sub]: https://dl.acm.org/doi/10.1145/3409006
 [Maybe Not]: https://radiant.computer/notes/maybe-not/
+[Perceus]: https://www.microsoft.com/en-us/research/publication/perceus-garbage-free-reference-counting-with-reuse/
