@@ -590,6 +590,17 @@ impl<'a> Builder<'a> {
                 let r = self.expr(record, env, frame, cycle, live)?;
                 format!("(call $rec_take {r} (i64.const {}))", field_id(name))
             }
+            Term::Update(record, name, value) => {
+                let parts = self.sequence(&[&**record, &**value], env, frame, cycle, live)?;
+                let (r, u) = (frame.local(), frame.local());
+                // `$rec_assoc` borrows the record and consumes the value.
+                format!(
+                    "(block (result i64) (local.set {r} {}) (local.set {u} (call $rec_assoc (local.get {r}) (i64.const {}) {})) (call $drop (local.get {r})) (local.get {u}))",
+                    parts[0],
+                    field_id(name),
+                    parts[1]
+                )
+            }
             Term::Dict(entries) => {
                 let items: Vec<&Term> = entries.iter().map(|(_, t)| t).collect();
                 let values = self.sequence(&items, env, frame, cycle, live)?;
@@ -778,6 +789,7 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::Dissoc => format!("(call $dict_dissoc {} {})", a[0], a[1]),
         Op::H => format!("(call $view_new {} {} {} {})", a[0], a[1], a[2], a[3]),
         Op::Emit => format!("(call $emit_new {} {})", a[0], a[1]),
+        Op::Trim => format!("(call $str_trim {})", a[0]),
     }
 }
 
@@ -812,6 +824,10 @@ fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
             free_locals(b, binders, out);
         }
         Term::Field(_, t) => free_locals(t, binders, out),
+        Term::Update(r, _, v) => {
+            free_locals(r, binders, out);
+            free_locals(v, binders, out);
+        }
         Term::Record(fs) | Term::Dict(fs) => fs.iter().for_each(|(_, t)| free_locals(t, binders, out)),
         Term::List(items) | Term::Prim(_, items) => items.iter().for_each(|t| free_locals(t, binders, out)),
         Term::Int(_) | Term::Str(_) | Term::Bool(_) | Term::Nil | Term::Ref(_) | Term::CycleRef(_) => {}

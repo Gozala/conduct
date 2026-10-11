@@ -68,6 +68,7 @@ pub enum Op {
     Dissoc,
     H,
     Emit,
+    Trim,
 }
 
 impl Op {
@@ -98,6 +99,7 @@ impl Op {
         Op::Dissoc,
         Op::H,
         Op::Emit,
+        Op::Trim,
     ];
 
     pub fn name(self) -> &'static str {
@@ -128,6 +130,7 @@ impl Op {
             Op::Dissoc => "dissoc",
             Op::H => "h",
             Op::Emit => "emit",
+            Op::Trim => "trim",
         }
     }
 
@@ -139,7 +142,7 @@ impl Op {
     pub fn arity(self) -> Option<usize> {
         Some(match self {
             Op::Str => return None,
-            Op::Not | Op::IsNil | Op::Count | Op::First | Op::Rest => 1,
+            Op::Not | Op::IsNil | Op::Count | Op::First | Op::Rest | Op::Trim => 1,
             Op::Assoc => 3,
             Op::H => 4,
             _ => 2,
@@ -176,6 +179,8 @@ pub enum Term {
     /// change a definition's hash.
     Record(Vec<(String, Term)>),
     Field(String, Box<Term>),
+    /// A copy of a record with one field set.
+    Update(Box<Term>, String, Box<Term>),
     /// Entries in source order, which a view's attributes keep.
     Dict(Vec<(String, Term)>),
     List(Vec<Term>),
@@ -212,6 +217,10 @@ impl Term {
             Term::Let(a, b) | Term::Coalesce(a, b) | Term::And(a, b) | Term::Or(a, b) => {
                 a.walk(f);
                 b.walk(f);
+            }
+            Term::Update(r, _, v) => {
+                r.walk(f);
+                v.walk(f);
             }
             Term::If(a, b, c) | Term::IfSome(a, b, c) => {
                 a.walk(f);
@@ -334,6 +343,12 @@ impl Term {
                 out.push(0x12);
                 text(out, name);
                 t.encode(out, cycle_index);
+            }
+            Term::Update(r, name, v) => {
+                out.push(0x16);
+                text(out, name);
+                r.encode(out, cycle_index);
+                v.encode(out, cycle_index);
             }
             Term::Dict(items) => {
                 out.push(0x13);

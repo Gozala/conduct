@@ -137,3 +137,20 @@ fn ownership_edge_cases() {
                (def j (count (filter (fn [s] (not= s \"3\")) (range 50 []))))";
     assert_eq!(run(src, "j", &[]), Value::Int(49));
 }
+
+#[test]
+fn record_update_and_trim() {
+    let src = "(defn bump [m] (assoc m :n (+ (:n m) 1)))
+               (def r (bump (bump {:n 0 :label \"x\"})))
+               (def added (assoc {:b 2} :a \"new\"))
+               (def t (trim \"  padded \\n\"))
+               (def same (= (assoc {:a 1 :b 2} :a 1) {:b 2 :a 1}))";
+    let mut fields = name_fields(run(src, "r", &[]), &["n", "label"]);
+    fields.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(fields, vec![("label".into(), Value::Str("x".into())), ("n".into(), Value::Int(2))]);
+    let mut fields = name_fields(run(src, "added", &[]), &["a", "b"]);
+    fields.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(fields, vec![("a".into(), Value::Str("new".into())), ("b".into(), Value::Int(2))]);
+    assert_eq!(run(src, "t", &[]), Value::Str("padded".into()));
+    assert_eq!(run(src, "same", &[]), Value::Bool(true));
+}

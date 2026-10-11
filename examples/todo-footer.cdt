@@ -1,0 +1,80 @@
+;; <todo-footer>: how many todos are left, the three filters, and the
+;; button that clears the completed todos, which shows only when there
+;; are some. A filter is a link to a URL hash, which the page turns into
+;; <todo-app>'s `filter`.
+;;
+;; It keeps no state of its own, so it has no `init`: its model is nil.
+
+(def attributes ["active" "completed" "filter"])
+
+(def styles "
+      :host {
+        display: block;
+      }
+      footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 12px 16px;
+        border-top: 1px solid var(--md-sys-color-outline-variant);
+        color: var(--md-sys-color-on-surface-variant);
+        font: var(--md-sys-typescale-body-medium);
+      }
+      .filters {
+        display: flex;
+        gap: 4px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      a {
+        display: inline-block;
+        padding: 6px 12px;
+        border-radius: var(--md-sys-shape-corner-small);
+        color: var(--md-sys-color-on-surface-variant);
+        text-decoration: none;
+        font: var(--md-sys-typescale-label-large);
+      }
+      a.selected {
+        background: var(--md-sys-color-secondary-container);
+        color: var(--md-sys-color-on-secondary-container);
+      }
+      .clear-completed {
+        padding: 8px 12px;
+        border: none;
+        border-radius: var(--md-sys-shape-corner-full);
+        background: transparent;
+        color: var(--md-sys-color-primary);
+        font: var(--md-sys-typescale-label-large);
+        cursor: pointer;
+      }
+      .clear-completed:hover {
+        background: var(--md-sys-color-surface-container-high);
+      }
+    ")
+
+(defn attr [attrs name] (?? (get attrs name) ""))
+
+(defn update [model handler event attrs]
+  {:model model :emit (if (= handler "clear") [(emit "todo-clear" "")] [])})
+
+(defn link [attrs filter label href]
+  (h "li" {}
+    [(h "a" {"href" href "class" (if (= (attr attrs "filter") filter) "selected" "")} [label])]))
+
+(defn view [model attrs]
+  (let [active (attr attrs "active")
+        completed (attr attrs "completed")]
+    (h "footer" {"class" "footer"}
+      [(h "span" {"class" "todo-count"}
+         [(h "strong" {} [active])
+          (if (= active "1") " item left" " items left")])
+       (h "ul" {"class" "filters"}
+         [(link attrs "all" "All" "#/")
+          (link attrs "active" "Active" "#/active")
+          (link attrs "completed" "Completed" "#/completed")])
+       (if (and (not= completed "0") (not= completed ""))
+         (h "button" {"class" "clear-completed"} ["Clear completed"] {"click" "clear"})
+         nil)])))

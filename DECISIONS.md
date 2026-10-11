@@ -3,6 +3,20 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Slice 2: todo-input, todo-footer, record update
+
+- **Built-ins resolve after bindings.** A call to a name no local or
+  definition binds may name a built-in, so bindings shadow built-ins
+  instead of built-in names being reserved. A definition already hashed
+  keeps calling the built-in if a same-named definition appears later.
+- **Record update may change a field's type.** `(assoc r :k v)` is typed
+  with a positive-only type former, "r with k set", that answers a field
+  read from `v` for `k` and from `r` otherwise. This gives the rest of
+  the record through, like row polymorphism, without row variables.
+- **`todo-input`'s clear flag lives in the model.** The Zena element
+  clears it inside `render`; a pure view cannot, so the next keystroke
+  clears it instead. The rendered result is the same.
+
 ## Reference counting (Perceus without reuse)
 
 - **Owned calling convention.** Compiled functions consume their
