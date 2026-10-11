@@ -11,7 +11,7 @@ use wasmtime::{Caller, Engine, Linker, Module, Store, Val};
 /// and `now!` (the `clock` capability).
 fn host() -> Codebase {
     let mut cb = Codebase::new();
-    cb.add_host("log!", "log", vec![Ty::str()], Ty::nil()).unwrap();
+    cb.add_host("log!", "log", vec![Ty::str()], Ty::record([])).unwrap();
     cb.add_host("now!", "clock", vec![], Ty::int()).unwrap();
     cb
 }
@@ -29,15 +29,15 @@ fn error(src: &str) -> String {
 #[test]
 fn effects_are_inferred_from_calls() {
     assert_eq!(ty("(def x 1)", "x"), "Int");
-    assert_eq!(ty("(defn greet! [name] (log! (str \"hi \" name)))", "greet!"), "(Any) => nil ! {log}");
+    assert_eq!(ty("(defn greet! [name] (log! (str \"hi \" name)))", "greet!"), "(Any) => {} ! {log}");
     // Capabilities add up, through `let` and helper functions.
     let src = "(defn stamp! [msg] (let [t (now!)] (log! (str t \": \" msg))))
                (defn twice! [msg] (let [_ (stamp! msg)] (stamp! msg)))";
-    assert_eq!(ty(src, "twice!"), "(Any) => nil ! {clock, log}");
+    assert_eq!(ty(src, "twice!"), "(Any) => {} ! {clock, log}");
     // A function given to `map` lends `map` its effect.
-    assert_eq!(ty("(defn all! [xs] (map (fn [x] (log! x)) xs))", "all!"), "(List[String]) => List[nil] ! {log}");
+    assert_eq!(ty("(defn all! [xs] (map (fn [x] (log! x)) xs))", "all!"), "(List[String]) => List[{}] ! {log}");
     // A function that only creates an effectful function is pure.
-    assert_eq!(ty("(defn logger [prefix] (fn [m] (log! (str prefix m))))", "logger"), "(Any) -> (Any) => nil ! {log}");
+    assert_eq!(ty("(defn logger [prefix] (fn [m] (log! (str prefix m))))", "logger"), "(Any) -> (Any) => {} ! {log}");
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn effects_stay_polymorphic() {
                (defn pure-use [n] (apply (fn [x] (+ x 1)) n))
                (defn loud! [s] (apply log! s))";
     assert_eq!(ty(src, "pure-use"), "(Int) -> Int");
-    assert_eq!(ty(src, "loud!"), "(String) => nil ! {log}");
+    assert_eq!(ty(src, "loud!"), "(String) => {} ! {log}");
 }
 
 #[test]
@@ -126,20 +126,19 @@ fn effects_run_directly() {
 }
 
 #[test]
-fn host_functions_can_take_optional_arguments() {
-    // `t | nil` bounds what a parameter takes: a string, nil, or a value
-    // that is one or the other, but nothing else.
+fn host_functions_take_optional_attributes() {
+    // A host function with optional parameters takes one record of them:
+    // an attribute may be left out, but if it is there it must fit.
     let mut cb = host();
-    cb.add_host("title!", "model", vec![Ty::maybe(Ty::str())], Ty::maybe(Ty::int())).unwrap();
-    assert_eq!(cb.lookup("title!").unwrap().type_string(), "(String | nil) => Int | nil ! {model}");
-    let src = "(defn a! [] (title! \"x\"))
-               (defn b! [] (title! nil))
-               (defn c! [d] (title! (get d \"k\")))
-               (defn d! [] (+ 1 (?? (title! nil) 0)))";
+    let params = Ty::record([("id".to_string(), Ty::str()), ("title".to_string(), Ty::opt(Ty::str()))]);
+    cb.add_host("rename!", "model", vec![params], Ty::record([])).unwrap();
+    assert_eq!(cb.lookup("rename!").unwrap().type_string(), "({id: String, title?: String}) => {} ! {model}");
+    let src = "(defn a! [] (rename! {:id \"x\" :title \"y\"}))
+               (defn b! [] (rename! {:id \"x\"}))
+               (defn c! [t] (rename! (if (= t \"\") {:id \"x\"} (assoc {:id \"x\"} :title t))))";
     cb.add_source(src).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(cb.lookup("c!").unwrap().type_string(), "(Dict[String | nil]) => Int | nil ! {model}");
-    let e = cb.add_source("(defn e! [] (title! 5))").unwrap_err().to_string();
+    let e = cb.add_source("(defn d! [] (rename! {:id \"x\" :title 5}))").unwrap_err().to_string();
     assert!(e.contains("Int is not a String"), "{e}");
-    let e = cb.add_source("(defn f! [] (+ 1 (title! nil)))").unwrap_err().to_string();
-    assert!(e.contains("nil is not a Int"), "{e}");
+    let e = cb.add_source("(defn e! [] (rename! {:title \"y\"}))").unwrap_err().to_string();
+    assert!(e.contains("no field `:id`"), "{e}");
 }

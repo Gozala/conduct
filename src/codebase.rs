@@ -340,7 +340,6 @@ fn resolve(
         Expr::Int(n) => Term::Int(*n),
         Expr::Str(s) => Term::Str(s.clone()),
         Expr::Bool(v) => Term::Bool(*v),
-        Expr::Nil => Term::Nil,
         Expr::Var(name, _) => {
             if let Some(pos) = scope.iter().rposition(|n| n == name) {
                 Term::Local((scope.len() - 1 - pos) as u32)
@@ -384,14 +383,6 @@ fn resolve(
             Term::Let(value, Box::new(body?))
         }
         Expr::If(c, t, e) => Term::If(b(c, scope)?, b(t, scope)?, b(e, scope)?),
-        Expr::IfSome(name, value, then, otherwise) => {
-            let value = b(value, scope)?;
-            scope.push(name.clone());
-            let then = resolve(then, scope, lookup);
-            scope.pop();
-            Term::IfSome(value, Box::new(then?), b(otherwise, scope)?)
-        }
-        Expr::Coalesce(x, y) => Term::Coalesce(b(x, scope)?, b(y, scope)?),
         Expr::And(x, y) => Term::And(b(x, scope)?, b(y, scope)?),
         Expr::Or(x, y) => Term::Or(b(x, scope)?, b(y, scope)?),
         Expr::Record(fields) => {
@@ -482,19 +473,12 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
             free_names(body, scope, out);
             scope.pop();
         }
-        Expr::IfSome(name, value, then, otherwise) => {
-            free_names(value, scope, out);
-            scope.push(name.clone());
-            free_names(then, scope, out);
-            scope.pop();
-            free_names(otherwise, scope, out);
-        }
         Expr::If(a, b, c) => {
             free_names(a, scope, out);
             free_names(b, scope, out);
             free_names(c, scope, out);
         }
-        Expr::Coalesce(a, b) | Expr::And(a, b) | Expr::Or(a, b) => {
+        Expr::And(a, b) | Expr::Or(a, b) => {
             free_names(a, scope, out);
             free_names(b, scope, out);
         }
@@ -517,7 +501,7 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
                 free_names(d, scope, out);
             }
         }
-        Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Nil | Expr::Keyword(_) => {}
+        Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Keyword(_) => {}
     }
 }
 
@@ -529,11 +513,11 @@ fn renumber_cycle(term: &mut Term, canonical: &dyn Fn(u32) -> u32) {
             renumber_cycle(c, canonical);
             args.iter_mut().for_each(|a| renumber_cycle(a, canonical));
         }
-        Term::Update(a, _, b) | Term::Let(a, b) | Term::Coalesce(a, b) | Term::And(a, b) | Term::Or(a, b) => {
+        Term::Update(a, _, b) | Term::Let(a, b) | Term::And(a, b) | Term::Or(a, b) => {
             renumber_cycle(a, canonical);
             renumber_cycle(b, canonical);
         }
-        Term::If(a, b, c) | Term::IfSome(a, b, c) => {
+        Term::If(a, b, c) => {
             renumber_cycle(a, canonical);
             renumber_cycle(b, canonical);
             renumber_cycle(c, canonical);

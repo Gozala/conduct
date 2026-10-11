@@ -26,30 +26,28 @@ fn records_are_structural() {
 }
 
 #[test]
-fn unions_from_branches_and_optionals() {
+fn unions_from_branches_and_defaults() {
     assert_eq!(ty("(defn pick [b] (if b 1 \"one\"))", "pick"), "(Bool) -> Int | String");
-    assert_eq!(ty("(defn maybe [b] (if b 1 nil))", "maybe"), "(Bool) -> Int | nil");
-    assert_eq!(ty("(defn lookup [d] (get d \"k\"))", "lookup"), "(Dict[a]) -> a | nil");
+    // A lookup names what it gives when the key is missing.
+    assert_eq!(ty("(defn lookup [d] (get d \"k\" 0))", "lookup"), "(Dict[a]) -> a | Int");
+    assert_eq!(ty("(defn head [xs] (first xs \"\"))", "head"), "(List[a]) -> a | String");
 }
 
 #[test]
-fn coalescing_removes_nil() {
-    // `a` could itself hold nil, so the result is `a` without nil.
-    assert_eq!(ty("(defn title [d] (?? (get d \"title\") \"\"))", "title"), "(Dict[a]) -> a \\ nil | String");
-    assert_eq!(
-        ty("(defn len [d] (if-some [t (get d \"t\")] (+ t 1) 0))", "len"),
-        // The dictionary may even hold nil values: `if-some` skips them.
-        "(Dict[Int | nil]) -> Int"
-    );
-    // A plain value passes where an optional is expected.
-    assert_eq!(ty("(defn f [x] (?? x 0)) (def y (f 3))", "y"), "Int");
-}
-
-#[test]
-fn nil_does_not_pass_as_int() {
+fn attributes_may_be_absent() {
+    // A record built in two branches may lack an attribute: reading it
+    // needs a default, or a `match`.
+    let src = "(defn draft [t] (if (= t \"\") {:id 1} (assoc {:id 1} :title t)))";
+    assert_eq!(ty(src, "draft"), "(a) -> {id: Int, title?: a}");
     let mut cb = Codebase::new();
-    let err = cb.add_source("(defn f [d] (+ (get d \"k\") 1))").unwrap_err().to_string();
-    assert!(err.contains("nil is not a Int"), "{err}");
+    cb.add_source(src).unwrap();
+    let err = cb.add_source("(def t (:title (draft \"x\")))").unwrap_err().to_string();
+    assert!(err.contains("no field `:title`"), "{err}");
+    cb.add_source("(def u (:title (draft \"x\") \"untitled\"))").unwrap();
+    assert_eq!(cb.lookup("u").unwrap().type_string(), "String");
+    // There is no `nil` to write.
+    let err = Codebase::new().add_source("(def n nil)").unwrap_err().to_string();
+    assert!(err.contains("conduct has no `nil`"), "{err}");
 }
 
 #[test]
@@ -76,7 +74,7 @@ fn recursion_and_mutual_recursion() {
 #[test]
 fn higher_order_builtins() {
     assert_eq!(ty("(defn incs [xs] (map (fn [x] (+ x 1)) xs))", "incs"), "(List[Int]) -> List[Int]");
-    assert_eq!(ty("(def mixed [1 \"a\" nil])", "mixed"), "List[Int | String | nil]");
+    assert_eq!(ty("(def mixed [1 \"a\" :x])", "mixed"), "List[Int | String | :x]");
 }
 
 #[test]
@@ -148,16 +146,13 @@ fn a_match_on_strings_or_integers_must_say_else() {
 
 #[test]
 fn a_match_narrows_what_it_tested() {
-    // Matching a field narrows the record it was read from: in the
-    // `some?` branch, `(:n job)` is not nil, so `+` takes it.
-    let src = "(defn inc [job] (match (:n job) nil 0 some? (+ (:n job) 1)))";
-    assert_eq!(ty(src, "inc"), "({n: Int | nil}) -> Int");
+    // Matching an attribute binds it where the record has it.
+    let src = "(defn inc [job] (match job {:n n} (+ n 1) _ 0))";
+    assert_eq!(ty(src, "inc"), "({n?: Int}) -> Int");
     let mut cb = Codebase::new();
     cb.add_source(src).unwrap();
-    assert!(cb.add_source("(def x (inc {:n nil}))").is_ok());
-    // Without the match, nil reaches `+`.
-    cb.add_source("(defn bad [job] (+ (:n job) 1))").unwrap();
-    assert!(cb.add_source("(def y (bad {:n nil}))").is_err());
+    assert!(cb.add_source("(def x (inc {:id 1}))").is_ok());
+    assert!(cb.add_source("(def y (inc {:id 1 :n \"one\"}))").is_err());
     // A record pattern narrows the matched value; with one field matched
     // against keywords in every clause, it needs no `_`.
     let src = "(defn describe [job]
@@ -185,9 +180,8 @@ fn a_match_without_else_must_be_able_to_cover() {
     assert!(cb.add_source("(defn f [j] (match j {:a :x} 1 {:b :y} 2))").is_ok());
     let err = cb.add_source("(defn f2 [j] (match j {:a \"x\"} 1 {:b :y} 2))").unwrap_err().to_string();
     assert!(err.contains("cannot cover every value without a `_` clause"), "{err}");
-    let err = cb.add_source("(defn g [j] (match j some? 1))").unwrap_err().to_string();
+    let err = cb.add_source("(defn g [j] (match j 1 0 2 1))").unwrap_err().to_string();
     assert!(err.contains("cannot cover"), "{err}");
-    assert!(cb.add_source("(defn h [j] (match j nil 0 some? 1))").is_ok());
 }
 
 #[test]

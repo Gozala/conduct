@@ -12,11 +12,11 @@ const TODO_APP: &str = include_str!("../examples/todo-app.cdt");
 /// The events the element hears, and a response with a JSON body.
 const DRIVER: &str = r#"
 (def attrs {"filter" ""})
-(defn ev [kind value] {:kind kind :value value :checked nil :key nil :status nil})
-(defn resp [body] {:kind "response" :value body :checked nil :key nil :status 200})
+(defn ev [kind value] {:kind kind :value value})
+(defn resp [body] {:kind "response" :value body :status 200})
 (def list-body "{\"todos\":[{\"id\":\"a\",\"title\":\"Buy milk\",\"completed\":false},{\"id\":\"b\",\"title\":\"Walk\",\"completed\":true}],\"counts\":{\"active\":1,\"completed\":1}}")
 
-(def connected (update (init attrs) "connected" (ev "connected" nil) attrs))
+(def connected (update (init attrs) "connected" {:kind "connected"} attrs))
 (def loaded (update (:model connected) "loaded" (resp list-body) attrs))
 (def ready (:model loaded))
 "#;
@@ -156,7 +156,7 @@ fn changes_go_out_and_reload() {
 #[test]
 fn the_reveal_moves_through_its_phases() {
     let steps = "(def measured (:model (update ready \"measured\" (ev \"resize\" \"320\") attrs)))
-                 (def revealed (:model (update measured \"revealed\" (ev \"transitionend\" nil) attrs)))
+                 (def revealed (:model (update measured \"revealed\" {:kind \"transitionend\"} attrs)))
                  (def revealing-page (view measured attrs))
                  (def shown-page (view revealed attrs))";
     let revealing = html(&eval(steps, "revealing-page"));
@@ -171,6 +171,6 @@ fn the_reveal_moves_through_its_phases() {
     );
     assert!(!shown.contains("spinner"), "{shown}");
     // The about pill opens the words about the demo.
-    let about = "(def open (view (:model (update ready \"about\" (ev \"click\" nil) attrs)) attrs))";
+    let about = "(def open (view (:model (update ready \"about\" {:kind \"click\"} attrs)) attrs))";
     assert!(html(&eval(about, "open")).contains("<div id=\"about\" class=\"about\">"));
 }

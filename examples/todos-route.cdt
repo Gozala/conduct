@@ -15,7 +15,7 @@
   {"id" (:id todo) "title" (:title todo) "completed" (:completed todo)})
 
 (defn filter-of [request]
-  (match (get (:query request) "filter")
+  (match (get (:query request) "filter" "all")
     "active" :active
     "completed" :completed
     _ :all))

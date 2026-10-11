@@ -3,6 +3,42 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## No nil
+
+- **No `nil` in the language.** Roc's case against Maybe (it does not
+  say why) and Hickey's "Maybe Not" (optionality belongs to the
+  context) point at different uses of "maybe"; each gets its own form.
+  Failure is `{:ok v} | {:error why}`; meaningful absence is a variant
+  that names it; an attribute that may be missing is absent from the
+  record, typed `k?: t`.
+- **Optional fields, not optional values.** `Opt(t)` is only ever a
+  record field's type. Reading one with `(:k r)` is a type error; it
+  takes a default, `(:k r d)`, or a `match`. The default form desugars
+  to that match, so it needed no new term.
+- **Optional fields and width subtyping.** A record typed without a
+  field may, through width subtyping, have it at run time with another
+  type, so trusting an absent field to stay absent would be unsound in
+  general. Simple-sub keeps every literal's own type as a lower bound,
+  so the precise type is what gets checked; only a declared type that
+  forgets fields (a host's) could hide one, and the glue builds exact
+  records. Revisit when annotations arrive.
+- **`get` and `first` take a default** rather than answer a variant:
+  the default is almost always what the caller wants next.
+- **A WIT function with `option` parameters takes one record of its
+  named parameters.** Lisp cannot leave out a positional argument, and
+  WIT names its parameters. Applied by hand to `update!` so far; the
+  general rule belongs with world bindings.
+- **Nothing to answer is `{}`,** Roc's empty record.
+- **JSON keeps an opaque null.** A `Json` may be null (or missing, or
+  malformed), seen through `json-type`; no other value can be. The
+  absent value still exists inside the runtime (0x02) for glue slots
+  and JSON, never reachable as a conduct value of another type.
+- **Removed:** `nil`, `nil?`, `??`, `if-some`, the `nil` and `some?`
+  patterns, and the solver's `t \ nil` and `t | nil`. The forms give an
+  error that says what to write instead.
+- **Displayed types say more:** a union of records shows a field one of
+  them lacks as `k?:`, rather than dropping it.
+
 ## Unions
 
 - **Variants are records of one field,** as asked: `{:ok t}`. Keywords
@@ -56,8 +92,10 @@ it. Newest first.
   feature, which Wasmtime and the polyfill leave off by default. Each
   wait uses a waitable set of its own, so two requests in flight never
   take each other's events.
-- **`t | nil` as a type former.** Needed to declare `update!`'s optional
-  parameters; Simple-sub's unions only appear where values come out.
+- **`t | nil` as a type former** (superseded by No nil: `update!` takes
+  a record whose `title` may be absent). Needed to declare `update!`'s
+  optional parameters; Simple-sub's unions only appear where values
+  come out.
   It is safe to solve because nil is disjoint from every other head
   type. Two spellings of an optional now exist (an inferred union and
   this), and they display the same. If source annotations come, they
@@ -247,7 +285,7 @@ it. Newest first.
 - **Hash the term, not the type.** With full inference a type follows
   from the term and its dependencies, so it is derived data. Keeps
   hashes stable while the type system changes.
-- **Simple-sub plus `t \ nil`.** Algebraic subtyping for unions and
+- **Simple-sub plus `t \ nil`** (superseded by No nil). Algebraic subtyping for unions and
   intersections with principal inference; one targeted negation (nil
   removal) for set-style optionals instead of full MLstruct negation.
 - **Effects as data in elements.** `update` returns custom events and

@@ -58,12 +58,15 @@ fn closures_capture() {
 }
 
 #[test]
-fn strings_and_optionals() {
+fn strings_and_defaults() {
     let src = "(def d {\"title\" \"Buy milk\"})
-               (def t (str (?? (get d \"title\") \"untitled\") \" / \" (?? (get d \"nope\") \"none\") \" \" 42 \" \" true))";
+               (def t (str (get d \"title\" \"untitled\") \" / \" (get d \"nope\" \"none\") \" \" 42 \" \" true))";
     assert_eq!(run(src, "t", &[]), Value::Str("Buy milk / none 42 true".into()));
-    let src = "(def n (if-some [x (get {\"a\" 2} \"a\")] (+ x 1) 0))";
-    assert_eq!(run(src, "n", &[]), Value::Int(3));
+    // An attribute read with a default, and a list's first with one.
+    let src = "(defn title [r] (:title r \"untitled\"))
+               (def n [(title {:title \"a\" :id 1}) (title {:id 2}) (first [] \"none\") (first [\"x\"] \"none\")])";
+    let strs = |v: &[&str]| Value::List(v.iter().map(|s| Value::Str(s.to_string())).collect());
+    assert_eq!(run(src, "n", &[]), strs(&["a", "untitled", "none", "x"]));
 }
 
 #[test]
@@ -75,7 +78,7 @@ fn records_and_equality() {
     let mut fields = name_fields(v, &["a", "b"]);
     fields.sort_by(|x, y| x.0.cmp(&y.0));
     assert_eq!(fields, vec![("a".into(), Value::Str("x".into())), ("b".into(), Value::Int(2))]);
-    assert_eq!(run("(def e (= [1 \"a\" nil] [1 \"a\" nil]))", "e", &[]), Value::Bool(true));
+    assert_eq!(run("(def e (= [1 \"a\" :x] [1 \"a\" :x]))", "e", &[]), Value::Bool(true));
     assert_eq!(run("(def e (= {\"a\" 1 \"b\" 2} {\"b\" 2 \"a\" 1}))", "e", &[]), Value::Bool(true));
 }
 
@@ -118,14 +121,17 @@ fn ownership_edge_cases() {
     assert_eq!(run(src, "c", &[]), Value::Int(8));
     assert_eq!(run(src, "d", &[]), Value::List(vec![Value::Str("l".into()), Value::Str("r".into())]));
 
-    // Optionals: the bound value is dropped when its arm ignores it,
-    // and the fallback's values are dropped when it is not taken.
-    let src = "(defn f [d fallback] (?? (get d \"k\") (str fallback \"!\")))
-               (defn g [d] (if-some [x (get d \"k\")] 1 0))
+    // Defaults: a default not taken is dropped, and a bound attribute
+    // its arm ignores is dropped.
+    let src = "(defn f [d fallback] (get d \"k\" (str fallback \"!\")))
+               (defn g [r] (match r {:k x} 1 _ 0))
+               (defn h [r fallback] (:k r (str fallback \"!\")))
                (def e (f {\"k\" \"v\"} \"unused\"))
-               (def k (g {\"k\" [\"heap\"]}))";
+               (def k (g {:k [\"heap\"] :n 1}))
+               (def m (h {:k \"v\" :n 1} \"unused\"))";
     assert_eq!(run(src, "e", &[]), Value::Str("v".into()));
     assert_eq!(run(src, "k", &[]), Value::Int(1));
+    assert_eq!(run(src, "m", &[]), Value::Str("v".into()));
 
     // Short circuits drop what the skipped side would have consumed.
     let src = "(defn both [a xs] (and a (= (count xs) 2)))
@@ -160,13 +166,13 @@ fn json_round_trips() {
     let doc = r#"{\"todos\":[{\"id\":\"a\",\"title\":\"Buy \\\"oat\\\" milk \\u00e9\\ud83d\\ude00\",\"completed\":true}],\"counts\":{\"active\":2,\"completed\":-1.5e3}}"#;
     let src = format!(
         "(def doc (parse-json \"{doc}\"))
-         (def first-title (json-str (json-get (first (json-items (json-get doc \"todos\"))) \"title\")))
-         (def done (json-bool (json-get (first (json-items (json-get doc \"todos\"))) \"completed\")))
+         (def first-title (json-str (json-get (first (json-items (json-get doc \"todos\")) doc) \"title\")))
+         (def done (json-bool (json-get (first (json-items (json-get doc \"todos\")) doc) \"completed\")))
          (def active (json-int (json-get (json-get doc \"counts\") \"active\")))
          (def completed (json-int (json-get (json-get doc \"counts\") \"completed\")))
          (def missing (json-int (json-get doc \"nope\")))
          (def bad (json-str (parse-json \"{{\\\"a\\\": }}\")))
-         (def encoded (to-json {{\"title\" \"say \\\"hi\\\"\\n\" \"completed\" false \"tags\" [1 nil true]}}))
+         (def encoded (to-json {{\"title\" \"say \\\"hi\\\"\\n\" \"completed\" false \"tags\" [1 (parse-json \"null\") true]}}))
          (def again (json-str (json-get (parse-json encoded) \"title\")))"
     );
     assert_eq!(run(&src, "first-title", &[]), Value::Str("Buy \"oat\" milk é😀".into()));
@@ -219,14 +225,14 @@ fn keywords_and_match() {
 #[test]
 fn matching_shapes() {
     let src = r#"
-(defn since [job] (match (:started-at job) nil "not started" some? (str "Since " (:started-at job))))
+(defn since [job] (match job {:started-at at} (str "Since " at) _ "not started"))
 (defn describe [job]
   (match job
     {:status :active :owner {:name "ann"}} "ann's"
     {:status :active} (str "Since " (:since job))
     {:status :suspended} "paused"
     {:status _} "other"))
-(def a [(since {:started-at nil}) (since {:started-at "May"})])
+(def a [(since {:id 1}) (since {:id 2 :started-at "May"})])
 (def b [(describe {:status :active :since "May" :owner {:name "ann"}})
         (describe {:status :active :since "May" :owner {:name "bo"}})
         (describe {:status :suspended :since "" :owner {:name ""}})

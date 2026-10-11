@@ -3,7 +3,7 @@
 ;; are some. A filter is a link to a URL hash, which the page turns into
 ;; <todo-app>'s `filter`.
 ;;
-;; It keeps no state of its own, so it has no `init`: its model is nil.
+;; It keeps no state of its own, so it has no `init`: its model is `{}`.
 
 (def attributes ["active" "completed" "filter"])
 
@@ -55,7 +55,7 @@
       }
     ")
 
-(defn attr [attrs name] (?? (get attrs name) ""))
+(defn attr [attrs name] (get attrs name ""))
 
 (defn update [model handler event attrs]
   {:model model :effects (if (= handler "clear") [(emit "todo-clear" "")] [])})
@@ -77,4 +77,4 @@
           (link attrs "completed" "Completed" "#/completed")])
        (if (and (not= completed "0") (not= completed ""))
          (h "button" {"class" "clear-completed"} ["Clear completed"] {"click" "clear"})
-         nil)])))
+         [])])))

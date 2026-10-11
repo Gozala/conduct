@@ -106,15 +106,26 @@ fn model_functions() -> Vec<(&'static str, &'static str, Vec<Ty>, Ty)> {
             Ty::record([("todos".to_string(), Ty::list(todo_type())), ("counts".to_string(), counts)]),
         ),
         ("add!", "add", vec![Ty::str()], todo_result()),
-        ("update!", "update", vec![Ty::str(), Ty::maybe(Ty::str()), Ty::maybe(Ty::bool())], todo_result()),
+        // A WIT function with `option` parameters takes one record of its
+        // named parameters, where an absent attribute is `none`.
+        (
+            "update!",
+            "update",
+            vec![Ty::record([
+                ("id".to_string(), Ty::str()),
+                ("title".to_string(), Ty::opt(Ty::str())),
+                ("completed".to_string(), Ty::opt(Ty::bool())),
+            ])],
+            todo_result(),
+        ),
         (
             "remove!",
             "remove",
             vec![Ty::str()],
             Ty::tags([("ok".to_string(), None), ("error".to_string(), Some(model_error()))]),
         ),
-        ("toggle-all!", "toggle-all", vec![Ty::bool()], Ty::nil()),
-        ("clear-completed!", "clear-completed", vec![], Ty::nil()),
+        ("toggle-all!", "toggle-all", vec![Ty::bool()], Ty::record([])),
+        ("clear-completed!", "clear-completed", vec![], Ty::record([])),
     ]
 }
 
@@ -215,6 +226,7 @@ fn model_glue(b: &mut Builder, used: &BTreeSet<String>) -> String {
     let not_found = b.static_keyword("not-found");
     let empty_title = b.static_keyword("empty-title");
     let ok = b.static_keyword("ok");
+    let nothing = b.static_empty_record();
     let model = "demo:todo/model";
     let mut out = String::new();
     out.push_str(&record_func("$todo_new", &["id", "title", "completed"]));
@@ -239,6 +251,18 @@ fn model_glue(b: &mut Builder, used: &BTreeSet<String>) -> String {
     (if (result i64) (i32.load8_u (local.get $at))
       (then (call $error_new (call $error_at (i32.add (local.get $at) (i32.const 4)))))
       (else (call $ok_new (call $todo_at (i32.add (local.get $at) (i32.const 4)))))))
+  (func $field_at (param $r i64) (param $id i64) (result i64)
+    ;; The record's attribute `id`, borrowed, or 2 where it has none.
+    (local $p i32) (local $n i32) (local $i i32)
+    (local.set $p (call $ptr (local.get $r)))
+    (local.set $n (call $len (local.get $r)))
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (if (i64.eq (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 4)))) (local.get $id))
+        (then (return (i64.load offset=16 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 4)))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    (i64.const 2))
   (func $ret_area (result i32)
     ;; Where a model call writes its result: freed by the caller.
     (local $p i32)
@@ -291,20 +315,27 @@ fn model_glue(b: &mut Builder, used: &BTreeSet<String>) -> String {
             "update" => (
                 "(param i32 i32 i32 i32 i32 i32 i32 i32)",
                 format!(
-                    r#"    (local $ret i32) (local $v i64)
+                    r#"    (local $ret i32) (local $v i64) (local $id i64) (local $title i64) (local $done i64)
+    (local.set $id (call $field_at (local.get $a0) (i64.const {id})))
+    (local.set $title (call $field_at (local.get $a0) (i64.const {title})))
+    (local.set $done (call $field_at (local.get $a0) (i64.const {completed})))
     (local.set $ret (call $ret_area))
     (call $m_update
-      (call $str_data (local.get $a0)) (call $len (local.get $a0))
-      (i64.ne (local.get $a1) (i64.const {NIL}))
-      (if (result i32) (i64.ne (local.get $a1) (i64.const {NIL})) (then (call $str_data (local.get $a1))) (else (i32.const 0)))
-      (if (result i32) (i64.ne (local.get $a1) (i64.const {NIL})) (then (call $len (local.get $a1))) (else (i32.const 0)))
-      (i64.ne (local.get $a2) (i64.const {NIL}))
-      (i64.eq (local.get $a2) (i64.const {TRUE}))
+      (call $str_data (local.get $id)) (call $len (local.get $id))
+      (i64.ne (local.get $title) (i64.const {ABSENT}))
+      (if (result i32) (i64.ne (local.get $title) (i64.const {ABSENT})) (then (call $str_data (local.get $title))) (else (i32.const 0)))
+      (if (result i32) (i64.ne (local.get $title) (i64.const {ABSENT})) (then (call $len (local.get $title))) (else (i32.const 0)))
+      (i64.ne (local.get $done) (i64.const {ABSENT}))
+      (i64.eq (local.get $done) (i64.const {TRUE}))
       (local.get $ret))
     (local.set $v (call $todo_result (local.get $ret)))
     (call $free (local.get $ret))
     (local.get $v)"#,
                     TRUE = crate::codegen::TRUE,
+                    ABSENT = NIL,
+                    id = field_id("id"),
+                    title = field_id("title"),
+                    completed = field_id("completed"),
                 ),
             ),
             "remove" => (
@@ -324,11 +355,11 @@ fn model_glue(b: &mut Builder, used: &BTreeSet<String>) -> String {
             "toggle-all" => (
                 "(param i32)",
                 format!(
-                    "    (call $m_toggle_all (i64.eq (local.get $a0) (i64.const {}))) (i64.const {NIL})",
+                    "    (call $m_toggle_all (i64.eq (local.get $a0) (i64.const {}))) (i64.const {nothing})",
                     crate::codegen::TRUE
                 ),
             ),
-            _ => ("", format!("    (call $m_clear_completed) (i64.const {NIL})")),
+            _ => ("", format!("    (call $m_clear_completed) (i64.const {nothing})")),
         };
         b.add_import(format!("(import \"{model}\" \"{wit}\" (func $m_{} {import}))", wit.replace('-', "_")));
         let params: String = (0..params.len()).map(|i| format!(" (param $a{i} i64)")).collect();

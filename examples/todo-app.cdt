@@ -143,7 +143,7 @@
       }
     ")
 
-(defn attr [attrs name] (?? (get attrs name) ""))
+(defn attr [attrs name] (get attrs name ""))
 
 (defn filter-of [attrs]
   (let [f (attr attrs "filter")] (if (= f "") "all" f)))
@@ -171,15 +171,12 @@
                   :active (json-int (json-get counts "active")))
            :completed (json-int (json-get counts "completed")))))
 
-(defn find-todo [model id]
-  (first (filter (fn [todo] (= (:id todo) id)) (:todos model))))
-
 (defn edit [value]
   ;; The detail is the id, a newline, and the new title. An edit to an
   ;; empty title deletes the todo.
   (let [parts (split value "\n")
-        id (?? (first parts) "")
-        title (trim (?? (first (rest parts)) ""))]
+        id (first parts "")
+        title (trim (first (rest parts) ""))]
     (if (= title "")
       (change "DELETE" (str "/api/todos/" id) "")
       (change "PATCH" (str "/api/todos/" id) (to-json {"title" title})))))
@@ -187,7 +184,7 @@
 (defn with [model effects] {:model model :effects effects})
 
 (defn update [model handler event attrs]
-  (let [value (?? (:value event) "")]
+  (let [value (:value event "")]
     (match handler
       ;; Loading the list.
       "connected" (with model [(load attrs)])
@@ -204,11 +201,12 @@
       ;; What a person did.
       "add" (with model [(change "POST" "/api/todos" (to-json {"title" value}))])
       "toggleAll" (with model [(change "PATCH" "/api/todos" (to-json {"completed" (= value "true")}))])
+      ;; The todo with that id, if there is one, flips.
       "toggle"
-        (if-some [todo (find-todo model value)]
-          (with model [(change "PATCH" (str "/api/todos/" (:id todo))
-                               (to-json {"completed" (not (:completed todo))}))])
-          (with model []))
+        (with model
+          (map (fn [todo] (change "PATCH" (str "/api/todos/" (:id todo))
+                                  (to-json {"completed" (not (:completed todo))})))
+               (filter (fn [todo] (= (:id todo) value)) (:todos model))))
       "destroy" (with model [(change "DELETE" (str "/api/todos/" value) "")])
       "edit" (with model [(edit value)])
       "clear" (with model [(change "DELETE" "/api/todos" "")])
@@ -246,7 +244,7 @@
                   "aria-controls" "about"}
         [(h "span" {"class" "icon" "aria-hidden" "true"} ["i"]) "About this demo"]
         {"click" "about"})
-     (if (:about model) (h "div" {"id" "about" "class" "about"} about) nil)]))
+     (if (:about model) (h "div" {"id" "about" "class" "about"} about) [])]))
 
 (defn item [todo]
   (h "todo-item" {"key" (:id todo)

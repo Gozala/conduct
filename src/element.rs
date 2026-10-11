@@ -11,8 +11,9 @@
 //! view       : (m, Dict[String]) -> View
 //! ```
 //!
-//! where `Event` is `{kind: String, value: String | nil,
-//! checked: Bool | nil, key: String | nil, status: Int | nil}`.
+//! where `Event` is `{kind: String, value?: String, checked?: Bool,
+//! key?: String, status?: Int}`: an event has only the attributes that
+//! apply to it, read with a default, `(:value event "")`.
 //!
 //! `update` hears everything that happens to the element, by handler
 //! name: the handlers the view's events name, `"connected"` when the
@@ -37,7 +38,7 @@
 //! `update` can ask for a request.
 
 use crate::codebase::Codebase;
-use crate::codegen::{Builder, CodegenError, NIL, field_id};
+use crate::codegen::{Builder, CodegenError, field_id};
 use crate::fetch;
 use crate::term::{Hash, Op, Term};
 use crate::types::{Ty, TypeError};
@@ -123,20 +124,15 @@ pub struct ElementDefs {
     pub view: Hash,
 }
 
-/// The record a handler receives.
-pub fn event_type(cb: &Codebase, level: u32) -> Ty {
-    let optional = |t: Ty| {
-        let v = cb.solver.fresh(level);
-        v.lower.borrow_mut().push(t);
-        v.lower.borrow_mut().push(Ty::nil());
-        Ty::Var(v)
-    };
+/// The record a handler receives: its kind, and whichever of the
+/// others the event has.
+pub fn event_type() -> Ty {
     Ty::record([
         ("kind".to_string(), Ty::str()),
-        ("value".to_string(), optional(Ty::str())),
-        ("checked".to_string(), optional(Ty::bool())),
-        ("key".to_string(), optional(Ty::str())),
-        ("status".to_string(), optional(Ty::int())),
+        ("value".to_string(), Ty::opt(Ty::str())),
+        ("checked".to_string(), Ty::opt(Ty::bool())),
+        ("key".to_string(), Ty::opt(Ty::str())),
+        ("status".to_string(), Ty::opt(Ty::int())),
     ])
 }
 
@@ -168,14 +164,14 @@ pub fn check(cb: &Codebase) -> Result<ElementDefs, ElementError> {
     fits("styles", defs.styles, Ty::str())?;
     match defs.init {
         Some(_) => fits("init", defs.init, Ty::func(vec![attrs()], model.clone()))?,
-        // With no `init`, the model is nil.
-        None => s.constrain(&Ty::nil(), &model).map_err(|error| ElementError::Contract { name: "init", error })?,
+        // With no `init`, the model is an empty record.
+        None => s.constrain(&Ty::record([]), &model).map_err(|error| ElementError::Contract { name: "init", error })?,
     }
     fits(
         "update",
         defs.update,
         Ty::func(
-            vec![model.clone(), Ty::str(), event_type(cb, level), attrs()],
+            vec![model.clone(), Ty::str(), event_type(), attrs()],
             Ty::record([("model".to_string(), model.clone()), ("effects".to_string(), Ty::list(Ty::Effect))]),
         ),
     )?;
@@ -228,7 +224,7 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     };
     let init = match defs.init {
         Some(h) => b.call(h, &["(call $dup (local.get $attrs))".into()])?,
-        None => format!("(i64.const {NIL})"),
+        None => format!("(i64.const {})", b.static_empty_record()),
     };
     // `update` takes the model out of the table and gives the next one
     // back; the table keeps the attributes, so `update` gets a copy.
@@ -318,7 +314,7 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     b.add_func(ABI_FUNCS);
 
     // A view's nodes, flattened in document order: lists among the
-    // children are spliced in, and nil children are skipped. The lowered
+    // children are spliced in, and an empty list adds nothing. The lowered
     // node list points into the view's strings, so the view and every
     // block allocated here are released in `post-return`.
     let mut f = String::new();
@@ -541,29 +537,34 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
 "#
     );
     // An event record, fields sorted by id as every record is. Each
-    // argument is consumed.
+    // argument is consumed. An attribute the event does not have comes
+    // as the glue's internal "absent" (2), and the record leaves it out.
     let mut fields = [
-        (field_id("kind"), "(local.get $kind)"),
-        (field_id("value"), "(local.get $value)"),
-        (field_id("checked"), "(local.get $checked)"),
-        (field_id("key"), "(local.get $key)"),
-        (field_id("status"), "(local.get $status)"),
+        (field_id("kind"), "kind"),
+        (field_id("value"), "value"),
+        (field_id("checked"), "checked"),
+        (field_id("key"), "key"),
+        (field_id("status"), "status"),
     ];
     fields.sort_by_key(|f| f.0);
+    let mut count = String::new();
     let mut stores = String::new();
-    for (i, (id, v)) in fields.iter().enumerate() {
+    for (id, v) in fields.iter() {
+        let _ = write!(
+            count,
+            " (if (i64.ne (local.get ${v}) (i64.const 2)) (then (local.set $n (i32.add (local.get $n) (i32.const 1)))))"
+        );
         let _ = write!(
             stores,
-            " (i64.store offset={} (local.get $w) (i64.const {id})) (i64.store offset={} (local.get $w) {v})",
-            8 + 16 * i,
-            16 + 16 * i
+            "\n    (if (i64.ne (local.get ${v}) (i64.const 2)) (then (i64.store offset=8 (local.get $at) (i64.const {id})) (i64.store offset=16 (local.get $at) (local.get ${v})) (local.set $at (i32.add (local.get $at) (i32.const 16)))))"
         );
     }
     let _ = write!(
         x,
         r#"  (func $event_new (param $kind i64) (param $value i64) (param $checked i64) (param $key i64) (param $status i64) (result i64)
-    (local $w i32)
-    (local.set $w (call $obj (i32.const 3) (i32.const 5) (i32.const 80))){stores}
+    (local $w i32) (local $n i32) (local $at i32){count}
+    (local.set $w (call $obj (i32.const 3) (local.get $n) (i32.shl (local.get $n) (i32.const 4))))
+    (local.set $at (local.get $w)){stores}
     (i64.extend_i32_u (local.get $w)))
   (func $lit_owned (param $s i64) (result i64)
     (call $dup (local.get $s)))
