@@ -111,6 +111,29 @@ impl Infer<'_> {
                 let items = items.iter().map(|t| self.term(t, env, level)).collect::<Result<Vec<_>>>()?;
                 Ty::list(self.join(items, level)?)
             }
+            Term::Keyword(k) => Ty::keys([k.clone()]),
+            Term::Match(scrutinee, clauses, default) => {
+                let t = self.term(scrutinee, env, level)?;
+                if default.is_none() {
+                    // No `:else`: the value must be one of the keywords
+                    // the clauses name, so the match is exhaustive.
+                    let keys = clauses.iter().filter_map(|(p, _)| match p {
+                        Term::Keyword(k) => Some(k.clone()),
+                        _ => None,
+                    });
+                    s.constrain(&t, &Ty::keys(keys)).map_err(|e| {
+                        TypeError(format!("a `match` without `:else` must cover every value it is given: {e}"))
+                    })?;
+                }
+                let mut results = Vec::new();
+                for (_, result) in clauses {
+                    results.push(self.term(result, env, level)?);
+                }
+                if let Some(d) = default {
+                    results.push(self.term(d, env, level)?);
+                }
+                self.join(results, level)?
+            }
             Term::Prim(op, args) => {
                 let args = args.iter().map(|a| self.term(a, env, level)).collect::<Result<Vec<_>>>()?;
                 let (params, ret) = signature(s, *op, args.len(), level);

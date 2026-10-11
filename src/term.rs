@@ -223,6 +223,10 @@ pub enum Term {
     Dict(Vec<(String, Term)>),
     List(Vec<Term>),
     Prim(Op, Vec<Term>),
+    Keyword(String),
+    /// The scrutinee, each clause's literal pattern and result, and the
+    /// `:else` result if there is one.
+    Match(Box<Term>, Vec<(Term, Term)>, Option<Box<Term>>),
 }
 
 impl Term {
@@ -246,7 +250,18 @@ impl Term {
             | Term::Nil
             | Term::Local(_)
             | Term::Ref(_)
+            | Term::Keyword(_)
             | Term::CycleRef(_) => {}
+            Term::Match(scrutinee, clauses, default) => {
+                scrutinee.walk(f);
+                for (pattern, result) in clauses {
+                    pattern.walk(f);
+                    result.walk(f);
+                }
+                if let Some(d) = default {
+                    d.walk(f);
+                }
+            }
             Term::Fn(_, b) | Term::Field(_, b) => b.walk(f),
             Term::App(callee, args) => {
                 callee.walk(f);
@@ -400,6 +415,26 @@ impl Term {
                 out.push(0x15);
                 text(out, op.name());
                 many(out, args, cycle_index);
+            }
+            Term::Keyword(k) => {
+                out.push(0x17);
+                text(out, k);
+            }
+            Term::Match(scrutinee, clauses, default) => {
+                out.push(0x18);
+                scrutinee.encode(out, cycle_index);
+                uint(out, clauses.len() as u64);
+                for (pattern, result) in clauses {
+                    pattern.encode(out, cycle_index);
+                    result.encode(out, cycle_index);
+                }
+                match default {
+                    Some(d) => {
+                        out.push(1);
+                        d.encode(out, cycle_index);
+                    }
+                    None => out.push(0),
+                }
             }
         }
     }

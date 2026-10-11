@@ -342,6 +342,18 @@ fn resolve(
         }
         Expr::Field(name, record) => Term::Field(name.clone(), b(record, scope)?),
         Expr::Update(record, name, value) => Term::Update(b(record, scope)?, name.clone(), b(value, scope)?),
+        Expr::Keyword(k) => Term::Keyword(k.clone()),
+        Expr::Match(scrutinee, clauses, default) => Term::Match(
+            b(scrutinee, scope)?,
+            clauses
+                .iter()
+                .map(|(p, r)| Ok((resolve(p, scope, lookup)?, resolve(r, scope, lookup)?)))
+                .collect::<Result<_, ResolveError>>()?,
+            match default {
+                Some(d) => Some(b(d, scope)?),
+                None => None,
+            },
+        ),
         Expr::Dict(entries) => Term::Dict(
             entries
                 .iter()
@@ -425,7 +437,14 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
             free_names(v, scope, out);
         }
         Expr::List(items) => items.iter().for_each(|e| free_names(e, scope, out)),
-        Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Nil => {}
+        Expr::Match(scrutinee, clauses, default) => {
+            free_names(scrutinee, scope, out);
+            clauses.iter().for_each(|(_, r)| free_names(r, scope, out));
+            if let Some(d) = default {
+                free_names(d, scope, out);
+            }
+        }
+        Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Nil | Expr::Keyword(_) => {}
     }
 }
 
@@ -448,6 +467,13 @@ fn renumber_cycle(term: &mut Term, canonical: &dyn Fn(u32) -> u32) {
         }
         Term::Record(fs) | Term::Dict(fs) => fs.iter_mut().for_each(|(_, t)| renumber_cycle(t, canonical)),
         Term::List(items) | Term::Prim(_, items) => items.iter_mut().for_each(|t| renumber_cycle(t, canonical)),
+        Term::Match(scrutinee, clauses, default) => {
+            renumber_cycle(scrutinee, canonical);
+            clauses.iter_mut().for_each(|(_, r)| renumber_cycle(r, canonical));
+            if let Some(d) = default {
+                renumber_cycle(d, canonical);
+            }
+        }
         _ => {}
     }
 }

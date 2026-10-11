@@ -29,6 +29,13 @@ pub enum Expr {
     Update(Box<Expr>, String, Box<Expr>),
     Dict(Vec<(String, Expr)>),
     List(Vec<Expr>),
+    /// `:active`: a keyword, a value whose type is that keyword alone.
+    Keyword(String),
+    /// `(match e p1 r1 p2 r2 ... :else r)`: the result of the first
+    /// pattern equal to `e`. Patterns are keyword, string, or integer
+    /// literals. Without `:else`, every pattern must be a keyword, and
+    /// `e` must be one of them.
+    Match(Box<Expr>, Vec<(Expr, Expr)>, Option<Box<Expr>>),
 }
 
 /// A top-level definition, before resolution.
@@ -61,7 +68,7 @@ fn err<T>(message: impl Into<String>, span: Span) -> Result<T> {
 
 /// Words that cannot name a definition or a local.
 const RESERVED: &[&str] =
-    &["def", "defn", "fn", "let", "if", "if-some", "??", "and", "or", "cond", "nil", "true", "false"];
+    &["def", "defn", "fn", "let", "if", "if-some", "??", "and", "or", "cond", "match", "nil", "true", "false"];
 
 /// Parse top-level forms into definitions.
 pub fn defs(forms: &[Sexp]) -> Result<Vec<Def>> {
@@ -129,7 +136,7 @@ pub fn expr(form: &Sexp) -> Result<Expr> {
             "false" => Expr::Bool(false),
             _ => Expr::Var(name.clone(), *span),
         }),
-        Sexp::Keyword(k, span) => err(format!("a keyword is not a value; use `(:{k} record)` to read a field"), *span),
+        Sexp::Keyword(k, _) => Ok(Expr::Keyword(k.clone())),
         Sexp::Vector(items, _) => Ok(Expr::List(items.iter().map(expr).collect::<Result<_>>()?)),
         Sexp::Map(items, span) => map_literal(items, *span),
         Sexp::List(items, span) => list_form(items, *span),
@@ -259,6 +266,7 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
                 }
                 return Ok(out);
             }
+            "match" => return match_form(args, span),
             _ => {}
         }
         if name == "assoc"
@@ -270,4 +278,60 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
     let callee = expr(head)?;
     let args = args.iter().map(expr).collect::<Result<Vec<_>>>()?;
     Ok(Expr::App(Box::new(callee), args, span))
+}
+
+fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
+    let Some((scrutinee, clauses)) = args.split_first() else {
+        return err("`match` takes a value and pairs of a pattern and a result", span);
+    };
+    if clauses.is_empty() || !clauses.len().is_multiple_of(2) {
+        return err("`match` takes a value and pairs of a pattern and a result", span);
+    }
+    let mut arms: Vec<(Expr, Expr)> = Vec::new();
+    let mut default = None;
+    let pairs: Vec<&[Sexp]> = clauses.chunks(2).collect();
+    for (i, pair) in pairs.iter().enumerate() {
+        let pattern = match &pair[0] {
+            Sexp::Keyword(k, kspan) if k == "else" => {
+                if i + 1 != pairs.len() {
+                    return err("`:else` must be the last clause of a `match`", *kspan);
+                }
+                default = Some(boxed(&pair[1])?);
+                continue;
+            }
+            Sexp::Keyword(k, _) => Expr::Keyword(k.clone()),
+            Sexp::Str(s, _) => Expr::Str(s.clone()),
+            Sexp::Int(n, _) => Expr::Int(*n),
+            other => {
+                return err(
+                    format!("a `match` pattern is a keyword, string, or integer literal, not `{other}`"),
+                    other.span(),
+                );
+            }
+        };
+        if arms.iter().any(|(p, _)| same_literal(p, &pattern)) {
+            return err(format!("the pattern `{}` appears twice", pair[0]), pair[0].span());
+        }
+        arms.push((pattern, expr(&pair[1])?));
+    }
+    if arms.is_empty() {
+        return err("a `match` needs a pattern besides `:else`", span);
+    }
+    // Keywords are a closed set the type checker can see the whole of;
+    // strings and integers never are, so leaving them out must be said.
+    if default.is_none()
+        && let Some((open, _)) = arms.iter().find(|(p, _)| !matches!(p, Expr::Keyword(_)))
+    {
+        let kind = if matches!(open, Expr::Str(_)) { "strings" } else { "integers" };
+        return err(format!("a `match` on {kind} never covers every value: end it with an `:else` clause"), span);
+    }
+    Ok(Expr::Match(boxed(scrutinee)?, arms, default))
+}
+
+fn same_literal(a: &Expr, b: &Expr) -> bool {
+    match (a, b) {
+        (Expr::Keyword(x), Expr::Keyword(y)) | (Expr::Str(x), Expr::Str(y)) => x == y,
+        (Expr::Int(x), Expr::Int(y)) => x == y,
+        _ => false,
+    }
 }

@@ -51,6 +51,9 @@ pub const KIND_CLOSURE: u32 = 5;
 pub const KIND_VIEW: u32 = 6;
 pub const KIND_EMIT: u32 = 7;
 pub const KIND_FETCH: u32 = 8;
+/// A keyword: laid out as a string of its name, without the colon. Every
+/// keyword is static, interned by the module.
+pub const KIND_KEYWORD: u32 = 9;
 
 const RUNTIME: &str = include_str!("runtime.wat");
 const RUNTIME_DATA: &[u8] = b"truefalse[] <value>null{}:,\"\\u";
@@ -234,6 +237,20 @@ impl<'a> Builder<'a> {
         bytes.extend_from_slice(s.as_bytes());
         let addr = self.static_object(bytes);
         self.strings.insert(s.to_string(), addr);
+        addr
+    }
+
+    /// A keyword object in static data, as a value.
+    pub fn static_keyword(&mut self, k: &str) -> u32 {
+        let key = format!(":{k}");
+        if let Some(addr) = self.strings.get(&key) {
+            return *addr;
+        }
+        let mut bytes = KIND_KEYWORD.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&(k.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(k.as_bytes());
+        let addr = self.static_object(bytes);
+        self.strings.insert(key, addr);
         addr
     }
 
@@ -431,6 +448,22 @@ impl<'a> Builder<'a> {
             Term::Bool(b) => format!("(i64.const {})", if *b { TRUE } else { FALSE }),
             Term::Nil => format!("(i64.const {NIL})"),
             Term::Str(s) => format!("(i64.const {})", self.static_str(s)),
+            Term::Keyword(k) => format!("(i64.const {})", self.static_keyword(k)),
+            Term::Match(scrutinee, clauses, default) => {
+                // A `let` of the value and a chain of `if`s on its
+                // equality with each pattern. A match without `:else`
+                // is exhaustive, so its last `else` is never taken.
+                let mut chain = match default {
+                    Some(d) => shift(d, 1, 0),
+                    None => Term::Nil,
+                };
+                for (pattern, result) in clauses.iter().rev() {
+                    let test = Term::Prim(Op::Eq, vec![Term::Local(0), pattern.clone()]);
+                    chain = Term::If(Box::new(test), Box::new(shift(result, 1, 0)), Box::new(chain));
+                }
+                let lowered = Term::Let(scrutinee.clone(), Box::new(chain));
+                self.expr(&lowered, env, frame, cycle, live)?
+            }
             Term::Local(i) => match &env[env.len() - 1 - *i as usize] {
                 Slot::Local(name) => {
                     if !frame.owned.contains(name) {
@@ -840,7 +873,51 @@ fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
         }
         Term::Record(fs) | Term::Dict(fs) => fs.iter().for_each(|(_, t)| free_locals(t, binders, out)),
         Term::List(items) | Term::Prim(_, items) => items.iter().for_each(|t| free_locals(t, binders, out)),
-        Term::Int(_) | Term::Str(_) | Term::Bool(_) | Term::Nil | Term::Ref(_) | Term::CycleRef(_) => {}
+        Term::Match(scrutinee, clauses, default) => {
+            free_locals(scrutinee, binders, out);
+            clauses.iter().for_each(|(_, r)| free_locals(r, binders, out));
+            if let Some(d) = default {
+                free_locals(d, binders, out);
+            }
+        }
+        Term::Int(_)
+        | Term::Str(_)
+        | Term::Bool(_)
+        | Term::Nil
+        | Term::Ref(_)
+        | Term::CycleRef(_)
+        | Term::Keyword(_) => {}
+    }
+}
+
+/// `term` with every local at or above `cutoff` moved `by` binders out,
+/// for placing it under `by` more binders.
+fn shift(term: &Term, by: u32, cutoff: u32) -> Term {
+    let s = |t: &Term| Box::new(shift(t, by, cutoff));
+    let all = |ts: &[Term]| ts.iter().map(|t| shift(t, by, cutoff)).collect::<Vec<_>>();
+    let entries = |fs: &[(String, Term)]| fs.iter().map(|(k, t)| (k.clone(), shift(t, by, cutoff))).collect::<Vec<_>>();
+    match term {
+        Term::Local(i) if *i >= cutoff => Term::Local(i + by),
+        Term::Fn(arity, body) => Term::Fn(*arity, Box::new(shift(body, by, cutoff + arity))),
+        Term::App(c, args) => Term::App(s(c), all(args)),
+        Term::Let(v, body) => Term::Let(s(v), Box::new(shift(body, by, cutoff + 1))),
+        Term::If(a, b, c) => Term::If(s(a), s(b), s(c)),
+        Term::IfSome(v, t, e) => Term::IfSome(s(v), Box::new(shift(t, by, cutoff + 1)), s(e)),
+        Term::Coalesce(a, b) => Term::Coalesce(s(a), s(b)),
+        Term::And(a, b) => Term::And(s(a), s(b)),
+        Term::Or(a, b) => Term::Or(s(a), s(b)),
+        Term::Record(fs) => Term::Record(entries(fs)),
+        Term::Dict(fs) => Term::Dict(entries(fs)),
+        Term::Field(k, t) => Term::Field(k.clone(), s(t)),
+        Term::Update(r, k, v) => Term::Update(s(r), k.clone(), s(v)),
+        Term::List(items) => Term::List(all(items)),
+        Term::Prim(op, args) => Term::Prim(*op, all(args)),
+        Term::Match(x, clauses, default) => Term::Match(
+            s(x),
+            clauses.iter().map(|(p, r)| (p.clone(), shift(r, by, cutoff))).collect(),
+            default.as_ref().map(|d| s(d)),
+        ),
+        other => other.clone(),
     }
 }
 
@@ -886,6 +963,7 @@ pub enum Value {
     Bool(bool),
     Nil,
     Str(String),
+    Keyword(String),
     List(Vec<Value>),
     /// Fields by id; `name_fields` turns ids into names.
     Record(Vec<(i64, Value)>),
@@ -938,6 +1016,7 @@ pub fn decode(memory: &[u8], v: i64) -> Value {
     };
     match kind {
         KIND_STR => Value::Str(String::from_utf8(memory[p + 8..p + 8 + len].to_vec()).unwrap()),
+        KIND_KEYWORD => Value::Keyword(String::from_utf8(memory[p + 8..p + 8 + len].to_vec()).unwrap()),
         KIND_LIST => Value::List((0..len).map(|i| decode(memory, i64_at(p + 8 + 8 * i))).collect()),
         KIND_RECORD => {
             Value::Record((0..len).map(|i| (i64_at(p + 8 + 16 * i), decode(memory, i64_at(p + 16 + 16 * i)))).collect())
