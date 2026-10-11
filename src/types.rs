@@ -68,10 +68,18 @@ pub enum Ty {
     /// A record with one field set: what `(assoc r :k v)` returns. Like
     /// `Without`, it only flows into things.
     Update(Rc<Ty>, String, Rc<Ty>),
-    /// One of a finite set of keywords. A keyword literal is the set of
-    /// itself; sets are ordered by inclusion, so they form a lattice of
-    /// their own and a union of them is never needed.
-    Keys(Rc<BTreeSet<String>>),
+    /// One of a finite set of variants, each a key with a payload or,
+    /// for a keyword, without one. A keyword literal is the set of
+    /// itself, and a record literal of one field, `{:ok t}`, the variant
+    /// `ok` carrying `t`. Sets are ordered by inclusion, payloads
+    /// covariantly, so they form a lattice of their own: a union of
+    /// variants is one of these, never a union type.
+    Tags(Rc<BTreeMap<String, Option<Ty>>>),
+    /// What a value fits when, if it has the attribute `k`, the
+    /// attribute's value fits `t`: CUE's optional field `{k?: t}`. It
+    /// only bounds what flows in, and is how a pattern reads a variant's
+    /// payload without requiring every variant to have it.
+    IfHas(String, Rc<Ty>),
     /// A set of capabilities, ordered by inclusion like keyword sets. The
     /// empty set is pure.
     Caps(Rc<BTreeSet<String>>),
@@ -132,7 +140,21 @@ impl Ty {
     }
 
     pub fn keys(keys: impl IntoIterator<Item = String>) -> Ty {
-        Ty::Keys(Rc::new(keys.into_iter().collect()))
+        Ty::Tags(Rc::new(keys.into_iter().map(|k| (k, None)).collect()))
+    }
+
+    /// The variant `{key: payload}`.
+    pub fn variant(key: impl Into<String>, payload: Ty) -> Ty {
+        Ty::Tags(Rc::new([(key.into(), Some(payload))].into_iter().collect()))
+    }
+
+    /// One of several variants, each with or without a payload.
+    pub fn tags(tags: impl IntoIterator<Item = (String, Option<Ty>)>) -> Ty {
+        Ty::Tags(Rc::new(tags.into_iter().collect()))
+    }
+
+    pub fn if_has(key: impl Into<String>, t: Ty) -> Ty {
+        Ty::IfHas(key.into(), Rc::new(t))
     }
 
     pub fn update(record: Ty, field: String, value: Ty) -> Ty {
@@ -149,6 +171,8 @@ impl Ty {
             Ty::Record(fields) => fields.values().map(Ty::level).max().unwrap_or(0),
             Ty::List(t) | Ty::Dict(t) | Ty::Without(t) | Ty::Maybe(t) => t.level(),
             Ty::Update(r, _, v) => r.level().max(v.level()),
+            Ty::Tags(tags) => tags.values().flatten().map(Ty::level).max().unwrap_or(0),
+            Ty::IfHas(_, t) => t.level(),
             _ => 0,
         }
     }
@@ -169,7 +193,8 @@ impl Ty {
             Ty::Dict(t) => (9, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Without(t) => (10, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Update(r, _, _) => (11, Rc::as_ptr(r) as *const u8 as usize),
-            Ty::Keys(k) => (12, Rc::as_ptr(k) as *const u8 as usize),
+            Ty::Tags(k) => (12, Rc::as_ptr(k) as *const u8 as usize),
+            Ty::IfHas(_, t) => (15, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Caps(c) => (13, Rc::as_ptr(c) as *const u8 as usize),
             Ty::Maybe(t) => (14, Rc::as_ptr(t) as *const u8 as usize),
         }
@@ -248,16 +273,43 @@ impl Solver {
             // JSON's `null` is nil, so nil is a JSON value.
             (Ty::Prim(Prim::Nil), Ty::Prim(Prim::Json)) => Ok(()),
             (Ty::View, Ty::View) | (Ty::Effect, Ty::Effect) => Ok(()),
-            (Ty::Keys(a), Ty::Keys(b)) => {
-                let missing: Vec<&String> = a.difference(b).collect();
-                if missing.is_empty() {
-                    return Ok(());
+            (Ty::Tags(a), Ty::Tags(b)) => {
+                let missing: Vec<&String> = a.keys().filter(|k| !b.contains_key(*k)).collect();
+                if !missing.is_empty() {
+                    return Err(TypeError(format!(
+                        "{} is not one of {}",
+                        missing.iter().map(|k| tag_text(k, a[*k].is_some())).collect::<Vec<_>>().join(" | "),
+                        tags_text(b)
+                    )));
                 }
-                Err(TypeError(format!(
-                    "{} is not one of {}",
-                    missing.iter().map(|k| format!(":{k}")).collect::<Vec<_>>().join(" | "),
-                    keys_text(b)
-                )))
+                for (k, pa) in a.iter() {
+                    match (pa, &b[k]) {
+                        (None, None) => {}
+                        (Some(x), Some(y)) => self.go(x, y, cache)?,
+                        (Some(_), None) => {
+                            return Err(TypeError(format!("the variant `{{:{k} ..}}` is not the keyword `:{k}`")));
+                        }
+                        (None, Some(_)) => {
+                            return Err(TypeError(format!("the keyword `:{k}` is not the variant `{{:{k} ..}}`")));
+                        }
+                    }
+                }
+                Ok(())
+            }
+            // A variant is a record of one field, so it can be read as one.
+            (Ty::Tags(a), Ty::Record(fields)) => {
+                for (k, payload) in a.iter() {
+                    let Some(payload) = payload else {
+                        return Err(TypeError(format!("the keyword `:{k}` is not a record")));
+                    };
+                    for (name, t) in fields.iter() {
+                        if name != k {
+                            return Err(TypeError(format!("the variant `{{:{k} ..}}` has no field `:{name}`")));
+                        }
+                        self.go(payload, t, cache)?;
+                    }
+                }
+                Ok(())
             }
             (Ty::Fn(p0, r0, e0), Ty::Fn(p1, r1, e1)) => {
                 if p0.len() != p1.len() {
@@ -326,6 +378,19 @@ impl Solver {
             }
             // Anything but nil that fits `b | nil` fits `b`.
             (_, Ty::Maybe(b)) if !matches!(lhs, Ty::Var(_) | Ty::Without(_)) => self.go(lhs, b, cache),
+            // A value without the attribute fits, whatever else it is.
+            (_, Ty::IfHas(k, t)) if !matches!(lhs, Ty::Var(_) | Ty::Without(_) | Ty::Update(..)) => match lhs {
+                Ty::Tags(tags) => match tags.get(k) {
+                    Some(Some(payload)) => self.go(payload, t, cache),
+                    _ => Ok(()),
+                },
+                Ty::Record(fields) => match fields.get(k) {
+                    Some(v) => self.go(v, t, cache),
+                    None => Ok(()),
+                },
+                Ty::Top => self.go(&Ty::Top, t, cache),
+                _ => Ok(()),
+            },
             (Ty::Update(record, field, value), _) if !matches!(rhs, Ty::Var(_)) => match rhs {
                 // The updated field comes from the new value; every other
                 // field the reader wants comes from the original record.
@@ -339,6 +404,16 @@ impl Solver {
                     }
                     Ok(())
                 }
+                Ty::IfHas(k, t) if k == field => self.go(value, t, cache),
+                Ty::IfHas(..) => self.go(record, rhs, cache),
+                // A variant with its own field set is that variant again.
+                Ty::Tags(tags) => match tags.get(field) {
+                    Some(Some(payload)) => {
+                        self.go(value, payload, cache)?;
+                        self.go(record, &Ty::variant(field.clone(), Ty::Top), cache)
+                    }
+                    _ => Err(TypeError(format!("{} is not one of {}", Shallow(lhs), tags_text(tags)))),
+                },
                 _ => Err(TypeError(format!("{} is not a {}", Shallow(lhs), Shallow(rhs)))),
             },
             (Ty::Without(inner), _) => match &**inner {
@@ -398,6 +473,10 @@ impl Solver {
             Ty::Dict(t) => Ty::dict(self.extrude(t, pol, level, cache)),
             Ty::Without(t) => Ty::without(self.extrude(t, pol, level, cache)),
             Ty::Maybe(t) => Ty::maybe(self.extrude(t, pol, level, cache)),
+            Ty::Tags(tags) => {
+                Ty::tags(tags.iter().map(|(k, p)| (k.clone(), p.as_ref().map(|p| self.extrude(p, pol, level, cache)))))
+            }
+            Ty::IfHas(k, t) => Ty::if_has(k.clone(), self.extrude(t, pol, level, cache)),
             Ty::Update(r, k, v) => {
                 Ty::update(self.extrude(r, pol, level, cache), k.clone(), self.extrude(v, pol, level, cache))
             }
@@ -467,6 +546,10 @@ impl Solver {
             Ty::Dict(t) => Ty::dict(self.freshen(t, limit, level, map)),
             Ty::Without(t) => Ty::without(self.freshen(t, limit, level, map)),
             Ty::Maybe(t) => Ty::maybe(self.freshen(t, limit, level, map)),
+            Ty::Tags(tags) => {
+                Ty::tags(tags.iter().map(|(k, p)| (k.clone(), p.as_ref().map(|p| self.freshen(p, limit, level, map)))))
+            }
+            Ty::IfHas(k, t) => Ty::if_has(k.clone(), self.freshen(t, limit, level, map)),
             Ty::Update(r, k, v) => {
                 Ty::update(self.freshen(r, limit, level, map), k.clone(), self.freshen(v, limit, level, map))
             }
@@ -504,7 +587,8 @@ impl fmt::Display for Shallow<'_> {
             Ty::Without(t) => write!(f, "{} without nil", Shallow(t)),
             Ty::Maybe(t) => write!(f, "{} or nil", Shallow(t)),
             Ty::Update(r, k, _) => write!(f, "{} with `:{k}` set", Shallow(r)),
-            Ty::Keys(k) => write!(f, "{}", keys_text(k)),
+            Ty::Tags(k) => write!(f, "{}", tags_text(k)),
+            Ty::IfHas(k, _) => write!(f, "{{{k}?: ..}}"),
         }
     }
 }
@@ -513,8 +597,12 @@ fn caps_text(caps: &BTreeSet<String>) -> String {
     format!("{{{}}}", caps.iter().cloned().collect::<Vec<_>>().join(", "))
 }
 
-fn keys_text(keys: &BTreeSet<String>) -> String {
-    keys.iter().map(|k| format!(":{k}")).collect::<Vec<_>>().join(" | ")
+fn tag_text(k: &str, payload: bool) -> String {
+    if payload { format!("{{{k}: ..}}") } else { format!(":{k}") }
+}
+
+fn tags_text(tags: &BTreeMap<String, Option<Ty>>) -> String {
+    tags.iter().map(|(k, p)| tag_text(k, p.is_some())).collect::<Vec<_>>().join(" | ")
 }
 
 /// A type as shown to a person: variables' bounds turned into unions
@@ -536,7 +624,8 @@ pub enum Type {
     Rec(u32, Box<Type>),
     Without(Box<Type>),
     Update(Box<Type>, String, Box<Type>),
-    Keys(BTreeSet<String>),
+    Tags(BTreeMap<String, Option<Type>>),
+    IfHas(String, Box<Type>),
     Caps(BTreeSet<String>),
 }
 
@@ -561,7 +650,12 @@ fn coalesce_go(
         Ty::Prim(p) => Type::Prim(*p),
         Ty::View => Type::View,
         Ty::Effect => Type::Effect,
-        Ty::Keys(k) => Type::Keys((**k).clone()),
+        Ty::Tags(tags) => Type::Tags(
+            tags.iter()
+                .map(|(k, p)| (k.clone(), p.as_ref().map(|p| coalesce_go(p, pol, in_process, recursive, next))))
+                .collect(),
+        ),
+        Ty::IfHas(k, t) => Type::IfHas(k.clone(), Box::new(coalesce_go(t, pol, in_process, recursive, next))),
         Ty::Caps(c) => Type::Caps((**c).clone()),
         Ty::Fn(params, ret, eff) => Type::Fn(
             params.iter().map(|p| coalesce_go(p, !pol, in_process, recursive, next)).collect(),
@@ -659,7 +753,7 @@ fn cooccurrence(ty: Type) -> Type {
         };
         for m in members {
             if let Type::Var(v) = m {
-                let others: Vec<Type> = members.iter().filter(|o| *o != m).cloned().collect();
+                let others: Vec<Type> = members.iter().filter(|o| *o != m).map(as_record).collect();
                 co.entry((*v, pol)).and_modify(|prev| prev.retain(|t| others.contains(t))).or_insert(others);
             }
         }
@@ -670,7 +764,8 @@ fn cooccurrence(ty: Type) -> Type {
                 visit(eff, pol, co, bound);
             }
             Type::Record(fields) => fields.values().for_each(|t| visit(t, pol, co, bound)),
-            Type::List(t) | Type::Dict(t) | Type::Without(t) => visit(t, pol, co, bound),
+            Type::Tags(tags) => tags.values().flatten().for_each(|t| visit(t, pol, co, bound)),
+            Type::List(t) | Type::Dict(t) | Type::Without(t) | Type::IfHas(_, t) => visit(t, pol, co, bound),
             Type::Update(r, _, v) => {
                 visit(r, pol, co, bound);
                 visit(v, pol, co, bound);
@@ -736,6 +831,8 @@ fn drop_var(ty: Type, v: u32, pol: bool) -> Type {
         Type::List(t) => Type::List(Box::new(drop_var(*t, v, pol))),
         Type::Dict(t) => Type::Dict(Box::new(drop_var(*t, v, pol))),
         Type::Without(t) => Type::Without(Box::new(drop_var(*t, v, pol))),
+        Type::IfHas(k, t) => Type::IfHas(k, Box::new(drop_var(*t, v, pol))),
+        Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| drop_var(p, v, pol)))).collect()),
         Type::Update(r, k, x) => Type::Update(Box::new(drop_var(*r, v, pol)), k, Box::new(drop_var(*x, v, pol))),
         Type::Union(ts) => Type::Union(ts.into_iter().map(|t| drop_var(t, v, pol)).collect()),
         Type::Inter(ts) => Type::Inter(ts.into_iter().map(|t| drop_var(t, v, pol)).collect()),
@@ -758,6 +855,8 @@ fn map_type(ty: Type, f: &dyn Fn(&Type) -> Option<Type>) -> Type {
         Type::List(t) => Type::List(Box::new(map_type(*t, f))),
         Type::Dict(t) => Type::Dict(Box::new(map_type(*t, f))),
         Type::Without(t) => Type::Without(Box::new(map_type(*t, f))),
+        Type::IfHas(k, t) => Type::IfHas(k, Box::new(map_type(*t, f))),
+        Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| map_type(p, f)))).collect()),
         Type::Update(r, k, v) => Type::Update(Box::new(map_type(*r, f)), k, Box::new(map_type(*v, f))),
         Type::Union(ts) => Type::Union(ts.into_iter().map(|t| map_type(t, f)).collect()),
         Type::Inter(ts) => Type::Inter(ts.into_iter().map(|t| map_type(t, f)).collect()),
@@ -781,7 +880,8 @@ fn occurrences(ty: &Type, pol: bool, pos: &mut HashSet<u32>, neg: &mut HashSet<u
             occurrences(eff, pol, pos, neg);
         }
         Type::Record(fields) => fields.values().for_each(|t| occurrences(t, pol, pos, neg)),
-        Type::List(t) | Type::Dict(t) | Type::Without(t) => occurrences(t, pol, pos, neg),
+        Type::Tags(tags) => tags.values().flatten().for_each(|t| occurrences(t, pol, pos, neg)),
+        Type::List(t) | Type::Dict(t) | Type::Without(t) | Type::IfHas(_, t) => occurrences(t, pol, pos, neg),
         Type::Update(r, _, v) => {
             occurrences(r, pol, pos, neg);
             occurrences(v, pol, pos, neg);
@@ -815,6 +915,8 @@ fn prune(ty: Type, pol: bool, keep: &HashSet<u32>) -> Type {
         Type::List(t) => Type::List(Box::new(prune(*t, pol, keep))),
         Type::Dict(t) => Type::Dict(Box::new(prune(*t, pol, keep))),
         Type::Without(t) => Type::Without(Box::new(prune(*t, pol, keep))),
+        Type::IfHas(k, t) => Type::IfHas(k, Box::new(prune(*t, pol, keep))),
+        Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| prune(p, pol, keep)))).collect()),
         Type::Update(r, k, v) => Type::Update(Box::new(prune(*r, pol, keep)), k, Box::new(prune(*v, pol, keep))),
         Type::Union(ts) => Type::Union(ts.into_iter().map(|t| prune(t, pol, keep)).collect()),
         Type::Inter(ts) => Type::Inter(ts.into_iter().map(|t| prune(t, pol, keep)).collect()),
@@ -836,6 +938,8 @@ fn normalize(ty: Type) -> Type {
             if mentions(&body, v) { Type::Rec(v, Box::new(body)) } else { body }
         }
         Type::Without(t) => without(normalize(*t)),
+        Type::IfHas(k, t) => Type::IfHas(k, Box::new(normalize(*t))),
+        Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(normalize))).collect()),
         Type::Update(r, k, v) => update(normalize(*r), k, normalize(*v)),
         Type::Union(ts) => {
             let mut out: Vec<Type> = Vec::new();
@@ -849,9 +953,10 @@ fn normalize(ty: Type) -> Type {
             if out.contains(&Type::Top) {
                 return Type::Top;
             }
+            merge_tags(&mut out, true);
+            records_beside_records(&mut out);
             merge_records(&mut out, true);
             merge_containers(&mut out, true);
-            merge_keys(&mut out, true);
             merge_caps(&mut out, true);
             out.sort_by(display_order);
             out.dedup();
@@ -873,10 +978,12 @@ fn normalize(ty: Type) -> Type {
             if out.contains(&Type::Bot) {
                 return Type::Bot;
             }
+            records_beside_records(&mut out);
             merge_records(&mut out, false);
             merge_containers(&mut out, false);
-            merge_keys(&mut out, false);
+            merge_tags(&mut out, false);
             merge_caps(&mut out, false);
+            merge_if_has(&mut out);
             if out.contains(&Type::Bot) {
                 return Type::Bot;
             }
@@ -905,21 +1012,99 @@ fn display_order(a: &Type, b: &Type) -> std::cmp::Ordering {
     rank(a).cmp(&rank(b)).then_with(|| a.cmp(b))
 }
 
-/// Keyword sets: a union of sets is their union, an intersection their
-/// intersection, which may be empty.
-fn merge_keys(parts: &mut Vec<Type>, union: bool) {
-    let sets: Vec<BTreeSet<String>> =
-        parts.iter().filter_map(|t| if let Type::Keys(k) = t { Some(k.clone()) } else { None }).collect();
+/// Variant sets: a union of sets is their union, an intersection their
+/// intersection, which may be empty. Payloads of the same key combine
+/// the same way.
+fn merge_tags(parts: &mut Vec<Type>, union: bool) {
+    let sets: Vec<BTreeMap<String, Option<Type>>> =
+        parts.iter().filter_map(|t| if let Type::Tags(k) = t { Some(k.clone()) } else { None }).collect();
     if sets.len() < 2 {
         return;
     }
-    parts.retain(|t| !matches!(t, Type::Keys(_)));
+    parts.retain(|t| !matches!(t, Type::Tags(_)));
+    let combine = |a: Option<Type>, b: Option<Type>| match (a, b) {
+        (Some(a), Some(b)) => {
+            Some(if union { normalize(Type::Union(vec![a, b])) } else { normalize(Type::Inter(vec![a, b])) })
+        }
+        (a, b) => a.or(b),
+    };
     let mut sets = sets.into_iter();
     let first = sets.next().unwrap();
-    let merged = sets.fold(first, |acc, s| {
-        if union { acc.union(&s).cloned().collect() } else { acc.intersection(&s).cloned().collect() }
+    let merged = sets.fold(first, |mut acc, s| {
+        if union {
+            for (k, p) in s {
+                let old = acc.remove(&k).flatten();
+                acc.insert(k, combine(old, p));
+            }
+            acc
+        } else {
+            let mut out = BTreeMap::new();
+            for (k, p) in s {
+                if let Some(old) = acc.remove(&k) {
+                    out.insert(k, combine(old, p));
+                }
+            }
+            out
+        }
     });
-    parts.push(if merged.is_empty() { Type::Bot } else { Type::Keys(merged) });
+    parts.push(if merged.is_empty() { Type::Bot } else { Type::Tags(merged) });
+}
+
+/// A variant beside a record is shown as the record of one field it is,
+/// so the two merge as records do.
+fn records_beside_records(parts: &mut [Type]) {
+    if parts.iter().any(|t| matches!(t, Type::Record(_))) {
+        for t in parts.iter_mut() {
+            *t = as_record(t);
+        }
+    }
+}
+
+/// A single variant with a payload as the record of one field it is.
+fn as_record(t: &Type) -> Type {
+    match t {
+        Type::Tags(tags) if tags.len() == 1 => match tags.iter().next() {
+            Some((k, Some(p))) => Type::Record([(k.clone(), p.clone())].into_iter().collect()),
+            _ => t.clone(),
+        },
+        _ => t.clone(),
+    }
+}
+
+/// In an intersection, `{k?: t}` asks nothing more of a record that has
+/// `k`, or of variants, than that `k` fit `t`, so it folds into them;
+/// `{k?: Any}` asks nothing at all.
+fn merge_if_has(parts: &mut Vec<Type>) {
+    let mut i = 0;
+    while i < parts.len() {
+        let Type::IfHas(k, t) = &parts[i] else {
+            i += 1;
+            continue;
+        };
+        let (k, t) = (k.clone(), (**t).clone());
+        let mut folded = t == Type::Top;
+        for part in parts.iter_mut() {
+            match part {
+                Type::Record(fields) if fields.contains_key(&k) => {
+                    let old = fields.remove(&k).unwrap();
+                    fields.insert(k.clone(), normalize(Type::Inter(vec![old, t.clone()])));
+                    folded = true;
+                }
+                Type::Tags(tags) if tags.values().all(|p| p.is_some()) || tags.contains_key(&k) => {
+                    if let Some(Some(p)) = tags.get_mut(&k) {
+                        *p = normalize(Type::Inter(vec![p.clone(), t.clone()]));
+                    }
+                    folded = true;
+                }
+                _ => {}
+            }
+        }
+        if folded {
+            parts.remove(i);
+        } else {
+            i += 1;
+        }
+    }
 }
 
 /// Capability sets merge like keyword sets, except that an empty
@@ -1021,7 +1206,8 @@ fn mentions(ty: &Type, v: u32) -> bool {
         Type::Var(x) => *x == v,
         Type::Fn(params, ret, eff) => params.iter().any(|p| mentions(p, v)) || mentions(ret, v) || mentions(eff, v),
         Type::Record(fields) => fields.values().any(|t| mentions(t, v)),
-        Type::List(t) | Type::Dict(t) | Type::Without(t) | Type::Rec(_, t) => mentions(t, v),
+        Type::List(t) | Type::Dict(t) | Type::Without(t) | Type::Rec(_, t) | Type::IfHas(_, t) => mentions(t, v),
+        Type::Tags(tags) => tags.values().flatten().any(|t| mentions(t, v)),
         Type::Update(r, _, x) => mentions(r, v) || mentions(x, v),
         Type::Union(ts) | Type::Inter(ts) => ts.iter().any(|t| mentions(t, v)),
         _ => false,
@@ -1049,6 +1235,8 @@ fn rename(ty: Type) -> Type {
             Type::List(t) => Type::List(Box::new(go(*t, map))),
             Type::Dict(t) => Type::Dict(Box::new(go(*t, map))),
             Type::Without(t) => Type::Without(Box::new(go(*t, map))),
+            Type::IfHas(k, t) => Type::IfHas(k, Box::new(go(*t, map))),
+            Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| go(p, map)))).collect()),
             Type::Update(r, k, v) => {
                 let r = go(*r, map);
                 Type::Update(Box::new(r), k, Box::new(go(*v, map)))
@@ -1081,8 +1269,22 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
         Type::View => write!(f, "View"),
         Type::Effect => write!(f, "Effect"),
         Type::Caps(c) => write!(f, "{}", caps_text(c)),
-        Type::Keys(k) if k.len() == 1 || prec <= 1 => write!(f, "{}", keys_text(k)),
-        Type::Keys(k) => write!(f, "({})", keys_text(k)),
+        Type::Tags(tags) => {
+            let wrap = tags.len() > 1 && prec > 1;
+            if wrap {
+                write!(f, "(")?;
+            }
+            write_tags(tags, f)?;
+            if wrap {
+                write!(f, ")")?;
+            }
+            Ok(())
+        }
+        Type::IfHas(k, t) => {
+            write!(f, "{{{k}?: ")?;
+            write_type(t, f, 0)?;
+            write!(f, "}}")
+        }
         Type::Var(v) => write!(f, "{}", var(*v)),
         Type::Fn(params, ret, eff) => {
             if prec > 0 {
@@ -1144,8 +1346,8 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
                     write!(f, "{sep}")?;
                 }
                 match t {
-                    // A keyword set is already a union.
-                    Type::Keys(k) if my == 1 => write!(f, "{}", keys_text(k))?,
+                    // A variant set is already a union.
+                    Type::Tags(tags) if my == 1 => write_tags(tags, f)?,
                     _ => write_type(t, f, my + 1)?,
                 }
             }
@@ -1171,4 +1373,23 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
             write!(f, " \\ nil")
         }
     }
+}
+
+/// Variants as a union: a keyword as itself, a variant as the record of
+/// one field it is.
+fn write_tags(tags: &BTreeMap<String, Option<Type>>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    for (i, (k, p)) in tags.iter().enumerate() {
+        if i > 0 {
+            write!(f, " | ")?;
+        }
+        match p {
+            None => write!(f, ":{k}")?,
+            Some(p) => {
+                write!(f, "{{{k}: ")?;
+                write_type(p, f, 0)?;
+                write!(f, "}}")?;
+            }
+        }
+    }
+    Ok(())
 }

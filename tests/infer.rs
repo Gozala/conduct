@@ -172,14 +172,18 @@ fn a_match_narrows_what_it_tested() {
     // The narrowed field's type is the pattern's, inside its branch.
     let src = "(defn keep [s] (match s :a s :b s))";
     assert_eq!(ty(src, "keep"), "(:a | :b) -> :a | :b");
+    // A record pattern asks for its field only where the value has it,
+    // so with a `_` clause the value may be anything.
     let src = "(defn active [job] (match job {:status :active} (:status job) _ :other))";
-    assert_eq!(ty(src, "active"), "({status: Any}) -> :active | :other");
+    assert_eq!(ty(src, "active"), "(Any) -> :active | :other");
 }
 
 #[test]
 fn a_match_without_else_must_be_able_to_cover() {
     let mut cb = Codebase::new();
-    let err = cb.add_source("(defn f [j] (match j {:a :x} 1 {:b :y} 2))").unwrap_err().to_string();
+    // Records of one field are variants, so these two cover.
+    assert!(cb.add_source("(defn f [j] (match j {:a :x} 1 {:b :y} 2))").is_ok());
+    let err = cb.add_source("(defn f2 [j] (match j {:a \"x\"} 1 {:b :y} 2))").unwrap_err().to_string();
     assert!(err.contains("cannot cover every value without a `_` clause"), "{err}");
     let err = cb.add_source("(defn g [j] (match j some? 1))").unwrap_err().to_string();
     assert!(err.contains("cannot cover"), "{err}");
@@ -196,4 +200,52 @@ fn underscore_matches_anything() {
     assert_eq!(ty(src, "g"), "({status: Any}) -> Int");
     // `:else` is a keyword like any other: here, one case of two.
     assert_eq!(ty("(defn h [k] (match k :else 1 :other 2))", "h"), "(:else | :other) -> Int");
+}
+
+#[test]
+fn variants_grow_through_inference() {
+    // A record of one field is a variant: unions of them keep every
+    // variant, and grow as more branches return more of them.
+    let src = "(defn check [t] (if (= t \"\") {:error :empty-title} {:ok t}))
+               (defn find [id] (if (= id \"\") {:error :not-found} (check id)))";
+    assert_eq!(ty(src, "check"), "(a) -> {error: :empty-title} | {ok: a}");
+    assert_eq!(ty(src, "find"), "(a) -> {error: :empty-title | :not-found} | {ok: a}");
+    // Keywords are the variants that carry nothing.
+    assert_eq!(ty("(defn done [x] (if x :ok {:error \"bad\"}))", "done"), "(Bool) -> {error: String} | :ok");
+    // A variant still reads as the record it is, and setting its own
+    // field keeps it that variant.
+    assert_eq!(ty("(defn n [] (:n {:n 1}))", "n"), "() -> Int");
+    let src = "(defn retry [r] (match r {:ok n} (+ n 1) {:error _} 0))
+               (def again (retry (assoc {:ok 1} :ok 2)))";
+    assert_eq!(ty(src, "again"), "Int");
+    let mut cb = Codebase::new();
+    let err = cb
+        .add_source("(defn retry [r] (match r {:ok n} (+ n 1) {:error _} 0)) (def bad (retry (assoc {:ok 1} :more 2)))")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("has no field `:ok`") || err.contains("is not one of"), "{err}");
+}
+
+#[test]
+fn patterns_bind_and_cover_variants() {
+    let src = "(defn show [r] (match r {:ok t} (+ t 1) {:error :not-found} 0 {:error e} -1))";
+    assert_eq!(ty(src, "show"), "({error: Any} | {ok: Int}) -> Int");
+    let mut cb = Codebase::new();
+    cb.add_source(src).unwrap();
+    cb.add_source("(def a (show {:ok 1})) (def b (show {:error :gone}))").unwrap();
+    // Each variant is checked against its own clause.
+    let err = cb.add_source("(def c (show {:ok \"one\"}))").unwrap_err().to_string();
+    assert!(err.contains("String is not a Int"), "{err}");
+    // Without `_`, a variant no clause names is a type error where it
+    // flows in, as a keyword no clause names is.
+    let err = cb.add_source("(def d (show {:other 1}))").unwrap_err().to_string();
+    assert!(err.contains("{other: ..} is not one of {error: ..} | {ok: ..}"), "{err}");
+    let err = cb.add_source("(def e (show :ok))").unwrap_err().to_string();
+    assert!(err.contains("the keyword `:ok` is not the variant `{:ok ..}`"), "{err}");
+    // A name binds a payload however deep, and `_` ends an open match.
+    let src = "(defn title [r] (match r {:ok {:todo t}} (:title t) _ \"none\"))";
+    assert_eq!(ty(src, "title"), "({ok?: {todo?: {title: a}}}) -> a | String");
+    // A pattern may not bind a name twice.
+    let err = Codebase::new().add_source("(defn f [r] (match r {:a {:b x :c x}} x _ 0))").unwrap_err().to_string();
+    assert!(err.contains("binds `x` twice"), "{err}");
 }

@@ -110,6 +110,12 @@ routes on Wasmtime.
   {:status :suspended} "paused")
 (match (:n job) nil 0 some? (+ (:n job) 1)) ; here (:n job) is not nil
 
+{:ok todo} {:error :not-found}          ; variants: records of one field
+(if ok? {:ok t} {:error :empty-title})  ; {error: :empty-title} | {ok: ...}
+(match (add! title)                     ; names in patterns bind
+  {:ok todo} (json (todo-json todo) 201)
+  {:error why} (problem why))           ; no `_`: these two variants cover
+
 (?? (get attrs "title") "untitled")     ; nil-coalescing
 (if-some [t (get attrs "title")]        ; t is a String here, not String | nil
   t
@@ -162,24 +168,49 @@ flows in. It needs no choice to solve: nil heads no other type, so `s <:
 t | nil` holds when `s` is nil or when `s <: t`. Source code has no
 annotations yet, so only host declarations use it.
 
+### Variants
+
+A keyword is a value whose type is the set of just itself, and these
+sets are ordered by inclusion, so `(if b :active :suspended)` is
+`:active | :suspended`. A record of one field is a variant the same way:
+`{:ok t}` is the variant `ok` carrying `t`, and `(if c {:ok t} {:error
+e})` is `{error: E} | {ok: T}`. Keywords are the variants that carry
+nothing, so `:ok | {error: String}` is one union too. As in Roc, unions
+grow through inference: a function that returns its callee's result or
+a new error returns the union of both, `{error: :empty-title |
+:not-found} | {ok: a}`. Roc needs a row variable to keep a union open;
+here subtyping does that.
+
+A variant is still the record it is: `(:n {:n 1})` reads its field. But
+records of more fields have width subtyping, a record with more fields
+fitting where fewer are asked for, which is why two records with
+different fields join to the fields they share. A variant joins with
+other variants without losing its key; `{:ok 1 :extra 2}` is a record,
+not a variant.
+
 ### Matching
 
-A keyword is a value whose type is the set of just itself, and keyword
-sets are ordered by inclusion, so `(if b :active :suspended)` is
-`:active | :suspended`. `match` tests a value against patterns in order:
-keyword, string, and integer literals, `nil`, `some?`, and records of
-patterns. Each clause narrows what it tested inside its branch, the way
+`match` tests a value against patterns in order: keyword, string, and
+integer literals, `nil`, `some?`, names, and records of patterns. A name
+binds what it matched in the clause's result: `{:ok {:title t}}` binds
+the title inside an `ok` variant. Each clause narrows what it tested inside its branch, the way
 a check narrows a value in TypeScript: matching `(:n job)` against
 `some?` makes `(:n job)` not nil in that branch, and matching `job`
 against `{:status :active}` makes its status `:active`. A narrowed field
 is typed like a record update, so this needed no new machinery.
 
+A record pattern reads a field only where the value has it, so a
+variant pattern asks nothing of the other variants: its binder's type is
+`{ok?: a}`, CUE's optional field, which a value fits if it has no `ok`
+or its `ok` fits `a`.
+
 `_` matches anything. As the last clause it is the default; inside a
 record pattern, `{:status _}`, it asks only that the field be there. A
 `match` without a final `_` must be able to cover every value: its
-patterns are all keywords, or `nil` and `some?`, or one field matched
-against those in every clause, or one clause is a record of `_`s. Then the match constrains its value to
-what it covers, and leaving a case out is a type error. With no
+patterns are variants (keywords and one-field records) whose payload
+patterns cover, key by key, or `nil` and `some?`, or one clause is a
+record of `_`s. Then the match constrains its value to what it covers,
+and leaving a case out is a type error. With no
 annotations, nothing else says what the value may be, so that error
 appears where a value outside the cases flows in, `(describe {:status
 :done})`, not at the match. Any other `match` must end with `_`.
@@ -360,19 +391,18 @@ work itself: it calls the model and waits for it.
 
 ```text
 query!           : (:all | :active | :completed) => {todos: List[Todo], counts: {active: Int, completed: Int}}
-add!             : (String) => {todo: Todo | nil, error: :not-found | :empty-title | nil}
-update!          : (String, String | nil, Bool | nil) => {todo: Todo | nil, error: ...}
-remove!          : (String) => {error: :not-found | :empty-title | nil}
+add!             : (String) => {ok: Todo} | {error: :empty-title | :not-found}
+update!          : (String, String | nil, Bool | nil) => {ok: Todo} | {error: ...}
+remove!          : (String) => :ok | {error: :empty-title | :not-found}
 toggle-all!      : (Bool) => nil
 clear-completed! : () => nil
                    each ! {model}
 ```
 
-A model `result` is a record with optional fields, not a tagged union:
-a union of records with different fields keeps only the fields they
-share, so `{:todo some?}` in a `match` is how a route tells success from
-failure. The `filter` enum is a keyword set, so a misspelled filter is a
-type error.
+A model `result` is a union of variants, `{:ok v}` or `{:error e}`, and
+`:ok` alone when it carries nothing. Its `model-error` and the `filter`
+enum are keywords, so a misspelled filter is a type error. An `option`
+argument is still a value or nil.
 
 The glue exports `wasi:http/handler#handle`, lifted with the async
 ABI's callback form. It reads the request and its body, runs `handle!`,
@@ -390,7 +420,8 @@ polyfill with stack switching, JSPI, or nested turns.
 
 1. **The language proposal** in `notes/language.md`: qualified keys,
    absence as failure, attributes and concepts, macros. Absence as
-   failure would change the model's results above.
+   failure decides what WIT's `option` becomes: nil now, or
+   `{:some x} | :none`.
 2. **Narrowing in later clauses**: a clause does not learn that the ones
    before it failed. That needs MLstruct's negation types in general,
    not just `t \ nil`.

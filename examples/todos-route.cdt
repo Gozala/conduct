@@ -28,10 +28,9 @@
           200)))
 
 (defn add-todo! [request]
-  (let [added (add! (json-str (json-get (parse-json (:body request)) "title")))]
-    (match added
-      {:todo some?} (json (todo-json (:todo added)) 201)
-      _ (problem (:error added)))))
+  (match (add! (json-str (json-get (parse-json (:body request)) "title")))
+    {:ok todo} (json (todo-json todo) 201)
+    {:error why} (problem why)))
 
 (defn complete-all! [request]
   (let [completed (json-get (parse-json (:body request)) "completed")]
