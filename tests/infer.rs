@@ -78,3 +78,24 @@ fn higher_order_builtins() {
     assert_eq!(ty("(defn incs [xs] (map (fn [x] (+ x 1)) xs))", "incs"), "(List[Int]) -> List[Int]");
     assert_eq!(ty("(def mixed [1 \"a\" nil])", "mixed"), "List[Int | String | nil]");
 }
+
+#[test]
+fn record_update() {
+    assert_eq!(ty("(def r (assoc {:a 1 :b \"x\"} :a true))", "r"), "{a: Bool, b: String}");
+    // The rest of the record passes through: `a` is whatever else it holds.
+    assert_eq!(ty("(defn bump [m] (assoc m :n (+ (:n m) 1)))", "bump"), "(a & {n: Int}) -> (a with n: Int)");
+    // Reading another field through an update reads the original's.
+    assert_eq!(ty("(defn f [m] (:b (assoc m :a 1)))", "f"), "({b: a}) -> a");
+    assert_eq!(ty("(defn g [m] (:a (assoc m :a 1)))", "g"), "(Any) -> Int");
+}
+
+#[test]
+fn bindings_shadow_builtins() {
+    assert_eq!(ty("(defn f [filter] (count filter))", "f"), "(List[Any]) -> Int");
+    assert_eq!(ty("(defn count [x] \"mine\") (def y (count [1]))", "y"), "String");
+    let mut cb = Codebase::new();
+    let err = cb.add_source("(def f map)").unwrap_err().to_string();
+    assert!(err.contains("not a value yet"), "{err}");
+    let err = cb.add_source("(def g (count [1] [2]))").unwrap_err().to_string();
+    assert!(err.contains("takes 1 argument"), "{err}");
+}

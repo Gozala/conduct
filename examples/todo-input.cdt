@@ -1,0 +1,84 @@
+;; <todo-input>: the field for a new todo, and the control that marks
+;; every todo complete or active. It reports a new title as `todo-add`
+;; and the toggle as `todo-toggle-all`, and <todo-app> handles both.
+;;
+;; The Zena version clears its "clear the field" flag inside `render`.
+;; A view here is pure, so the flag is part of the model: an add sets
+;; it, and the next keystroke clears it, so a render in between leaves
+;; the field empty and one after leaves it to the person typing.
+
+(def attributes ["has-todos" "all-completed"])
+
+(def styles "
+      :host {
+        display: block;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px 16px;
+      }
+      .new-todo {
+        flex: 1;
+        min-width: 0;
+        box-sizing: border-box;
+        padding: 16px;
+        border: 1px solid var(--md-sys-color-outline-variant);
+        border-radius: var(--md-sys-shape-corner-large);
+        background: var(--md-sys-color-surface-container-highest);
+        color: var(--md-sys-color-on-surface);
+        font: var(--md-sys-typescale-body-large);
+      }
+      .new-todo:focus {
+        outline: 2px solid var(--md-sys-color-primary);
+        outline-offset: -1px;
+      }
+      .toggle-all {
+        width: 24px;
+        height: 24px;
+        margin: 0;
+        accent-color: var(--md-sys-color-primary);
+      }
+      .label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+      }
+    ")
+
+(defn attr [attrs name] (?? (get attrs name) ""))
+
+(defn init [attrs] {:clear false})
+
+(defn update [model handler event attrs]
+  (cond
+    (and (= handler "key") (= (:key event) "Enter"))
+      (let [title (trim (?? (:value event) ""))]
+        (if (= title "")
+          {:model model :emit []}
+          {:model (assoc model :clear true) :emit [(emit "todo-add" title)]}))
+    (= handler "key") {:model (assoc model :clear false) :emit []}
+    (= handler "toggleAll")
+      {:model model
+       :emit [(emit "todo-toggle-all" (if (= (:checked event) true) "true" "false"))]}
+    :else {:model model :emit []}))
+
+(defn field [model]
+  (let [base {"class" "new-todo" "placeholder" "What needs to be done?" "autofocus" ""}]
+    (if (:clear model) (assoc base "value" "") base)))
+
+(defn view [model attrs]
+  (h "div" {"class" "row"}
+    [(if (= (attr attrs "has-todos") "true")
+       (h "input" {"id" "toggle-all"
+                   "class" "toggle-all"
+                   "type" "checkbox"
+                   "checked" (attr attrs "all-completed")
+                   "aria-label" "Mark all as complete"}
+          []
+          {"change" "toggleAll"})
+       nil)
+     (h "input" (field model) [] {"keydown" "key"})]))

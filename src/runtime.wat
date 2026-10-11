@@ -267,6 +267,27 @@
     (local.set $out (call $str_new (local.get $pos) (i32.sub (i32.add (local.get $buf) (i32.const 24)) (local.get $pos))))
     (call $free (local.get $buf))
     (local.get $out))
+  (func $is_space (param $c i32) (result i32)
+    (i32.or (i32.eq (local.get $c) (i32.const 32))
+      (i32.and (i32.ge_u (local.get $c) (i32.const 9)) (i32.le_u (local.get $c) (i32.const 13)))))
+  (func $str_trim (param $s i64) (result i64)
+    ;; ASCII whitespace off both ends.
+    (local $p i32) (local $from i32) (local $to i32)
+    (local.set $p (call $str_data (local.get $s)))
+    (local.set $to (call $len (local.get $s)))
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $from) (local.get $to)))
+        (br_if $done (i32.eqz (call $is_space (i32.load8_u (i32.add (local.get $p) (local.get $from))))))
+        (local.set $from (i32.add (local.get $from) (i32.const 1)))
+        (br $next)))
+    (block $done
+      (loop $next
+        (br_if $done (i32.le_u (local.get $to) (local.get $from)))
+        (br_if $done (i32.eqz (call $is_space (i32.load8_u (i32.add (local.get $p) (i32.sub (local.get $to) (i32.const 1)))))))
+        (local.set $to (i32.sub (local.get $to) (i32.const 1)))
+        (br $next)))
+    (call $str_new (i32.add (local.get $p) (local.get $from)) (i32.sub (local.get $to) (local.get $from))))
   (func $lit (param $offset i32) (param $len i32) (result i64)
     (call $str_new (i32.add (global.get $rtdata) (local.get $offset)) (local.get $len)))
   (func $to_str (param $v i64) (result i64)
@@ -413,6 +434,48 @@
         (br $next)))
     ;; The type checker rules this out.
     unreachable)
+
+  (func $rec_assoc (param $r i64) (param $id i64) (param $v i64) (result i64)
+    ;; A copy of record `r` (borrowed) with field `id` set to `v`
+    ;; (consumed), keeping fields sorted by id.
+    (local $p i32) (local $q i32) (local $n i32) (local $i i32) (local $j i32) (local $k i64) (local $found i32)
+    (local.set $p (call $ptr (local.get $r)))
+    (local.set $n (call $len (local.get $r)))
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (if (i64.eq (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 4)))) (local.get $id))
+          (then (local.set $found (i32.const 1))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))
+    (local.set $q (call $obj (i32.const 3)
+      (i32.sub (i32.add (local.get $n) (i32.const 1)) (local.get $found))
+      (i32.shl (i32.sub (i32.add (local.get $n) (i32.const 1)) (local.get $found)) (i32.const 4))))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (local.set $k (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 4)))))
+        ;; The new field goes in before the first greater id.
+        (if (i32.and (i32.eqz (local.get $found)) (i64.gt_s (local.get $k) (local.get $id)))
+          (then
+            (i64.store offset=8 (i32.add (local.get $q) (i32.shl (local.get $j) (i32.const 4))) (local.get $id))
+            (i64.store offset=16 (i32.add (local.get $q) (i32.shl (local.get $j) (i32.const 4))) (local.get $v))
+            (local.set $j (i32.add (local.get $j) (i32.const 1)))
+            (local.set $found (i32.const 2))))
+        (i64.store offset=8 (i32.add (local.get $q) (i32.shl (local.get $j) (i32.const 4))) (local.get $k))
+        (i64.store offset=16 (i32.add (local.get $q) (i32.shl (local.get $j) (i32.const 4)))
+          (if (result i64) (i64.eq (local.get $k) (local.get $id))
+            (then (local.get $v))
+            (else (call $dup (i64.load offset=16 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 4))))))))
+        (local.set $j (i32.add (local.get $j) (i32.const 1)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))
+    (if (i32.eqz (local.get $found))
+      (then
+        (i64.store offset=8 (i32.add (local.get $q) (i32.shl (local.get $j) (i32.const 4))) (local.get $id))
+        (i64.store offset=16 (i32.add (local.get $q) (i32.shl (local.get $j) (i32.const 4))) (local.get $v))))
+    (i64.extend_i32_u (local.get $q)))
 
   ;; Dictionaries: string keys, entries in insertion order.
   (func $dict_find (param $d i64) (param $key i64) (result i32)

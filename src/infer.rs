@@ -98,6 +98,11 @@ impl Infer<'_> {
                 s.constrain(&r, &Ty::record([(name.clone(), out.clone())]))?;
                 out
             }
+            Term::Update(record, name, value) => {
+                let r = self.term(record, env, level)?;
+                let v = self.term(value, env, level)?;
+                Ty::update(r, name.clone(), v)
+            }
             Term::Dict(entries) => {
                 let values = entries.iter().map(|(_, t)| self.term(t, env, level)).collect::<Result<Vec<_>>>()?;
                 Ty::dict(self.join(values, level)?)
@@ -181,6 +186,7 @@ pub fn signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) {
         }
         Op::H => (vec![Ty::str(), Ty::dict(Ty::str()), Ty::list(Ty::Top), Ty::dict(Ty::str())], Ty::View),
         Op::Emit => (vec![Ty::str(), Ty::str()], Ty::Emit),
+        Op::Trim => (vec![Ty::str()], Ty::str()),
     }
 }
 

@@ -10,7 +10,7 @@
 use crate::infer::{Binding, Globals, Infer};
 use crate::reader;
 use crate::syntax::{self, Def, Expr};
-use crate::term::{Hash, Term};
+use crate::term::{Hash, Op, Term};
 use crate::types::{Scheme, Solver, Ty, TypeError, coalesce};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -52,6 +52,7 @@ pub enum Error {
     Read(reader::ReadError),
     Syntax(syntax::SyntaxError),
     Unbound { name: String, def: String },
+    Resolve { def: String, message: String },
     Type { def: String, error: TypeError },
 }
 
@@ -61,6 +62,7 @@ impl fmt::Display for Error {
             Error::Read(e) => write!(f, "read error: {e}"),
             Error::Syntax(e) => write!(f, "syntax error: {e}"),
             Error::Unbound { name, def } => write!(f, "in `{def}`: `{name}` is not defined"),
+            Error::Resolve { def, message } => write!(f, "in `{def}`: {message}"),
             Error::Type { def, error } => write!(f, "in `{def}`: type error: {error}"),
         }
     }
@@ -137,8 +139,10 @@ impl Codebase {
                     }
                     self.names.get(name).map(|h| Target::Hash(*h))
                 };
-                let term = resolve(&d.body, &mut Vec::new(), &lookup)
-                    .map_err(|name| Error::Unbound { name, def: d.name.clone() })?;
+                let term = resolve(&d.body, &mut Vec::new(), &lookup).map_err(|e| match e {
+                    ResolveError::Unbound(name) => Error::Unbound { name, def: d.name.clone() },
+                    ResolveError::Invalid(message) => Error::Resolve { def: d.name.clone(), message },
+                })?;
                 terms.push(term);
             }
 
@@ -252,6 +256,11 @@ impl Codebase {
     }
 }
 
+enum ResolveError {
+    Unbound(String),
+    Invalid(String),
+}
+
 enum Target {
     Hash(Hash),
     Cycle(u32),
@@ -259,7 +268,11 @@ enum Target {
 
 /// Replace names with de Bruijn indices and hashes. Returns the first
 /// name that resolves to nothing.
-fn resolve(expr: &Expr, scope: &mut Vec<String>, lookup: &dyn Fn(&str) -> Option<Target>) -> Result<Term, String> {
+fn resolve(
+    expr: &Expr,
+    scope: &mut Vec<String>,
+    lookup: &dyn Fn(&str) -> Option<Target>,
+) -> Result<Term, ResolveError> {
     let b = |e: &Expr, scope: &mut Vec<String>| resolve(e, scope, lookup).map(Box::new);
     Ok(match expr {
         Expr::Int(n) => Term::Int(*n),
@@ -273,7 +286,12 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, lookup: &dyn Fn(&str) -> Option
                 match lookup(name) {
                     Some(Target::Hash(h)) => Term::Ref(h),
                     Some(Target::Cycle(i)) => Term::CycleRef(i),
-                    None => return Err(name.clone()),
+                    None if Op::from_name(name).is_some() => {
+                        return Err(ResolveError::Invalid(format!(
+                            "the built-in `{name}` is not a value yet; call it, or wrap it in `fn`"
+                        )));
+                    }
+                    None => return Err(ResolveError::Unbound(name.clone())),
                 }
             }
         }
@@ -284,7 +302,17 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, lookup: &dyn Fn(&str) -> Option
             Term::Fn(params.len() as u32, Box::new(body?))
         }
         Expr::App(callee, args, _) => {
-            Term::App(b(callee, scope)?, args.iter().map(|a| resolve(a, scope, lookup)).collect::<Result<_, _>>()?)
+            let args: Vec<Term> = args.iter().map(|a| resolve(a, scope, lookup)).collect::<Result<_, _>>()?;
+            // A name no local or definition binds may name a built-in:
+            // locals and definitions shadow built-ins.
+            if let Expr::Var(name, _) = &**callee
+                && !scope.contains(name)
+                && lookup(name).is_none()
+                && let Some(op) = Op::from_name(name)
+            {
+                return builtin(op, args);
+            }
+            Term::App(b(callee, scope)?, args)
         }
         Expr::Let(name, value, body) => {
             let value = b(value, scope)?;
@@ -308,19 +336,47 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, lookup: &dyn Fn(&str) -> Option
             let mut out: Vec<(String, Term)> = fields
                 .iter()
                 .map(|(k, v)| Ok((k.clone(), resolve(v, scope, lookup)?)))
-                .collect::<Result<_, String>>()?;
+                .collect::<Result<_, ResolveError>>()?;
             out.sort_by(|a, b| a.0.cmp(&b.0));
             Term::Record(out)
         }
         Expr::Field(name, record) => Term::Field(name.clone(), b(record, scope)?),
+        Expr::Update(record, name, value) => Term::Update(b(record, scope)?, name.clone(), b(value, scope)?),
         Expr::Dict(entries) => Term::Dict(
-            entries.iter().map(|(k, v)| Ok((k.clone(), resolve(v, scope, lookup)?))).collect::<Result<_, String>>()?,
+            entries
+                .iter()
+                .map(|(k, v)| Ok((k.clone(), resolve(v, scope, lookup)?)))
+                .collect::<Result<_, ResolveError>>()?,
         ),
         Expr::List(items) => Term::List(items.iter().map(|i| resolve(i, scope, lookup)).collect::<Result<_, _>>()?),
-        Expr::Prim(op, args, _) => {
-            Term::Prim(*op, args.iter().map(|a| resolve(a, scope, lookup)).collect::<Result<_, _>>()?)
-        }
     })
+}
+
+/// A built-in applied to arguments, after checking how many it takes.
+/// `h` fills in its optional attributes, children, and events.
+fn builtin(op: Op, mut args: Vec<Term>) -> Result<Term, ResolveError> {
+    if op == Op::H {
+        if args.is_empty() || args.len() > 4 {
+            return Err(ResolveError::Invalid(
+                "`h` takes a tag, then optionally attributes, children, and events".into(),
+            ));
+        }
+        if args.len() < 2 {
+            args.push(Term::Dict(vec![]));
+        }
+        if args.len() < 3 {
+            args.push(Term::List(vec![]));
+        }
+        if args.len() < 4 {
+            args.push(Term::Dict(vec![]));
+        }
+    }
+    if let Some(arity) = op.arity()
+        && args.len() != arity
+    {
+        return Err(ResolveError::Invalid(format!("`{}` takes {arity} argument(s), given {}", op.name(), args.len())));
+    }
+    Ok(Term::Prim(op, args))
 }
 
 /// The names an expression mentions that no binder inside it binds.
@@ -364,7 +420,11 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
         }
         Expr::Record(fields) | Expr::Dict(fields) => fields.iter().for_each(|(_, e)| free_names(e, scope, out)),
         Expr::Field(_, e) => free_names(e, scope, out),
-        Expr::List(items) | Expr::Prim(_, items, _) => items.iter().for_each(|e| free_names(e, scope, out)),
+        Expr::Update(r, _, v) => {
+            free_names(r, scope, out);
+            free_names(v, scope, out);
+        }
+        Expr::List(items) => items.iter().for_each(|e| free_names(e, scope, out)),
         Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Nil => {}
     }
 }
@@ -377,7 +437,7 @@ fn renumber_cycle(term: &mut Term, canonical: &dyn Fn(u32) -> u32) {
             renumber_cycle(c, canonical);
             args.iter_mut().for_each(|a| renumber_cycle(a, canonical));
         }
-        Term::Let(a, b) | Term::Coalesce(a, b) | Term::And(a, b) | Term::Or(a, b) => {
+        Term::Update(a, _, b) | Term::Let(a, b) | Term::Coalesce(a, b) | Term::And(a, b) | Term::Or(a, b) => {
             renumber_cycle(a, canonical);
             renumber_cycle(b, canonical);
         }

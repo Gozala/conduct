@@ -82,12 +82,16 @@ fn html(nodes: &[Val]) -> String {
 }
 
 fn event(kind: &str, value: Option<&str>, key: Option<&str>) -> Val {
+    event_with(kind, value, None, key)
+}
+
+fn event_with(kind: &str, value: Option<&str>, checked: Option<bool>, key: Option<&str>) -> Val {
     let opt = |s: Option<&str>| Val::Option(s.map(|s| Box::new(Val::String(s.into()))));
     Val::Record(
         vec![
             ValField { name: "kind".into(), value: Val::String(kind.into()) },
             ValField { name: "value".into(), value: opt(value) },
-            ValField { name: "checked".into(), value: Val::Option(None) },
+            ValField { name: "checked".into(), value: Val::Option(checked.map(|c| Box::new(Val::Bool(c)))) },
             ValField { name: "key".into(), value: opt(key) },
         ]
         .into(),
@@ -242,4 +246,62 @@ fn contract_violations_are_type_errors() {
     .unwrap();
     let err = element::check(&cb).err().unwrap().to_string();
     assert!(err.contains("does not fit"), "{err}");
+}
+
+const TODO_INPUT: &str = include_str!("../examples/todo-input.cdt");
+const TODO_FOOTER: &str = include_str!("../examples/todo-footer.cdt");
+
+#[tokio::test(flavor = "current_thread")]
+async fn todo_input_adds_and_clears() {
+    let mut el = Element::load(TODO_INPUT).await;
+    let id = el.create(&[("has-todos", "false"), ("all-completed", "false")]).await;
+    let field = "<input class=\"new-todo\" placeholder=\"What needs to be done?\" autofocus=\"\"";
+    assert_eq!(el.render(id).await, format!("<div class=\"row\">{field} @keydown=key></input></div>"));
+
+    // Enter adds the trimmed title and clears the field once.
+    el.handle(id, "key", event("keydown", Some("  Buy milk "), Some("Enter"))).await;
+    assert_eq!(el.take_emitted(), vec![(id, "todo-add".to_string(), "Buy milk".to_string())]);
+    assert!(el.render(id).await.contains(".value=\"\""));
+    // The next keystroke leaves the field to the person typing.
+    el.handle(id, "key", event("keydown", Some(""), Some("a"))).await;
+    assert!(!el.render(id).await.contains(".value"));
+    // A blank title adds nothing.
+    el.handle(id, "key", event("keydown", Some("   "), Some("Enter"))).await;
+    assert!(el.take_emitted().is_empty());
+
+    // With todos, the toggle-all checkbox appears and reports its state.
+    el.set_attr(id, "has-todos", Some("true")).await;
+    el.set_attr(id, "all-completed", Some("true")).await;
+    let html = el.render(id).await;
+    assert!(
+        html.starts_with("<div class=\"row\"><input id=\"toggle-all\" class=\"toggle-all\" type=\"checkbox\""),
+        "{html}"
+    );
+    assert!(html.contains(".checked=true @change=toggleAll"), "{html}");
+    el.handle(id, "toggleAll", event_with("change", None, Some(false), None)).await;
+    assert_eq!(el.take_emitted(), vec![(id, "todo-toggle-all".to_string(), "false".to_string())]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn todo_footer_counts_filters_and_clears() {
+    let mut el = Element::load(TODO_FOOTER).await;
+    let id = el.create(&[("active", "1"), ("completed", "0"), ("filter", "active")]).await;
+    assert_eq!(
+        el.render(id).await,
+        "<footer class=\"footer\">\
+         <span class=\"todo-count\"><strong>1</strong> item left</span>\
+         <ul class=\"filters\">\
+         <li><a href=\"#/\" class=\"\">All</a></li>\
+         <li><a href=\"#/active\" class=\"selected\">Active</a></li>\
+         <li><a href=\"#/completed\" class=\"\">Completed</a></li>\
+         </ul>\
+         </footer>"
+    );
+    el.set_attr(id, "active", Some("3")).await;
+    el.set_attr(id, "completed", Some("2")).await;
+    let html = el.render(id).await;
+    assert!(html.contains("<strong>3</strong> items left"), "{html}");
+    assert!(html.contains("<button class=\"clear-completed\" @click=clear>Clear completed</button>"), "{html}");
+    el.handle(id, "clear", event("click", None, None)).await;
+    assert_eq!(el.take_emitted(), vec![(id, "todo-clear".to_string(), String::new())]);
 }

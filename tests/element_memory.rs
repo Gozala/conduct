@@ -177,3 +177,38 @@ fn disconnecting_frees_an_element() {
     let table_growth = core.live() - baseline;
     assert!(table_growth <= 1, "{table_growth} blocks stayed after disconnecting");
 }
+
+#[test]
+fn todo_input_and_footer_memory_is_flat() {
+    let mut input = Core::new(include_str!("../examples/todo-input.cdt"));
+    let id = input.create(&[("has-todos", "true"), ("all-completed", "false")]);
+    let round = |core: &mut Core| {
+        core.handle(id, "key", "keydown", Some("  Buy milk "), Some("Enter"));
+        core.render(id);
+        core.handle(id, "key", "keydown", Some(""), Some("a"));
+        core.render(id);
+        core.set_attr(id, "all-completed", Some("true"));
+        core.handle(id, "toggleAll", "change", None, None);
+    };
+    round(&mut input);
+    let baseline = input.live();
+    for _ in 0..100 {
+        round(&mut input);
+    }
+    assert_eq!(input.live(), baseline, "todo-input's memory grew");
+
+    let mut footer = Core::new(include_str!("../examples/todo-footer.cdt"));
+    let id = footer.create(&[("active", "2"), ("completed", "1"), ("filter", "all")]);
+    let round = |core: &mut Core| {
+        core.render(id);
+        core.set_attr(id, "active", Some("1"));
+        core.handle(id, "clear", "click", None, None);
+        core.set_attr(id, "completed", None);
+    };
+    round(&mut footer);
+    let baseline = footer.live();
+    for _ in 0..100 {
+        round(&mut footer);
+    }
+    assert_eq!(footer.live(), baseline, "todo-footer's memory grew");
+}

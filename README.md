@@ -23,12 +23,14 @@ elements and routes are written in Zena, in conduct.
 
 ## Status
 
-Iteration 1, the first vertical slice. [`examples/todo-item.cdt`] is the
-demo's `<todo-item>` element in conduct. It compiles to a component of
-the demo's `element-component` world, and the tests drive it through the
-polyfill, natively over Wasmtime, the way the demo's page drives an
-element: create, render, toggle, edit in place, cancel, attribute
-changes, several instances at once.
+Three of the demo's four elements are written in conduct:
+[`todo-item`](examples/todo-item.cdt), [`todo-input`](examples/todo-input.cdt)
+and [`todo-footer`](examples/todo-footer.cdt). Each compiles to a
+component of the demo's `element-component` world, and the tests drive
+them through the polyfill, natively over Wasmtime, the way the demo's
+page drives an element: create, render, handle events, change
+attributes, several instances at once. The fourth, `<todo-app>`, needs
+HTTP requests (see [Next](#next)).
 
 ```
 $ cargo run -- check examples/todo-item.cdt
@@ -41,11 +43,13 @@ $ cargo run -- check examples/todo-item.cdt
 #96a1911470 view : ({editing: Bool}, Dict[String | nil]) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (13840 bytes)
+wrote todo-item.wasm (18085 bytes)
 ```
 
 Every type above is inferred. `attr`'s type says it returns the
-dictionary's value type with `nil` taken out, or a `String`.
+dictionary's value type with `nil` taken out, or a `String`. The same
+`attr` is written in all three elements, and it has the same hash in
+each: the codebase holds it once.
 
 `cargo test` runs everything: the reader, inference, hashing, the code
 generator on Wasmtime, and the element on the polyfill.
@@ -66,6 +70,7 @@ generator on Wasmtime, and the element on the polyfill.
 {"class" "toggle" "type" "checkbox"}    ; a dictionary: string keys
 (get attrs "title")                     ; String | nil
 (assoc d "k" v) (dissoc d "k")
+(assoc todo :done true)                 ; a copy of a record with one field set
 [1 2 3] (count xs) (first xs) (rest xs) (concat xs ys) (conj xs x)
 (map f xs) (filter f xs)
 (str "id: " 42)                         ; any values, as text
@@ -80,7 +85,14 @@ generator on Wasmtime, and the element on the polyfill.
 (emit "todo-toggle" id)                                     ; an event to send
 ```
 
-Built-ins are applied in full; they are not yet values.
+Built-ins are applied in full; they are not yet values. A local or a
+definition with a built-in's name shadows it, so a parameter can be
+called `filter`.
+
+A record update keeps whatever else the record holds:
+`(defn bump [m] (assoc m :n (+ (:n m) 1)))` infers
+`(a & {n: Int}) -> (a with n: Int)`, where `a` is the rest of the record,
+the way row polymorphism would type it.
 
 ### Types
 
@@ -181,21 +193,19 @@ This keeps the async ABI out of the compiler until a slice needs it.
 
 The demo's other parts each need something this slice does not have:
 
-1. **`<todo-input>` and `<todo-footer>`**: record update, so a model
-   with several fields can change one.
-2. **`<todo-app>`**: `wasi:http/client`, which brings resources, streams,
+1. **`<todo-app>`**: `wasi:http/client`, which brings resources, streams,
    and calls that must wait.
-3. **Routes**: `wasi:http/handler` and the async `demo:todo/model`
+2. **Routes**: `wasi:http/handler` and the async `demo:todo/model`
    imports. Effects stop being data returned from `update`, and the
    effect system (inferred, as Roc infers purity, and mapped to the
    world's imports) has to exist.
-4. **In-place reuse**: Perceus's reuse analysis, so that updating a
+3. **In-place reuse**: Perceus's reuse analysis, so that updating a
    uniquely owned list or record writes into it instead of copying.
-5. **Sum types**: matching on variants needs MLstruct's negation types in
+4. **Sum types**: matching on variants needs MLstruct's negation types in
    general, not just `t \ nil`.
-6. **The codebase in Dialog**: definitions as facts, names as assertions
+5. **The codebase in Dialog**: definitions as facts, names as assertions
    that point at hashes.
-7. **The compiler in the browser**: its dependencies are pure Rust, but
+6. **The compiler in the browser**: its dependencies are pure Rust, but
    building it for `wasm32` has not been tried yet.
 
 [Wasm Component Model Polyfill]: https://github.com/dialog-db/wasm-component-model-polyfill

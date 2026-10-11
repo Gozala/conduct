@@ -61,6 +61,9 @@ pub enum Ty {
     Emit,
     Var(Var),
     Without(Rc<Ty>),
+    /// A record with one field set: what `(assoc r :k v)` returns. Like
+    /// `Without`, it only flows into things.
+    Update(Rc<Ty>, String, Rc<Ty>),
 }
 
 impl Ty {
@@ -95,6 +98,10 @@ impl Ty {
         }
     }
 
+    pub fn update(record: Ty, field: String, value: Ty) -> Ty {
+        Ty::Update(Rc::new(record), field, Rc::new(value))
+    }
+
     /// The highest level of any variable in the type.
     pub fn level(&self) -> u32 {
         match self {
@@ -102,6 +109,7 @@ impl Ty {
             Ty::Fn(params, ret) => params.iter().map(Ty::level).max().unwrap_or(0).max(ret.level()),
             Ty::Record(fields) => fields.values().map(Ty::level).max().unwrap_or(0),
             Ty::List(t) | Ty::Dict(t) | Ty::Without(t) => t.level(),
+            Ty::Update(r, _, v) => r.level().max(v.level()),
             _ => 0,
         }
     }
@@ -121,6 +129,7 @@ impl Ty {
             Ty::List(t) => (8, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Dict(t) => (9, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Without(t) => (10, Rc::as_ptr(t) as *const u8 as usize),
+            Ty::Update(r, _, _) => (11, Rc::as_ptr(r) as *const u8 as usize),
         }
     }
 }
@@ -229,6 +238,21 @@ impl Solver {
                 }
                 Ok(())
             }
+            (Ty::Update(record, field, value), _) if !matches!(rhs, Ty::Var(_)) => match rhs {
+                // The updated field comes from the new value; every other
+                // field the reader wants comes from the original record.
+                Ty::Record(wanted) => {
+                    for (name, t) in wanted.iter() {
+                        if name == field {
+                            self.go(value, t, cache)?;
+                        } else {
+                            self.go(record, &Ty::record([(name.clone(), t.clone())]), cache)?;
+                        }
+                    }
+                    Ok(())
+                }
+                _ => Err(TypeError(format!("{} is not a {}", Shallow(lhs), Shallow(rhs)))),
+            },
             (Ty::Without(inner), _) => match &**inner {
                 Ty::Var(v) => {
                     if rhs.level() > v.level {
@@ -284,6 +308,9 @@ impl Solver {
             Ty::List(t) => Ty::list(self.extrude(t, pol, level, cache)),
             Ty::Dict(t) => Ty::dict(self.extrude(t, pol, level, cache)),
             Ty::Without(t) => Ty::without(self.extrude(t, pol, level, cache)),
+            Ty::Update(r, k, v) => {
+                Ty::update(self.extrude(r, pol, level, cache), k.clone(), self.extrude(v, pol, level, cache))
+            }
             Ty::Var(v) => {
                 if let Some(nv) = cache.get(&(v.id, pol)) {
                     return Ty::Var(nv.clone());
@@ -348,6 +375,9 @@ impl Solver {
             Ty::List(t) => Ty::list(self.freshen(t, limit, level, map)),
             Ty::Dict(t) => Ty::dict(self.freshen(t, limit, level, map)),
             Ty::Without(t) => Ty::without(self.freshen(t, limit, level, map)),
+            Ty::Update(r, k, v) => {
+                Ty::update(self.freshen(r, limit, level, map), k.clone(), self.freshen(v, limit, level, map))
+            }
             other => other.clone(),
         }
     }
@@ -379,6 +409,7 @@ impl fmt::Display for Shallow<'_> {
             Ty::List(_) => write!(f, "List"),
             Ty::Dict(_) => write!(f, "Dict"),
             Ty::Without(t) => write!(f, "{} without nil", Shallow(t)),
+            Ty::Update(r, k, _) => write!(f, "{} with `:{k}` set", Shallow(r)),
         }
     }
 }
@@ -401,6 +432,7 @@ pub enum Type {
     Inter(Vec<Type>),
     Rec(u32, Box<Type>),
     Without(Box<Type>),
+    Update(Box<Type>, String, Box<Type>),
 }
 
 /// Turn an inferred type into a displayable one and simplify it.
@@ -434,6 +466,11 @@ fn coalesce_go(
         Ty::List(t) => Type::List(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
         Ty::Dict(t) => Type::Dict(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
         Ty::Without(t) => Type::Without(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
+        Ty::Update(r, k, v) => Type::Update(
+            Box::new(coalesce_go(r, pol, in_process, recursive, next)),
+            k.clone(),
+            Box::new(coalesce_go(v, pol, in_process, recursive, next)),
+        ),
         Ty::Var(v) => {
             let key = (v.id, pol);
             if in_process.contains(&key) {
@@ -524,6 +561,10 @@ fn cooccurrence(ty: Type) -> Type {
             }
             Type::Record(fields) => fields.values().for_each(|t| visit(t, pol, co, bound)),
             Type::List(t) | Type::Dict(t) | Type::Without(t) => visit(t, pol, co, bound),
+            Type::Update(r, _, v) => {
+                visit(r, pol, co, bound);
+                visit(v, pol, co, bound);
+            }
             // The variables directly in a group were counted with it
             // above; visiting them alone would count them again.
             Type::Union(ts) | Type::Inter(ts) => {
@@ -583,6 +624,7 @@ fn drop_var(ty: Type, v: u32, pol: bool) -> Type {
         Type::List(t) => Type::List(Box::new(drop_var(*t, v, pol))),
         Type::Dict(t) => Type::Dict(Box::new(drop_var(*t, v, pol))),
         Type::Without(t) => Type::Without(Box::new(drop_var(*t, v, pol))),
+        Type::Update(r, k, x) => Type::Update(Box::new(drop_var(*r, v, pol)), k, Box::new(drop_var(*x, v, pol))),
         Type::Union(ts) => Type::Union(ts.into_iter().map(|t| drop_var(t, v, pol)).collect()),
         Type::Inter(ts) => Type::Inter(ts.into_iter().map(|t| drop_var(t, v, pol)).collect()),
         Type::Rec(x, body) => Type::Rec(x, Box::new(drop_var(*body, v, pol))),
@@ -602,6 +644,7 @@ fn map_type(ty: Type, f: &dyn Fn(&Type) -> Option<Type>) -> Type {
         Type::List(t) => Type::List(Box::new(map_type(*t, f))),
         Type::Dict(t) => Type::Dict(Box::new(map_type(*t, f))),
         Type::Without(t) => Type::Without(Box::new(map_type(*t, f))),
+        Type::Update(r, k, v) => Type::Update(Box::new(map_type(*r, f)), k, Box::new(map_type(*v, f))),
         Type::Union(ts) => Type::Union(ts.into_iter().map(|t| map_type(t, f)).collect()),
         Type::Inter(ts) => Type::Inter(ts.into_iter().map(|t| map_type(t, f)).collect()),
         Type::Rec(x, body) => Type::Rec(x, Box::new(map_type(*body, f))),
@@ -624,6 +667,10 @@ fn occurrences(ty: &Type, pol: bool, pos: &mut HashSet<u32>, neg: &mut HashSet<u
         }
         Type::Record(fields) => fields.values().for_each(|t| occurrences(t, pol, pos, neg)),
         Type::List(t) | Type::Dict(t) | Type::Without(t) => occurrences(t, pol, pos, neg),
+        Type::Update(r, _, v) => {
+            occurrences(r, pol, pos, neg);
+            occurrences(v, pol, pos, neg);
+        }
         Type::Union(ts) | Type::Inter(ts) => ts.iter().for_each(|t| occurrences(t, pol, pos, neg)),
         Type::Rec(v, body) => {
             // A recursive binder is referenced from inside its body.
@@ -651,6 +698,7 @@ fn prune(ty: Type, pol: bool, keep: &HashSet<u32>) -> Type {
         Type::List(t) => Type::List(Box::new(prune(*t, pol, keep))),
         Type::Dict(t) => Type::Dict(Box::new(prune(*t, pol, keep))),
         Type::Without(t) => Type::Without(Box::new(prune(*t, pol, keep))),
+        Type::Update(r, k, v) => Type::Update(Box::new(prune(*r, pol, keep)), k, Box::new(prune(*v, pol, keep))),
         Type::Union(ts) => Type::Union(ts.into_iter().map(|t| prune(t, pol, keep)).collect()),
         Type::Inter(ts) => Type::Inter(ts.into_iter().map(|t| prune(t, pol, keep)).collect()),
         Type::Rec(v, body) => Type::Rec(v, Box::new(prune(*body, pol, keep))),
@@ -669,6 +717,7 @@ fn normalize(ty: Type) -> Type {
             if mentions(&body, v) { Type::Rec(v, Box::new(body)) } else { body }
         }
         Type::Without(t) => without(normalize(*t)),
+        Type::Update(r, k, v) => update(normalize(*r), k, normalize(*v)),
         Type::Union(ts) => {
             let mut out: Vec<Type> = Vec::new();
             for t in ts.into_iter().map(normalize) {
@@ -791,12 +840,25 @@ fn without(ty: Type) -> Type {
     }
 }
 
+/// A record with one field set, shown as the record when the original
+/// is one.
+fn update(record: Type, field: String, value: Type) -> Type {
+    match record {
+        Type::Record(mut fields) => {
+            fields.insert(field, value);
+            Type::Record(fields)
+        }
+        other => Type::Update(Box::new(other), field, Box::new(value)),
+    }
+}
+
 fn mentions(ty: &Type, v: u32) -> bool {
     match ty {
         Type::Var(x) => *x == v,
         Type::Fn(params, ret) => params.iter().any(|p| mentions(p, v)) || mentions(ret, v),
         Type::Record(fields) => fields.values().any(|t| mentions(t, v)),
         Type::List(t) | Type::Dict(t) | Type::Without(t) | Type::Rec(_, t) => mentions(t, v),
+        Type::Update(r, _, x) => mentions(r, v) || mentions(x, v),
         Type::Union(ts) | Type::Inter(ts) => ts.iter().any(|t| mentions(t, v)),
         _ => false,
     }
@@ -822,6 +884,10 @@ fn rename(ty: Type) -> Type {
             Type::List(t) => Type::List(Box::new(go(*t, map))),
             Type::Dict(t) => Type::Dict(Box::new(go(*t, map))),
             Type::Without(t) => Type::Without(Box::new(go(*t, map))),
+            Type::Update(r, k, v) => {
+                let r = go(*r, map);
+                Type::Update(Box::new(r), k, Box::new(go(*v, map)))
+            }
             Type::Union(ts) => Type::Union(ts.into_iter().map(|t| go(t, map)).collect()),
             Type::Inter(ts) => Type::Inter(ts.into_iter().map(|t| go(t, map)).collect()),
             other => other,
@@ -908,6 +974,13 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
         Type::Rec(v, body) => {
             write!(f, "(rec {}. ", var(*v))?;
             write_type(body, f, 0)?;
+            write!(f, ")")
+        }
+        Type::Update(r, k, v) => {
+            write!(f, "(")?;
+            write_type(r, f, 0)?;
+            write!(f, " with {k}: ")?;
+            write_type(v, f, 0)?;
             write!(f, ")")
         }
         Type::Without(t) => {

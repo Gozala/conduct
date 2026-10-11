@@ -3,7 +3,6 @@
 //! name-free terms that can be hashed.
 
 use crate::reader::{Sexp, Span};
-use crate::term::Op;
 use std::fmt;
 
 #[derive(Clone, Debug)]
@@ -26,9 +25,10 @@ pub enum Expr {
     Or(Box<Expr>, Box<Expr>),
     Record(Vec<(String, Expr)>),
     Field(String, Box<Expr>),
+    /// `(assoc record :field value)`: a copy of a record with one field set.
+    Update(Box<Expr>, String, Box<Expr>),
     Dict(Vec<(String, Expr)>),
     List(Vec<Expr>),
-    Prim(Op, Vec<Expr>, Span),
 }
 
 /// A top-level definition, before resolution.
@@ -93,7 +93,7 @@ fn def(form: &Sexp) -> Result<Def> {
 fn binder(form: &Sexp) -> Result<String> {
     match form {
         Sexp::Symbol(name, span) => {
-            if RESERVED.contains(&name.as_str()) || Op::from_name(name).is_some() {
+            if RESERVED.contains(&name.as_str()) {
                 return err(format!("`{name}` is reserved and cannot be bound"), *span);
             }
             Ok(name.clone())
@@ -259,32 +259,12 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
                 }
                 return Ok(out);
             }
-            "h" => {
-                if args.is_empty() || args.len() > 4 {
-                    return err("`h` takes a tag, then optionally attributes, children, and events", span);
-                }
-                let mut parts = args.iter().map(expr).collect::<Result<Vec<_>>>()?;
-                if parts.len() < 2 {
-                    parts.push(Expr::Dict(vec![]));
-                }
-                if parts.len() < 3 {
-                    parts.push(Expr::List(vec![]));
-                }
-                if parts.len() < 4 {
-                    parts.push(Expr::Dict(vec![]));
-                }
-                return Ok(Expr::Prim(Op::H, parts, span));
-            }
             _ => {}
         }
-        if let Some(op) = Op::from_name(name) {
-            let parts = args.iter().map(expr).collect::<Result<Vec<_>>>()?;
-            if let Some(arity) = op.arity()
-                && parts.len() != arity
-            {
-                return err(format!("`{name}` takes {arity} argument(s), given {}", parts.len()), span);
-            }
-            return Ok(Expr::Prim(op, parts, span));
+        if name == "assoc"
+            && let [record, Sexp::Keyword(field, _), value] = args
+        {
+            return Ok(Expr::Update(boxed(record)?, field.clone(), boxed(value)?));
         }
     }
     let callee = expr(head)?;
