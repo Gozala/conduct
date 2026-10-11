@@ -25,8 +25,20 @@ wit-parser = "0.261"
 wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill" }
 wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill" }
 # The same Wasmtime the polyfill pins, for running plain core modules.
-wasmtime = { version = "=49.0.0-rc.1", default-features = false, features = ["cranelift", "runtime"] }
+wasmtime = { version = "=49.0.0-rc.1", default-features = false, features = [
+  "cranelift",
+  "runtime",
+  "component-model-async",
+] }
+# Wasmtime's own `wasi:http@0.3.0`, the reference the fetch glue is also
+# checked against, with requests answered in process.
+wasmtime-wasi-http = { version = "=49.0.0-rc.1", default-features = false, features = ["p3", "component-model-async"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
 tokio = { version = "1", features = ["rt", "macros"] }
+# The in-process todo API that answers the elements' requests in tests.
+serde_json = "1"
 
 [profile.dev.package."*"]
 opt-level = 2

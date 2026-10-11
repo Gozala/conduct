@@ -31,11 +31,13 @@ The tests drive the first three through the polyfill, natively over
 Wasmtime, the way the demo's page drives an element: create, render,
 handle events, change attributes, several instances at once.
 
-`<todo-app>` talks to the demo's routes over HTTP. Its logic is done and
-tested: a conduct program feeds its `update` the events and responses it
-would see and checks the requests it asks for and the pages it renders.
-The glue does not perform its requests yet; that needs
-`wasi:http/client` (see [Next](#next)).
+`<todo-app>` talks to the demo's routes over HTTP through
+`wasi:http/client`. A test drives it on the polyfill against an
+in-process copy of the demo's API, through the same `wasi:http/types`
+host the demo's page uses: it loads the list on connect, sends each
+change and reloads, follows the route's filter, and its memory holds
+exactly the same blocks after 200 requests as before them. Another test
+runs the same glue on Wasmtime's own `wasi:http@0.3.0`.
 
 ```
 $ cargo run -- check examples/todo-item.cdt
@@ -48,7 +50,7 @@ $ cargo run -- check examples/todo-item.cdt
 #96a1911470 view : ({editing: Bool}, Dict[String | nil]) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (21376 bytes)
+wrote todo-item.wasm (22770 bytes)
 ```
 
 Every type above is inferred. `attr`'s type says it returns the
@@ -210,29 +212,42 @@ rules as the Zena authoring library: `key` names a node, `checked` and
 `value` become properties, and lists among a view's children are spliced
 in.
 
-Every export is lifted synchronously, though the world declares them
-`async`, and `host.emit` is lowered synchronously. The component model
-allows both, wit-component validates them, and the polyfill runs them.
-This keeps the async ABI out of the compiler until a slice needs it.
+The exports that run `update` are lifted with the async ABI's callback
+form. A `fetch` effect starts a request: headers, a `stream<u8>` for the
+body, a `future` for trailers, and an async-lowered `send`. The export
+then returns to the host while the request is in flight, and the
+callback carries it on as its events arrive: the body written, the
+response returned, its body read to the end. Then `update` hears the
+response under the handler the effect named, and may ask for more
+requests, which join the same task. The task returns once nothing it
+started is in flight, so the host renders after a change has gone out
+and the list has been loaded again, as it does after the Zena element's
+`await`s. No stack switching is needed, so this works where the
+polyfill has no way to suspend a guest.
+
+An absolute URL sets the request's scheme and authority. Any other is a
+path, which the demo's page resolves against its origin; Wasmtime has no
+origin to resolve it against, and refuses it.
+
+The other exports are lifted synchronously, and `host.emit` is lowered
+synchronously. An element imports `wasi:http` only if its `update` can
+ask for a request.
 
 ## Next
 
 The demo's other parts each need something this slice does not have:
 
-1. **`<todo-app>`'s requests**: the glue performs `fetch` effects through
-   `wasi:http/client`, which brings resources, streams, futures, and a
-   call that must wait.
-2. **Routes**: `wasi:http/handler` and the async `demo:todo/model`
+1. **Routes**: `wasi:http/handler` and the async `demo:todo/model`
    imports. Effects stop being data returned from `update`, and the
    effect system (inferred, as Roc infers purity, and mapped to the
    world's imports) has to exist.
-3. **In-place reuse**: Perceus's reuse analysis, so that updating a
+2. **In-place reuse**: Perceus's reuse analysis, so that updating a
    uniquely owned list or record writes into it instead of copying.
-4. **Sum types**: matching on variants needs MLstruct's negation types in
+3. **Sum types**: matching on variants needs MLstruct's negation types in
    general, not just `t \ nil`.
-5. **The codebase in Dialog**: definitions as facts, names as assertions
+4. **The codebase in Dialog**: definitions as facts, names as assertions
    that point at hashes.
-6. **The compiler in the browser**: its dependencies are pure Rust, but
+5. **The compiler in the browser**: its dependencies are pure Rust, but
    building it for `wasm32` has not been tried yet.
 
 [Wasm Component Model Polyfill]: https://github.com/dialog-db/wasm-component-model-polyfill

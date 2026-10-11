@@ -2,13 +2,16 @@
 //! demo's element world, and driven through the Wasm Component Model
 //! Polyfill as the demo's page drives an element.
 
+mod support;
+
 use conduct::{Codebase, element};
+use support::Host;
 use wcmp::*;
 
 type Emitted = Vec<(u32, String, String)>;
 
 struct Element {
-    store: Store<Emitted>,
+    store: Store<Host>,
     instance: Instance,
 }
 
@@ -100,21 +103,27 @@ fn event_with(kind: &str, value: Option<&str>, checked: Option<bool>, key: Optio
 
 impl Element {
     async fn load(source: &str) -> Element {
+        Element::load_with(source, Host::default()).await
+    }
+
+    async fn load_with(source: &str, host: Host) -> Element {
         let mut cb = Codebase::new();
         cb.add_source(source).unwrap_or_else(|e| panic!("{e}"));
-        let bytes = element::component(&cb).unwrap_or_else(|e| panic!("{e}"));
+        let bytes = element::debug_component(&cb).unwrap_or_else(|e| panic!("{e}"));
         let backend = wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap();
         let engine = Engine::with_backend(backend).unwrap();
-        let mut store = Store::new(&engine, Emitted::new()).unwrap();
+        let mut store = Store::new(&engine, host).unwrap();
         let component = Component::new(&engine, &bytes).await.unwrap();
-        let mut linker: Linker<Emitted> = Linker::new(&engine);
+        let mut linker: Linker<Host> = Linker::new(&engine);
+        let types = support::define_http(&mut linker, &component).unwrap();
+        store.data_mut().http.set_types(types);
         let host: InterfaceIdentifier = "demo:element/host".parse().unwrap();
         linker
             .instance(&host)
             .func_wrap(
                 "emit",
-                |mut call: HostCall<'_, Emitted>, (id, name, detail): (u32, String, String)| -> wcmp::Result<()> {
-                    call.data_mut().push((id, name, detail));
+                |mut call: HostCall<'_, Host>, (id, name, detail): (u32, String, String)| -> wcmp::Result<()> {
+                    call.data_mut().emitted.push((id, name, detail));
                     Ok(())
                 },
             )
@@ -147,6 +156,20 @@ impl Element {
         }
     }
 
+    /// How many blocks the element's memory holds.
+    async fn live(&mut self) -> u32 {
+        let iface = self.instance.exports().instance("conduct:debug/memory").expect("the debug interface");
+        let f = iface.func("live").expect("live");
+        match &f.call(&mut self.store, &[]).await.unwrap()[..] {
+            [Val::U32(n)] => *n,
+            other => panic!("live returned {other:?}"),
+        }
+    }
+
+    async fn connect(&mut self, id: u32) {
+        self.call("connected", &[Val::U32(id)]).await;
+    }
+
     async fn handle(&mut self, id: u32, handler: &str, event: Val) {
         self.call("handle-event", &[Val::U32(id), Val::String(handler.into()), event]).await;
     }
@@ -157,7 +180,11 @@ impl Element {
     }
 
     fn take_emitted(&mut self) -> Emitted {
-        std::mem::take(self.store.data_mut())
+        std::mem::take(&mut self.store.data_mut().emitted)
+    }
+
+    fn take_requests(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.store.data_mut().requests)
     }
 }
 
@@ -250,15 +277,72 @@ fn contract_violations_are_type_errors() {
 
 const TODO_APP: &str = include_str!("../examples/todo-app.cdt");
 
-/// `<todo-app>`'s model flows back into its own updates, which once sent
-/// the contract check around a cycle forever. Its logic is tested in
-/// `app_logic.rs`; here it builds and renders its spinner on the polyfill.
+async fn add_and_destroy(el: &mut Element, id: u32, n: usize) {
+    el.handle(id, "add", event("todo-add", Some(&format!("Todo {n}")), None)).await;
+    let added = el.store.data().api.todos.last().unwrap().id.clone();
+    el.handle(id, "destroy", event("todo-destroy", Some(&added), None)).await;
+    el.render(id).await;
+}
+
+/// `<todo-app>` against an in-process copy of the demo's API: each
+/// export that runs `update` finishes after the requests it caused have
+/// been answered and their responses have reached `update`, so a render
+/// after it shows the result.
+///
+/// Its model flows back into its own updates, which once sent the
+/// contract check around a cycle forever; building it checks that too.
 #[tokio::test(flavor = "current_thread")]
-async fn todo_app_builds_and_renders() {
-    let mut el = Element::load(TODO_APP).await;
+async fn todo_app_talks_to_the_api() {
+    let mut host = Host::default();
+    host.api.add("Buy milk", false);
+    host.api.add("Walk", true);
+    let mut el = Element::load_with(TODO_APP, host).await;
     let id = el.create(&[("filter", "")]).await;
+    assert!(el.render(id).await.contains("spinner"));
+
+    el.connect(id).await;
+    assert_eq!(el.take_requests(), ["GET /api/todos?filter=all"]);
     let page = el.render(id).await;
-    assert!(page.contains("spinner"), "{page}");
+    assert!(page.contains("<todo-item #t1 todo-id=\"t1\" title=\"Buy milk\" completed=\"false\""), "{page}");
+    assert!(page.contains("<todo-item #t2 todo-id=\"t2\" title=\"Walk\" completed=\"true\""), "{page}");
+    assert!(page.contains("<todo-footer active=\"1\" completed=\"1\" filter=\"all\""), "{page}");
+
+    // A change goes out, and the list is loaded again before the
+    // export returns.
+    el.handle(id, "add", event("todo-add", Some("Read"), None)).await;
+    assert_eq!(el.take_requests(), ["POST /api/todos {\"title\":\"Read\"}", "GET /api/todos?filter=all"]);
+    let page = el.render(id).await;
+    assert!(page.contains("title=\"Read\" completed=\"false\""), "{page}");
+    assert!(page.contains("<todo-footer active=\"2\" completed=\"1\""), "{page}");
+
+    el.handle(id, "toggle", event("todo-toggle", Some("t1"), None)).await;
+    assert_eq!(el.take_requests(), ["PATCH /api/todos/t1 {\"completed\":true}", "GET /api/todos?filter=all"]);
+    el.handle(id, "edit", event("todo-edit", Some("t3\nRead a book"), None)).await;
+    assert_eq!(el.take_requests(), ["PATCH /api/todos/t3 {\"title\":\"Read a book\"}", "GET /api/todos?filter=all"]);
+    el.handle(id, "clear", event("todo-clear", Some(""), None)).await;
+    assert_eq!(el.take_requests(), ["DELETE /api/todos", "GET /api/todos?filter=all"]);
+    let page = el.render(id).await;
+    assert!(page.contains("title=\"Read a book\""), "{page}");
+    assert!(!page.contains("Buy milk") && !page.contains("Walk"), "{page}");
+    assert_eq!(el.store.data().api.todos.len(), 1);
+
+    // The route's filter comes in as an attribute.
+    el.set_attr(id, "filter", Some("completed")).await;
+    assert_eq!(el.take_requests(), ["GET /api/todos?filter=completed"]);
+    let page = el.render(id).await;
+    assert!(!page.contains("<todo-item"), "{page}");
+    assert!(page.contains("filter=\"completed\""), "{page}");
+
+    // Requests free all they hold: adding a todo and deleting it again,
+    // four requests and their responses, leaves memory as it was.
+    el.set_attr(id, "filter", Some("all")).await;
+    add_and_destroy(&mut el, id, 0).await;
+    let before = el.live().await;
+    for n in 1..50 {
+        add_and_destroy(&mut el, id, n).await;
+    }
+    assert_eq!(el.take_requests().len(), 1 + 4 * 50);
+    assert_eq!(el.live().await, before, "requests leak");
 }
 
 const TODO_INPUT: &str = include_str!("../examples/todo-input.cdt");
