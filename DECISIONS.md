@@ -3,6 +3,15 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Reuse: a bug it found
+
+- **Record fields are evaluated in source order.** A record literal
+  stores its fields sorted by id, and it used to evaluate them in that
+  order too, while ownership was worked out in source order. A local
+  used in two fields could then be moved by the field evaluated first
+  and read after it was freed. Found by the reuse tests; fixed by
+  evaluating into temporaries first.
+
 ## Slice 5: keywords and match
 
 - **A keyword is its own type, and keyword sets form a lattice by
@@ -116,7 +125,19 @@ it. Newest first.
   each call. Simpler to write the runtime by hand; costs a temporary per
   argument. Revisit when reuse analysis lands, since reuse needs
   built-ins that can consume.
-- **No reuse yet.** Updates still copy. Reuse is the next memory step.
+- **Reuse is decided at run time, by the count.** The updating
+  built-ins consume their collection and change it in place when its
+  count is one. Koka also pairs a drop with an allocation of the same
+  size at compile time, so a constructor can reuse a block whose last
+  use came just before; that needs pattern matching on constructors,
+  which conduct does not have yet, and the run-time check covers the
+  updates that matter now.
+- **`conj` on a unique list doubles its block** when the block is full,
+  so repeated `conj` is amortized constant time. A list may hold unused
+  capacity; nothing reads past its length.
+- **`conduct_allocs`,** an export beside `conduct_live`, counts every
+  allocation, so tests can check that reuse happens, not just that
+  results agree.
 - **Free lists by size class, poisoned on free.** Poisoning costs a
   `memory.fill` per free and makes use-after-free bugs fail loudly. Make
   it a debug option once the tests stop finding such bugs.

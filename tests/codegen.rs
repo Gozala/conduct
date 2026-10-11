@@ -236,3 +236,80 @@ fn matching_shapes() {
     assert_eq!(run(src, "a", &[]), strs(&["not started", "Since May"]));
     assert_eq!(run(src, "b", &[]), strs(&["ann's", "Since May", "paused", "other"]));
 }
+
+/// Call `entry` and also answer how many blocks it allocated.
+fn run_counting(src: &str, entry: &str) -> (Value, i32) {
+    let mut cb = Codebase::new();
+    cb.add_source(src).unwrap_or_else(|e| panic!("{e}"));
+    let hash = cb.names[entry];
+    let wat = codegen::compile_exports(&cb, &[(entry, hash)]).unwrap();
+    let engine = Engine::default();
+    let module = Module::new(&engine, wat::parse_str(&wat).unwrap()).unwrap();
+    let mut store = Store::new(&engine, ());
+    let instance = Instance::new(&mut store, &module, &[]).unwrap();
+    let allocs = instance.get_typed_func::<(), i32>(&mut store, "conduct_allocs").unwrap();
+    let f = instance.get_func(&mut store, entry).unwrap();
+    let mut results = [Val::I64(0)];
+    f.call(&mut store, &[], &mut results).unwrap();
+    let n = allocs.call(&mut store, ()).unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let value = decode(memory.data(&store), results[0].unwrap_i64());
+    (value, n)
+}
+
+#[test]
+fn unique_values_are_updated_in_place() {
+    // A thousand updates of a record held by nothing else: the record is
+    // changed in place, so the loop allocates nothing per step.
+    let src = "(defn bump [m n] (if (= n 0) m (bump (assoc m :n (+ (:n m) 1)) (- n 1))))
+               (def r (bump {:n 0 :tag \"x\"} 1000))";
+    let (value, allocs) = run_counting(src, "r");
+    assert_eq!(
+        name_fields(value, &["n", "tag"]),
+        [("n".into(), Value::Int(1000)), ("tag".into(), Value::Str("x".into()))]
+    );
+    assert!(allocs < 5, "{allocs} allocations");
+    // A list built by `conj` grows in place, doubling when it is full.
+    let src = "(defn build [xs n] (if (= n 0) xs (build (conj xs n) (- n 1))))
+               (def l (build [] 1000))";
+    let (value, allocs) = run_counting(src, "l");
+    let Value::List(items) = value else { panic!() };
+    assert_eq!(items.len(), 1000);
+    assert_eq!(items[0], Value::Int(1000));
+    assert!(allocs < 30, "{allocs} allocations");
+    // `map` and `filter` over a list nothing else holds reuse it.
+    let src = "(def l (filter (fn [x] (> x 2)) (map (fn [x] (* x 2)) [1 2 3 4])))";
+    let (value, allocs) = run_counting(src, "l");
+    assert_eq!(value, Value::List(vec![Value::Int(4), Value::Int(6), Value::Int(8)]));
+    // The literal list and the two closures: nothing per element.
+    assert_eq!(allocs, 3, "allocations");
+}
+
+#[test]
+fn shared_values_are_copied() {
+    // The original is still used after the update, so it must not change.
+    let src = "(defn both [m] [(assoc m :n 2) m]) (def r (both {:n 1}))
+               (defn grow [xs] [(conj xs 3) xs]) (def l (grow [1 2]))
+               (defn dbl [xs] [(map (fn [x] (* x 2)) xs) xs]) (def m (dbl [1 2]))
+               (defn keep [xs] [(filter (fn [x] (> x 1)) xs) xs]) (def f (keep [1 2]))
+               (defn put [d] [(assoc d \"a\" 2) (dissoc d \"a\") d]) (def d (put {\"a\" 1}))";
+    let ints = |v: &[i64]| Value::List(v.iter().map(|n| Value::Int(*n)).collect());
+    let Value::List(r) = run(src, "r", &[]) else { panic!() };
+    assert_eq!(name_fields(r[1].clone(), &["n"]), [("n".into(), Value::Int(1))]);
+    assert_eq!(run(src, "l", &[]), Value::List(vec![ints(&[1, 2, 3]), ints(&[1, 2])]));
+    assert_eq!(run(src, "m", &[]), Value::List(vec![ints(&[2, 4]), ints(&[1, 2])]));
+    assert_eq!(run(src, "f", &[]), Value::List(vec![ints(&[2]), ints(&[1, 2])]));
+    let Value::List(d) = run(src, "d", &[]) else { panic!() };
+    assert_eq!(d[0], Value::Dict(vec![("a".into(), Value::Int(2))]));
+    assert_eq!(d[1], Value::Dict(vec![]));
+    assert_eq!(d[2], Value::Dict(vec![("a".into(), Value::Int(1))]));
+}
+
+#[test]
+fn record_fields_are_evaluated_in_source_order() {
+    // Fields are stored by id but evaluated in the order ownership was
+    // worked out in; `j`'s last use must come last.
+    let src = r#"(defn f [j] {:id (json-str (json-get j "id")) :t (json-str (json-get j "t"))})
+                 (def r (f (parse-json "{\"id\":\"a\"}")))"#;
+    run(src, "r", &[]);
+}
