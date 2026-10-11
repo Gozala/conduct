@@ -35,6 +35,8 @@
   ;; are at address 64.
 
   (global $live (mut i32) (i32.const 0))
+  ;; Every block ever allocated, for tests of reuse.
+  (global $allocs (mut i32) (i32.const 0))
 
   (func $class (param $n i32) (result i32)
     (local $c i32) (local $size i32)
@@ -75,6 +77,7 @@
     (i32.store (i32.sub (local.get $p) (i32.const 8)) (i32.const 1))
     (i32.store (i32.sub (local.get $p) (i32.const 4)) (local.get $c))
     (global.set $live (i32.add (global.get $live) (i32.const 1)))
+    (global.set $allocs (i32.add (global.get $allocs) (i32.const 1)))
     (local.get $p))
 
   (func $free (param $p i32)
@@ -426,6 +429,106 @@
     (i32.store offset=4 (local.get $p) (local.get $k))
     (i64.extend_i32_u (local.get $p)))
 
+;; Reuse, after Perceus. A value whose count is one is held by its
+  ;; last user alone, so an update that consumes it may change it in
+  ;; place: the result is the same value a copy would be, and nothing
+  ;; else can tell. Each of these consumes its first collection argument
+  ;; (the others are borrowed, as for every built-in) and falls back to
+  ;; copying when the value is shared or static.
+  (func $unique (param $v i64) (result i32)
+    (if (result i32) (call $is_obj (local.get $v))
+      (then (i32.eq (i32.load (i32.sub (call $ptr (local.get $v)) (i32.const 8))) (i32.const 1)))
+      (else (i32.const 0))))
+  (func $capacity (param $p i32) (result i32)
+    ;; How many values fit in the block of the object at `p`.
+    (i32.shr_u (i32.sub (call $class_size (i32.load (i32.sub (local.get $p) (i32.const 4)))) (i32.const 8)) (i32.const 3)))
+  (func $rec_set (param $r i64) (param $id i64) (param $v i64) (result i64)
+    ;; `(assoc r :k v)`, consuming `r` and `v`.
+    (local $p i32) (local $n i32) (local $i i32) (local $at i32) (local $out i64)
+    (if (call $unique (local.get $r))
+      (then
+        (local.set $p (call $ptr (local.get $r)))
+        (local.set $n (call $len (local.get $r)))
+        (block $done (loop $next
+          (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+          (local.set $at (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 4))))
+          (if (i64.eq (i64.load offset=8 (local.get $at)) (local.get $id))
+            (then
+              (call $drop (i64.load offset=16 (local.get $at)))
+              (i64.store offset=16 (local.get $at) (local.get $v))
+              (return (local.get $r))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $next)))))
+    (local.set $out (call $rec_assoc (local.get $r) (local.get $id) (local.get $v)))
+    (call $drop (local.get $r))
+    (local.get $out))
+  (func $conj_into (param $a i64) (param $x i64) (result i64)
+    ;; `(conj a x)`, consuming `a`. A unique list grows in place while its
+    ;; block has room, and otherwise moves to a block twice its length, so
+    ;; a list built by repeated `conj` is built in amortized constant time.
+    (local $p i32) (local $n i32) (local $q i32) (local $out i64)
+    (if (call $unique (local.get $a))
+      (then
+        (local.set $p (call $ptr (local.get $a)))
+        (local.set $n (call $len (local.get $a)))
+        (if (i32.lt_u (local.get $n) (call $capacity (local.get $p)))
+          (then
+            (call $list_set (local.get $p) (local.get $n) (call $dup (local.get $x)))
+            (i32.store offset=4 (local.get $p) (i32.add (local.get $n) (i32.const 1)))
+            (return (local.get $a))))
+        ;; Move the values, which the old block gives up, then free it.
+        (local.set $q (call $list_new (i32.add (i32.shl (local.get $n) (i32.const 1)) (i32.const 1))))
+        (memory.copy (i32.add (local.get $q) (i32.const 8)) (i32.add (local.get $p) (i32.const 8)) (i32.shl (local.get $n) (i32.const 3)))
+        (call $free (local.get $p))
+        (call $list_set (local.get $q) (local.get $n) (call $dup (local.get $x)))
+        (i32.store offset=4 (local.get $q) (i32.add (local.get $n) (i32.const 1)))
+        (return (i64.extend_i32_u (local.get $q)))))
+    (local.set $out (call $conj (local.get $a) (local.get $x)))
+    (call $drop (local.get $a))
+    (local.get $out))
+  (func $map_into (param $f i64) (param $xs i64) (result i64)
+    ;; `(map f xs)`, consuming `xs`: a unique list holds the results in
+    ;; place of its elements.
+    (local $p i32) (local $n i32) (local $i i32) (local $out i64)
+    (if (call $unique (local.get $xs))
+      (then
+        (local.set $p (call $ptr (local.get $xs)))
+        (local.set $n (call $len (local.get $xs)))
+        (block $done (loop $next
+          (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+          ;; The element moves into `f`, and its result moves in.
+          (call $list_set (local.get $p) (local.get $i)
+            (call $apply1 (local.get $f) (call $list_get (local.get $xs) (local.get $i))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $next)))
+        (return (local.get $xs))))
+    (local.set $out (call $map (local.get $f) (local.get $xs)))
+    (call $drop (local.get $xs))
+    (local.get $out))
+  (func $filter_into (param $f i64) (param $xs i64) (result i64)
+    ;; `(filter f xs)`, consuming `xs`: a unique list keeps what passes,
+    ;; compacted in place.
+    (local $p i32) (local $n i32) (local $i i32) (local $k i32) (local $x i64) (local $out i64)
+    (if (call $unique (local.get $xs))
+      (then
+        (local.set $p (call $ptr (local.get $xs)))
+        (local.set $n (call $len (local.get $xs)))
+        (block $done (loop $next
+          (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+          (local.set $x (call $list_get (local.get $xs) (local.get $i)))
+          (if (i64.eq (call $apply1 (local.get $f) (call $dup (local.get $x))) (i64.const 0x12))
+            (then
+              (call $list_set (local.get $p) (local.get $k) (local.get $x))
+              (local.set $k (i32.add (local.get $k) (i32.const 1))))
+            (else (call $drop (local.get $x))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $next)))
+        (i32.store offset=4 (local.get $p) (local.get $k))
+        (return (local.get $xs))))
+    (local.set $out (call $filter (local.get $f) (local.get $xs)))
+    (call $drop (local.get $xs))
+    (local.get $out))
+
   ;; Records
   (func $rec_get (param $r i64) (param $id i64) (result i64)
     (local $p i32) (local $n i32) (local $i i32)
@@ -549,6 +652,41 @@
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $next)))
     (i64.extend_i32_u (local.get $p)))
+  (func $dict_set (param $d i64) (param $key i64) (param $val i64) (result i64)
+    ;; `(assoc d k v)`, consuming `d`: a unique dictionary that has the
+    ;; key takes the value in place.
+    (local $i i32) (local $at i32) (local $out i64)
+    (if (call $unique (local.get $d))
+      (then
+        (local.set $i (call $dict_find (local.get $d) (local.get $key)))
+        (if (i32.ge_s (local.get $i) (i32.const 0))
+          (then
+            (local.set $at (i32.add (call $ptr (local.get $d)) (i32.shl (local.get $i) (i32.const 4))))
+            (call $drop (i64.load offset=16 (local.get $at)))
+            (i64.store offset=16 (local.get $at) (call $dup (local.get $val)))
+            (return (local.get $d))))))
+    (local.set $out (call $dict_assoc (local.get $d) (local.get $key) (local.get $val)))
+    (call $drop (local.get $d))
+    (local.get $out))
+  (func $dict_remove (param $d i64) (param $key i64) (result i64)
+    ;; `(dissoc d k)`, consuming `d`: a unique dictionary closes the gap
+    ;; in place.
+    (local $i i32) (local $n i32) (local $at i32) (local $out i64)
+    (if (call $unique (local.get $d))
+      (then
+        (local.set $i (call $dict_find (local.get $d) (local.get $key)))
+        (if (i32.lt_s (local.get $i) (i32.const 0)) (then (return (local.get $d))))
+        (local.set $n (call $len (local.get $d)))
+        (local.set $at (i32.add (call $ptr (local.get $d)) (i32.shl (local.get $i) (i32.const 4))))
+        (call $drop (i64.load offset=8 (local.get $at)))
+        (call $drop (i64.load offset=16 (local.get $at)))
+        (memory.copy (i32.add (local.get $at) (i32.const 8)) (i32.add (local.get $at) (i32.const 24))
+          (i32.shl (i32.sub (i32.sub (local.get $n) (local.get $i)) (i32.const 1)) (i32.const 4)))
+        (i32.store offset=4 (call $ptr (local.get $d)) (i32.sub (local.get $n) (i32.const 1)))
+        (return (local.get $d))))
+    (local.set $out (call $dict_dissoc (local.get $d) (local.get $key)))
+    (call $drop (local.get $d))
+    (local.get $out))
   (func $dict_eq (param $a i64) (param $b i64) (result i32)
     ;; Equal when they hold the same keys with equal values, in any order.
     (local $n i32) (local $i i32) (local $j i32)

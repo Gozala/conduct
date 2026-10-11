@@ -212,8 +212,15 @@ test checks that a call frees all it allocated, and an element driven
 through 200 rounds of rendering and events ends with exactly the blocks
 it started with.
 
-Perceus's other half, reusing a block in place when its count is one,
-is not done yet.
+Perceus's other half is reuse: an update of a value nothing else holds
+changes it in place. Record and dictionary `assoc`, `dissoc`, `conj`,
+`map` and `filter` consume the collection they update and check its
+count when they run: one means the caller held the only reference, so
+the block is changed and returned; more means it is shared, so it is
+copied as before. The result is the same either way; only the cost
+differs. A thousand updates of a record in a loop allocate nothing per
+step, and a list built by `conj` doubles its block when it fills, so it
+is built in amortized constant time per element.
 
 ## Elements
 

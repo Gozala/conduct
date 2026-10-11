@@ -31,8 +31,11 @@
 //! So a value is freed when its last reference goes, at a point the
 //! compiler fixed, with no collector. The runtime's built-ins borrow
 //! their arguments; the code generator drops temporaries after them.
-//! Perceus's other half, reusing a uniquely owned block in place, is not
-//! done yet.
+//! The exceptions are the updates (`assoc` on records and dictionaries,
+//! `dissoc`, `conj`, `map`, `filter`), which consume the collection and
+//! change it in place when its count is one: Perceus's reuse, decided at
+//! run time by the count rather than by pairing drops with allocations
+//! at compile time.
 
 use crate::codebase::Codebase;
 use crate::term::{Hash, Op, Pattern, Term};
@@ -600,19 +603,28 @@ impl<'a> Builder<'a> {
             Term::Record(fields) => {
                 let items: Vec<&Term> = fields.iter().map(|(_, t)| t).collect();
                 let values = self.sequence(&items, env, frame, cycle, live)?;
-                let mut sorted: Vec<(i64, String)> =
-                    fields.iter().zip(values).map(|((name, _), v)| (field_id(name), v)).collect();
+                // The values are evaluated in the order ownership was
+                // worked out in, the term's, and only then stored in the
+                // record's order, by field id.
+                let mut out = String::from("(block (result i64)");
+                let mut sorted: Vec<(i64, String)> = Vec::new();
+                for ((name, _), v) in fields.iter().zip(values) {
+                    let t = frame.local();
+                    let _ = write!(out, " (local.set {t} {v})");
+                    sorted.push((field_id(name), t));
+                }
                 sorted.sort_by_key(|f| f.0);
                 let p = frame.local32();
-                let mut out = format!(
-                    "(block (result i64) (local.set {p} (call $obj (i32.const {KIND_RECORD}) (i32.const {}) (i32.const {})))",
+                let _ = write!(
+                    out,
+                    " (local.set {p} (call $obj (i32.const {KIND_RECORD}) (i32.const {}) (i32.const {})))",
                     sorted.len(),
                     16 * sorted.len()
                 );
-                for (i, (id, v)) in sorted.iter().enumerate() {
+                for (i, (id, t)) in sorted.iter().enumerate() {
                     let _ = write!(
                         out,
-                        " (i64.store offset={} (local.get {p}) (i64.const {id})) (i64.store offset={} (local.get {p}) {v})",
+                        " (i64.store offset={} (local.get {p}) (i64.const {id})) (i64.store offset={} (local.get {p}) (local.get {t}))",
                         8 + 16 * i,
                         16 + 16 * i
                     );
@@ -626,14 +638,9 @@ impl<'a> Builder<'a> {
             }
             Term::Update(record, name, value) => {
                 let parts = self.sequence(&[&**record, &**value], env, frame, cycle, live)?;
-                let (r, u) = (frame.local(), frame.local());
-                // `$rec_assoc` borrows the record and consumes the value.
-                format!(
-                    "(block (result i64) (local.set {r} {}) (local.set {u} (call $rec_assoc (local.get {r}) (i64.const {}) {})) (call $drop (local.get {r})) (local.get {u}))",
-                    parts[0],
-                    field_id(name),
-                    parts[1]
-                )
+                // `$rec_set` consumes both, and updates in place when the
+                // record is unique.
+                format!("(call $rec_set {} (i64.const {}) {})", parts[0], field_id(name), parts[1])
             }
             Term::Dict(entries) => {
                 let items: Vec<&Term> = entries.iter().map(|(_, t)| t).collect();
@@ -664,7 +671,9 @@ impl<'a> Builder<'a> {
                 let refs: Vec<&Term> = args.iter().collect();
                 let values = self.sequence(&refs, env, frame, cycle, live)?;
                 // Built-ins borrow: hold each argument in a temporary,
-                // call, then drop the temporaries.
+                // call, then drop the temporaries. The few that update a
+                // collection consume it instead, so they can reuse it.
+                let consumed = consumes(*op);
                 let temps: Vec<String> = values.iter().map(|_| frame.local()).collect();
                 let result = frame.local();
                 let gets: Vec<String> = temps.iter().map(|t| format!("(local.get {t})")).collect();
@@ -674,8 +683,10 @@ impl<'a> Builder<'a> {
                     let _ = write!(out, " (local.set {t} {v})");
                 }
                 let _ = write!(out, " (local.set {result} {call})");
-                for t in &temps {
-                    let _ = write!(out, " (call $drop (local.get {t}))");
+                for (i, t) in temps.iter().enumerate() {
+                    if consumed != Some(i) {
+                        let _ = write!(out, " (call $drop (local.get {t}))");
+                    }
                 }
                 let _ = write!(out, " (local.get {result}))");
                 out
@@ -783,6 +794,16 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// The argument a built-in consumes, if any: the collection an update
+/// may reuse in place. Every other argument is borrowed.
+fn consumes(op: Op) -> Option<usize> {
+    match op {
+        Op::Conj | Op::Assoc | Op::Dissoc => Some(0),
+        Op::Map | Op::Filter => Some(1),
+        _ => None,
+    }
+}
+
 /// A built-in applied to argument expressions. Every built-in borrows
 /// its arguments and returns an owned value.
 fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
@@ -815,12 +836,12 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::First => format!("(call $first {})", a[0]),
         Op::Rest => format!("(call $rest {})", a[0]),
         Op::Concat => format!("(call $concat {} {})", a[0], a[1]),
-        Op::Conj => format!("(call $conj {} {})", a[0], a[1]),
-        Op::Map => format!("(call $map {} {})", a[0], a[1]),
-        Op::Filter => format!("(call $filter {} {})", a[0], a[1]),
+        Op::Conj => format!("(call $conj_into {} {})", a[0], a[1]),
+        Op::Map => format!("(call $map_into {} {})", a[0], a[1]),
+        Op::Filter => format!("(call $filter_into {} {})", a[0], a[1]),
         Op::Get => format!("(call $dict_get {} {})", a[0], a[1]),
-        Op::Assoc => format!("(call $dict_assoc {} {} {})", a[0], a[1], a[2]),
-        Op::Dissoc => format!("(call $dict_dissoc {} {})", a[0], a[1]),
+        Op::Assoc => format!("(call $dict_set {} {} {})", a[0], a[1], a[2]),
+        Op::Dissoc => format!("(call $dict_remove {} {})", a[0], a[1]),
         Op::H => format!("(call $view_new {} {} {} {})", a[0], a[1], a[2], a[3]),
         Op::Emit => format!("(call $emit_new {} {})", a[0], a[1]),
         Op::Trim => format!("(call $str_trim {})", a[0]),
@@ -971,6 +992,7 @@ pub fn compile_exports(cb: &Codebase, exports: &[(&str, Hash)]) -> Result<String
         }
     }
     b.add_func("  (func (export \"conduct_live\") (result i32) (global.get $live))");
+    b.add_func("  (func (export \"conduct_allocs\") (result i32) (global.get $allocs))");
     b.add_func("  (func (export \"conduct_drop\") (param $v i64) (call $drop (local.get $v)))");
     b.finish()
 }
