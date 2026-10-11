@@ -102,6 +102,22 @@ Declared types are two forms, after clojure.spec and Rich Hickey's
   :maybe {nickname})                    ; optional
 ```
 
+An attribute can also be written inline, in the concept that uses it:
+
+```clojure
+(concept person
+  :with {name {the: io.gozala/name as: text}
+         age  age}                      ; a module-level attribute, by name
+  :maybe {nickname {the: io.gozala/nickname as: text}})
+```
+
+An inline attribute's local name belongs to its concept: it binds in
+`(person {name})` patterns and constructors, and is not a module-level
+name, so two concepts may each inline their own `name`. Its global key
+is still global: every declaration of `io.gozala/name`, inline or not,
+must agree on its type (declarations of one key unify, as repeated
+declarations do in CUE; a conflict is an error).
+
 | Form | spec | Meaning |
 |---|---|---|
 | `attribute` | `s/def` | key `the:` holds values of type `as:`, in every value that has it |
@@ -263,3 +279,5 @@ view over changing data, and a pure function over concepts.
 - Local names are unique in a module; others are `module/name`.
 - Both inferred requirements and declared concepts are allowed.
 - No predicates in types in this version.
+- Attributes can be inlined in a concept; their local names are scoped
+  to the concept, their keys stay global and must agree.
