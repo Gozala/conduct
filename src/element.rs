@@ -25,15 +25,16 @@
 //! value and the status as its `status`. The glue performs them. So
 //! element code stays pure, and the glue is the only code with effects.
 //!
-//! This iteration sends custom events; performing `fetch` through the
-//! world's `wasi:http/client` import is the next step.
-//!
 //! The glue, generated here, keeps each element's model and attributes
 //! between calls and speaks the canonical ABI of the `demo:element`
-//! world. Every export is lifted synchronously, though the world
-//! declares them `async`: the component model lets a synchronous lift
-//! implement an `async` function type, and it keeps the async ABI out
-//! of the compiler for now.
+//! world. The exports that run `update` (`connected`,
+//! `attribute-changed`, `handle-event`) are lifted with the async ABI's
+//! callback form, so that one whose `update` asks for requests returns
+//! to the host while they are in flight, and finishes once every
+//! response has reached `update` (see the `fetch` module). The others
+//! are lifted synchronously, which the component model allows for an
+//! `async` function type. An element imports `wasi:http` only if its
+//! `update` can ask for a request.
 
 use crate::codebase::Codebase;
 use crate::codegen::{Builder, CodegenError, NIL, field_id};

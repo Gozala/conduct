@@ -3,6 +3,35 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Slice 4: requests
+
+- **The async ABI's callback form, not blocking.** A synchronously
+  lifted export could call `send` and block on it, which is less glue.
+  But blocking needs stack switching: Wasmtime has fibers, while the
+  polyfill needs JSPI in the browser and fails without it. The callback
+  form needs neither, and it lets the instance serve other calls while a
+  request is in flight. The glue keeps each request as a small state
+  machine that the callback advances. Only the exports that run
+  `update` are async; the rest stay synchronous.
+- **A task ends when its requests do.** `handle-event` returns after
+  every request it caused, including the reload a change asks for, has
+  reached `update`. That matches the Zena element, which `await`s its
+  requests, and the demo's page, which renders after each call. The
+  alternative, returning at once and telling the host to render later,
+  needs something in the world to say so.
+- **Relative URLs are left to the host.** The demo's page resolves a
+  path against its origin. Wasmtime cannot and refuses a request with no
+  authority, so outside the browser a URL must be absolute. A base URL
+  for elements is the host's business, not the element's.
+- **A failed `send` reaches `update` as status 0 with no body.** The
+  error code is dropped, and any string in it is not freed yet.
+- **The test host vendors the demo's `wasi:http/types` (MPL-2.0).** Its
+  modules are private to the demo crate. Copying them tests conduct's
+  elements against the host the demo's page really uses.
+- **A debug world for tests.** `element::debug_component` adds an export
+  `conduct:debug/memory#live`, so a test through the component model can
+  count the blocks an element holds.
+
 ## Slice 3: todo-app's logic
 
 - **Effects are data, and requests are effects.** `update` returns
