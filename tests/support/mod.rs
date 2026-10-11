@@ -9,9 +9,11 @@
 
 #[allow(clippy::all)]
 pub mod http_types;
+pub mod routes;
 
 use http_types::{Body, Fields, HttpHost, HttpTable, Response};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use wcmp::{Accessor, Component, Error, ExternType, InterfaceIdentifier, Linker, Val};
 
 /// The interface `send` belongs to.
@@ -26,6 +28,9 @@ pub struct Host {
     pub emitted: Vec<(u32, String, String)>,
     /// Every request the API answered, as `METHOD path body`.
     pub requests: Vec<String>,
+    /// The routes that answer requests in place of `api`, as the demo's
+    /// service worker does, if any.
+    pub routes: Option<Arc<tokio::sync::Mutex<routes::Routes>>>,
 }
 
 impl HttpHost for Host {
@@ -63,22 +68,32 @@ pub fn define_http(linker: &mut Linker<Host>, component: &Component) -> Result<O
                     store.data_mut().http().take_request(rep).expect("a request the host holds");
                 Ok::<_, Error>(((method, scheme, authority, path_with_query), http_types::read_body(store, body)?))
             })??;
-            let body = body.await;
+            let body = String::from_utf8(body.await).expect("a UTF-8 body");
             let (method, scheme, authority, path) = request;
             let path = path.unwrap_or_else(|| "/".into());
+            let routes = accessor.with(|store| store.data_mut().routes.clone())?;
+            let routed = match routes {
+                Some(routes) => Some(routes.lock().await.serve(&method, &path, &body).await),
+                None => None,
+            };
             let response = accessor.with(|store| {
                 let host = store.data_mut();
-                let body = String::from_utf8(body).expect("a UTF-8 body");
                 let origin = match (scheme, authority) {
                     (Some(s), Some(a)) => format!("{}://{a}", s.to_ascii_lowercase()),
                     _ => String::new(),
                 };
                 host.requests.push(format!("{method} {origin}{path} {body}").trim_end().to_string());
-                let (status, answer) = host.api.handle(&method, &path, &body);
+                let (status, headers, answer) = match routed {
+                    Some(answer) => answer,
+                    None => {
+                        let (status, answer) = host.api.handle(&method, &path, &body);
+                        (status, vec![("content-type".into(), "application/json".into())], answer)
+                    }
+                };
                 let response = Response {
                     status,
                     headers: Fields {
-                        entries: vec![("content-type".into(), b"application/json".to_vec())],
+                        entries: headers.into_iter().map(|(k, v)| (k, v.into_bytes())).collect(),
                         immutable: true,
                     },
                     body: Body::Bytes(answer.into_bytes()),
@@ -98,6 +113,8 @@ pub fn define_http(linker: &mut Linker<Host>, component: &Component) -> Result<O
 pub struct TodoApi {
     pub todos: Vec<Todo>,
     next: u32,
+    /// Every call of the model, when routes answer.
+    pub calls: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

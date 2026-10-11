@@ -12,8 +12,8 @@
 //! 4. [`infer`] and [`types`] infer types with subtyping (Simple-sub),
 //!    with unions, intersections, and set-style optionals.
 //! 5. [`codegen`] compiles the definitions an entry point reaches to a
-//!    core Wasm module, and [`element`] wraps one as a component of the
-//!    TodoMVC demo's element world.
+//!    core Wasm module, and [`element`] and [`route`] wrap one as a
+//!    component of the TodoMVC demo's element or route world.
 
 pub mod codebase;
 pub mod codegen;
@@ -21,6 +21,7 @@ pub mod element;
 mod fetch;
 pub mod infer;
 pub mod reader;
+pub mod route;
 pub mod syntax;
 pub mod term;
 pub mod types;

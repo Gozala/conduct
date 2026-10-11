@@ -1,0 +1,41 @@
+;; The route /api/todos/:id: one todo.
+;;
+;; PATCH changes the title, the completion, or both, from
+;; {"title"?: string, "completed"?: bool}, and answers the todo. DELETE
+;; removes the todo. An unknown id answers 404, and an empty title 422.
+
+(def pattern "/api/todos/:id")
+
+(defn todo-json [todo]
+  {"id" (:id todo) "title" (:title todo) "completed" (:completed todo)})
+
+;; A JSON string as a string, and anything else as nil.
+(defn text [value]
+  (if (nil? value) nil (json-str value)))
+
+;; A JSON boolean as a Bool, and anything else as nil.
+(defn flag [value]
+  (cond
+    (= value true) true
+    (= value false) false
+    :else nil))
+
+(defn change! [id request]
+  (let [body (parse-json (:body request))
+        updated (update! id (text (json-get body "title")) (flag (json-get body "completed")))]
+    (match updated
+      {:todo some?} (json (todo-json (:todo updated)) 200)
+      _ (problem (:error updated)))))
+
+(defn delete! [id]
+  (let [removed (remove! id)]
+    (match removed
+      {:error nil} (status 204)
+      _ (problem (:error removed)))))
+
+(defn handle! [request]
+  (let [id (?? (get (:params request) "id") "")]
+    (match (:method request)
+      "PATCH" (change! id request)
+      "DELETE" (delete! id)
+      _ (status 405))))

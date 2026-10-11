@@ -402,3 +402,70 @@ async fn todo_footer_counts_filters_and_clears() {
     el.handle(id, "clear", event("click", None, None)).await;
     assert_eq!(el.take_emitted(), vec![(id, "todo-clear".to_string(), String::new())]);
 }
+
+/// The whole demo in conduct, on the polyfill: `<todo-app>` sends its
+/// requests to the demo's routes, written in conduct, each in a store of
+/// its own as the demo's service worker keeps it, and the routes call
+/// the todo model.
+#[tokio::test(flavor = "current_thread")]
+async fn todo_app_runs_on_conduct_routes() {
+    let model = std::sync::Arc::new(std::sync::Mutex::new(support::TodoApi::default()));
+    {
+        let mut m = model.lock().unwrap();
+        m.add("Buy milk", false);
+        m.add("Walk", true);
+    }
+    let routes = support::routes::Routes::new(model.clone()).await;
+    let routes = std::sync::Arc::new(tokio::sync::Mutex::new(routes));
+    let host = Host { routes: Some(routes.clone()), ..Host::default() };
+    let mut el = Element::load_with(TODO_APP, host).await;
+    let id = el.create(&[("filter", "")]).await;
+
+    el.connect(id).await;
+    let page = el.render(id).await;
+    assert!(page.contains("<todo-item #t1 todo-id=\"t1\" title=\"Buy milk\" completed=\"false\""), "{page}");
+    assert!(page.contains("<todo-footer active=\"1\" completed=\"1\" filter=\"all\""), "{page}");
+
+    el.handle(id, "add", event("todo-add", Some("Read"), None)).await;
+    el.handle(id, "toggle", event("todo-toggle", Some("t1"), None)).await;
+    el.handle(id, "edit", event("todo-edit", Some("t3\nRead a book"), None)).await;
+    el.handle(id, "clear", event("todo-clear", Some(""), None)).await;
+    assert_eq!(
+        el.take_requests(),
+        [
+            "GET /api/todos?filter=all",
+            "POST /api/todos {\"title\":\"Read\"}",
+            "GET /api/todos?filter=all",
+            "PATCH /api/todos/t1 {\"completed\":true}",
+            "GET /api/todos?filter=all",
+            "PATCH /api/todos/t3 {\"title\":\"Read a book\"}",
+            "GET /api/todos?filter=all",
+            "DELETE /api/todos",
+            "GET /api/todos?filter=all",
+        ]
+    );
+    let page = el.render(id).await;
+    assert!(page.contains("title=\"Read a book\" completed=\"false\""), "{page}");
+    assert!(!page.contains("Buy milk") && !page.contains("Walk"), "{page}");
+    assert!(page.contains("<todo-footer active=\"1\" completed=\"0\""), "{page}");
+    // Every change reached the model through a route.
+    let calls = model.lock().unwrap().calls.clone();
+    assert_eq!(calls.len(), 9, "{calls:?}");
+    assert!(calls[1].starts_with("add [String(\"Read\")]"), "{calls:?}");
+    assert!(calls[7].starts_with("clear-completed"), "{calls:?}");
+
+    // Neither the element nor the routes hold more for serving more.
+    el.set_attr(id, "filter", Some("completed")).await;
+    el.set_attr(id, "filter", Some("all")).await;
+    let element_before = el.live().await;
+    let routes_before = routes.lock().await.live().await;
+    for n in 0..20 {
+        el.handle(id, "add", event("todo-add", Some(&format!("Todo {n}")), None)).await;
+        let added = model.lock().unwrap().todos.last().unwrap().id.clone();
+        el.handle(id, "toggle", event("todo-toggle", Some(&added), None)).await;
+        el.handle(id, "destroy", event("todo-destroy", Some(&added), None)).await;
+    }
+    assert_eq!(el.live().await, element_before, "the element leaks");
+    assert_eq!(routes.lock().await.live().await, routes_before, "the routes leak");
+    assert_eq!(model.lock().unwrap().todos.len(), 1);
+}

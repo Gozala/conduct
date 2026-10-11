@@ -1,6 +1,6 @@
-// The element world with one more export, for tests: how many blocks an
-// element's memory holds, so a test through the component model can
-// check that memory stays flat.
+// The element and route worlds with one more export, for tests: how
+// many blocks a component's memory holds, so a test through the
+// component model can check that memory stays flat.
 package conduct:debug;
 
 interface memory {
@@ -9,5 +9,10 @@ interface memory {
 
 world element-component {
   include demo:element/element-component;
+  export memory;
+}
+
+world route-component {
+  include demo:route/route-component;
   export memory;
 }
