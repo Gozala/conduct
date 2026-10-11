@@ -47,10 +47,43 @@ use std::fmt::Write as _;
 /// The element world, as the demo defines it, without its WASI imports.
 pub const ELEMENT_WIT: &str = include_str!("../wit/element.wit");
 /// The element world with a memory count exported, for tests.
-const DEBUG_WIT: &str = include_str!("../wit/debug.wit");
+pub(crate) const DEBUG_WIT: &str = include_str!("../wit/debug.wit");
 /// The WASI packages the element world names.
-const WASI_WIT: [(&str, &str); 2] =
+pub(crate) const WASI_WIT: [(&str, &str); 2] =
     [("clocks.wit", include_str!("../wit/deps/clocks.wit")), ("http.wit", include_str!("../wit/deps/http.wit"))];
+
+/// What glue needs to pass strings over the canonical ABI: lowering a
+/// string, lifting an argument the host allocated, and the allocator the
+/// host allocates with.
+pub(crate) const ABI_FUNCS: &str = r#"  (func $str_out (param $at i32) (param $s i64)
+    ;; Lower a string to (ptr, len) at `at`. The bytes stay where they
+    ;; are: whoever owns the string keeps it until `post-return`.
+    (i32.store (local.get $at) (call $str_data (local.get $s)))
+    (i32.store offset=4 (local.get $at) (call $len (local.get $s))))
+  (func $arg_str (param $p i32) (param $n i32) (result i64)
+    ;; Lift a string argument. The callee owns the buffer the host
+    ;; allocated through `cabi_realloc`, so it frees it once copied. An
+    ;; empty string may not have been allocated at all.
+    (local $s i64)
+    (local.set $s (call $str_new (local.get $p) (local.get $n)))
+    (if (local.get $n) (then (call $free (local.get $p))))
+    (local.get $s))
+  (func $opt_str (param $disc i32) (param $p i32) (param $n i32) (result i64)
+    (if (result i64) (local.get $disc)
+      (then (call $arg_str (local.get $p) (local.get $n)))
+      (else (i64.const 2))))
+  (func (export "cabi_realloc") (param $old i32) (param $old_size i32) (param $align i32) (param $size i32) (result i32)
+    (local $p i32)
+    ;; Nothing is allocated for nothing: whoever lifts an empty string or
+    ;; list frees nothing, whether or not the host asked for room.
+    (if (i32.and (i32.eqz (local.get $old)) (i32.eqz (local.get $size))) (then (return (i32.const 8))))
+    (local.set $p (call $alloc (local.get $size)))
+    (if (local.get $old)
+      (then
+        (memory.copy (local.get $p) (local.get $old)
+          (select (local.get $old_size) (local.get $size) (i32.lt_u (local.get $old_size) (local.get $size))))
+        (call $free (local.get $old))))
+    (local.get $p))"#;
 
 #[derive(Debug)]
 pub enum ElementError {
@@ -150,8 +183,9 @@ pub fn check(cb: &Codebase) -> Result<ElementDefs, ElementError> {
     Ok(defs)
 }
 
-/// Whether the definition `root`, or anything it refers to, uses `op`.
-fn reaches(cb: &Codebase, root: Hash, op: Op) -> bool {
+/// Visit every term of the definition `root` and of everything it
+/// refers to.
+pub(crate) fn walk_reachable(cb: &Codebase, root: Hash, f: &mut dyn FnMut(&Term)) {
     let mut seen = HashSet::new();
     let mut stack = vec![root];
     while let Some(hash) = stack.pop() {
@@ -159,21 +193,23 @@ fn reaches(cb: &Codebase, root: Hash, op: Op) -> bool {
             continue;
         }
         let Some(def) = cb.defs.get(&hash) else { continue };
-        let mut found = false;
-        def.term.walk(&mut |t| {
-            if let Term::Prim(o, _) = t
-                && *o == op
-            {
-                found = true;
-            }
-        });
-        if found {
-            return true;
-        }
+        def.term.walk(&mut |t| f(t));
         def.term.refs(&mut stack);
         stack.extend(def.cycle.iter().copied());
     }
-    false
+}
+
+/// Whether the definition `root`, or anything it refers to, uses `op`.
+fn reaches(cb: &Codebase, root: Hash, op: Op) -> bool {
+    let mut found = false;
+    walk_reachable(cb, root, &mut |t| {
+        if let Term::Prim(o, _) = t
+            && *o == op
+        {
+            found = true;
+        }
+    });
+    found
 }
 
 /// The core module of an element, as WebAssembly text.
@@ -277,33 +313,9 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
         (call $free (global.get $els))))
     (global.set $els (local.get $new))
     (global.set $cap (local.get $cap)))
-  (func $str_out (param $at i32) (param $s i64)
-    ;; Lower a string to (ptr, len) at `at`. The bytes stay where they
-    ;; are: whoever owns the string keeps it until `post-return`.
-    (i32.store (local.get $at) (call $str_data (local.get $s)))
-    (i32.store offset=4 (local.get $at) (call $len (local.get $s))))
-  (func $arg_str (param $p i32) (param $n i32) (result i64)
-    ;; Lift a string argument. The callee owns the buffer the host
-    ;; allocated through `cabi_realloc`, so it frees it once copied. An
-    ;; empty string may not have been allocated at all.
-    (local $s i64)
-    (local.set $s (call $str_new (local.get $p) (local.get $n)))
-    (if (local.get $n) (then (call $free (local.get $p))))
-    (local.get $s))
-  (func $opt_str (param $disc i32) (param $p i32) (param $n i32) (result i64)
-    (if (result i64) (local.get $disc)
-      (then (call $arg_str (local.get $p) (local.get $n)))
-      (else (i64.const 2))))
-  (func (export "cabi_realloc") (param $old i32) (param $old_size i32) (param $align i32) (param $size i32) (result i32)
-    (local $p i32)
-    (local.set $p (call $alloc (local.get $size)))
-    (if (local.get $old)
-      (then
-        (memory.copy (local.get $p) (local.get $old)
-          (select (local.get $old_size) (local.get $size) (i32.lt_u (local.get $old_size) (local.get $size))))
-        (call $free (local.get $old))))
-    (local.get $p))"#,
+"#,
     );
+    b.add_func(ABI_FUNCS);
 
     // A view's nodes, flattened in document order: lists among the
     // children are spliced in, and nil children are skipped. The lowered
@@ -703,6 +715,7 @@ fn encode(cb: &Codebase, debug: bool) -> Result<Vec<u8>, ElementError> {
     }
     let mut pkg = resolve.push_str("element.wit", ELEMENT_WIT).map_err(|e| ElementError::Encode(format!("{e:#}")))?;
     if debug {
+        resolve.push_str("route.wit", crate::route::ROUTE_WIT).map_err(|e| ElementError::Encode(format!("{e:#}")))?;
         pkg = resolve.push_str("debug.wit", DEBUG_WIT).map_err(|e| ElementError::Encode(format!("{e:#}")))?;
     }
     let world =

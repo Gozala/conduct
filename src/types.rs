@@ -75,6 +75,11 @@ pub enum Ty {
     /// A set of capabilities, ordered by inclusion like keyword sets. The
     /// empty set is pure.
     Caps(Rc<BTreeSet<String>>),
+    /// `t | nil`. Unlike a variable with both as lower bounds, it can
+    /// bound what flows in, as a parameter's type: nil heads no other
+    /// type, so `s <: t | nil` splits into `s` being nil or `s <: t`
+    /// without a choice to make.
+    Maybe(Rc<Ty>),
 }
 
 impl Ty {
@@ -119,6 +124,13 @@ impl Ty {
         }
     }
 
+    pub fn maybe(t: Ty) -> Ty {
+        match t {
+            Ty::Maybe(_) | Ty::Prim(Prim::Nil) => t,
+            t => Ty::Maybe(Rc::new(t)),
+        }
+    }
+
     pub fn keys(keys: impl IntoIterator<Item = String>) -> Ty {
         Ty::Keys(Rc::new(keys.into_iter().collect()))
     }
@@ -135,7 +147,7 @@ impl Ty {
                 params.iter().map(Ty::level).max().unwrap_or(0).max(ret.level()).max(eff.level())
             }
             Ty::Record(fields) => fields.values().map(Ty::level).max().unwrap_or(0),
-            Ty::List(t) | Ty::Dict(t) | Ty::Without(t) => t.level(),
+            Ty::List(t) | Ty::Dict(t) | Ty::Without(t) | Ty::Maybe(t) => t.level(),
             Ty::Update(r, _, v) => r.level().max(v.level()),
             _ => 0,
         }
@@ -159,6 +171,7 @@ impl Ty {
             Ty::Update(r, _, _) => (11, Rc::as_ptr(r) as *const u8 as usize),
             Ty::Keys(k) => (12, Rc::as_ptr(k) as *const u8 as usize),
             Ty::Caps(c) => (13, Rc::as_ptr(c) as *const u8 as usize),
+            Ty::Maybe(t) => (14, Rc::as_ptr(t) as *const u8 as usize),
         }
     }
 }
@@ -304,6 +317,15 @@ impl Solver {
                 }
                 Ok(())
             }
+            (Ty::Maybe(a), Ty::Maybe(b)) => self.go(a, b, cache),
+            (Ty::Prim(Prim::Nil), Ty::Maybe(_)) => Ok(()),
+            // Either half of `a | nil` must fit.
+            (Ty::Maybe(a), _) if !matches!(rhs, Ty::Var(_)) => {
+                self.go(&Ty::nil(), rhs, cache)?;
+                self.go(a, rhs, cache)
+            }
+            // Anything but nil that fits `b | nil` fits `b`.
+            (_, Ty::Maybe(b)) if !matches!(lhs, Ty::Var(_) | Ty::Without(_)) => self.go(lhs, b, cache),
             (Ty::Update(record, field, value), _) if !matches!(rhs, Ty::Var(_)) => match rhs {
                 // The updated field comes from the new value; every other
                 // field the reader wants comes from the original record.
@@ -350,7 +372,7 @@ impl Solver {
     fn without(&self, lhs: &Ty, rhs: &Ty, cache: &mut Cache) -> Result<(), TypeError> {
         match lhs {
             Ty::Prim(Prim::Nil) => Ok(()),
-            Ty::Without(inner) => self.without(inner, rhs, cache),
+            Ty::Without(inner) | Ty::Maybe(inner) => self.without(inner, rhs, cache),
             Ty::Var(_) => self.go(&Ty::without(lhs.clone()), rhs, cache),
             _ => self.go(lhs, rhs, cache),
         }
@@ -375,6 +397,7 @@ impl Solver {
             Ty::List(t) => Ty::list(self.extrude(t, pol, level, cache)),
             Ty::Dict(t) => Ty::dict(self.extrude(t, pol, level, cache)),
             Ty::Without(t) => Ty::without(self.extrude(t, pol, level, cache)),
+            Ty::Maybe(t) => Ty::maybe(self.extrude(t, pol, level, cache)),
             Ty::Update(r, k, v) => {
                 Ty::update(self.extrude(r, pol, level, cache), k.clone(), self.extrude(v, pol, level, cache))
             }
@@ -443,6 +466,7 @@ impl Solver {
             Ty::List(t) => Ty::list(self.freshen(t, limit, level, map)),
             Ty::Dict(t) => Ty::dict(self.freshen(t, limit, level, map)),
             Ty::Without(t) => Ty::without(self.freshen(t, limit, level, map)),
+            Ty::Maybe(t) => Ty::maybe(self.freshen(t, limit, level, map)),
             Ty::Update(r, k, v) => {
                 Ty::update(self.freshen(r, limit, level, map), k.clone(), self.freshen(v, limit, level, map))
             }
@@ -478,6 +502,7 @@ impl fmt::Display for Shallow<'_> {
             Ty::List(_) => write!(f, "List"),
             Ty::Dict(_) => write!(f, "Dict"),
             Ty::Without(t) => write!(f, "{} without nil", Shallow(t)),
+            Ty::Maybe(t) => write!(f, "{} or nil", Shallow(t)),
             Ty::Update(r, k, _) => write!(f, "{} with `:{k}` set", Shallow(r)),
             Ty::Keys(k) => write!(f, "{}", keys_text(k)),
         }
@@ -549,6 +574,7 @@ fn coalesce_go(
         Ty::List(t) => Type::List(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
         Ty::Dict(t) => Type::Dict(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
         Ty::Without(t) => Type::Without(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
+        Ty::Maybe(t) => Type::Union(vec![coalesce_go(t, pol, in_process, recursive, next), Type::Prim(Prim::Nil)]),
         Ty::Update(r, k, v) => Type::Update(
             Box::new(coalesce_go(r, pol, in_process, recursive, next)),
             k.clone(),

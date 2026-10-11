@@ -3,6 +3,46 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Routes
+
+- **Routes call the model directly.** An element returns effects as
+  data; a route's `handle!` uses the `model` capability and the route
+  contract allows no other. This is the Roc split the effects slice set
+  up: a pure core, effects at the edge that the type names.
+- **Blocking, not callbacks, for the model.** The model's functions are
+  `async`; the glue calls them with the synchronous ABI and lets the
+  task block, so code generation stays direct-style. The cost: the host
+  must be able to suspend a guest. Wasmtime and the polyfill can; a
+  stackless host could not run a route. The alternative, CPS-converting
+  `handle!` at each effectful call, would make every capability call a
+  suspension point in generated code.
+- **Async-lowered streams and futures, waited on one at a time.** Their
+  synchronous forms need the component model's "more async builtins"
+  feature, which Wasmtime and the polyfill leave off by default. Each
+  wait uses a waitable set of its own, so two requests in flight never
+  take each other's events.
+- **`t | nil` as a type former.** Needed to declare `update!`'s optional
+  parameters; Simple-sub's unions only appear where values come out.
+  It is safe to solve because nil is disjoint from every other head
+  type. Two spellings of an optional now exist (an inferred union and
+  this), and they display the same. If source annotations come, they
+  would produce this one.
+- **Results as records with optional fields.** `{todo, error}` instead
+  of a tagged union, because joining records with different fields
+  drops fields. The language proposal's "absence is failure" would
+  replace this; it is the design question this slice leaves sharpest.
+- **`pattern` must be a string literal,** read at compile time, so the
+  glue matches it with code specific to it.
+- **The glue adds `x-demo-route`,** as the Zena authoring library's
+  `serve` does, so the demo's page can show which route answered.
+- **A JSON title that is not a string becomes `""`.** `json-str` answers
+  a neutral value, and there is no way to ask a `Json` its kind, so a
+  PATCH with `{"title": 5}` answers 422 where the Zena route ignores the
+  title. A `json-string?` (or narrowing on `Json`) would fix it.
+- **`cabi_realloc` allocates nothing for nothing.** Wasmtime asks for
+  room for an empty list; the glue frees no empty buffer, so it would
+  leak. A request for zero bytes now gets a fixed address.
+
 ## Effects
 
 - **A capability set on every function type.** Roc tracks only pure or
@@ -22,8 +62,8 @@ it. Newest first.
   imports become such declarations when routes need them; there is no
   syntax for declaring one yet.
 - **Effects run directly.** Code generation does not change: an
-  effectful call is a call. Waiting on an async import will need a
-  blocking export (Wasmtime's fibers, or JSPI under the polyfill).
+  effectful call is a call. Waiting on an async import blocks the task
+  (see Routes).
 
 ## Reuse: a bug it found
 

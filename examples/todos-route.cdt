@@ -1,0 +1,49 @@
+;; The route /api/todos: the whole todo list.
+;;
+;; GET answers the todos that `?filter=` selects (all, active, or
+;; completed) and the counts of the whole list. POST adds a todo from
+;; {"title": string}. PATCH sets every todo's completion from
+;; {"completed": bool}. DELETE removes every completed todo.
+;;
+;; `handle!` calls the model directly; its name ends with `!` because
+;; it uses the `model` capability, and the route contract allows no
+;; other.
+
+(def pattern "/api/todos")
+
+(defn todo-json [todo]
+  {"id" (:id todo) "title" (:title todo) "completed" (:completed todo)})
+
+(defn filter-of [request]
+  (match (get (:query request) "filter")
+    "active" :active
+    "completed" :completed
+    _ :all))
+
+(defn list! [request]
+  (let [found (query! (filter-of request))
+        counts (:counts found)]
+    (json {"todos" (map todo-json (:todos found))
+           "counts" {"active" (:active counts) "completed" (:completed counts)}}
+          200)))
+
+(defn add-todo! [request]
+  (let [added (add! (json-str (json-get (parse-json (:body request)) "title")))]
+    (match added
+      {:todo some?} (json (todo-json (:todo added)) 201)
+      _ (problem (:error added)))))
+
+(defn complete-all! [request]
+  (let [completed (json-get (parse-json (:body request)) "completed")]
+    (cond
+      (= completed true) (let [_ (toggle-all! true)] (status 204))
+      (= completed false) (let [_ (toggle-all! false)] (status 204))
+      :else (status 400))))
+
+(defn handle! [request]
+  (match (:method request)
+    "GET" (list! request)
+    "POST" (add-todo! request)
+    "PATCH" (complete-all! request)
+    "DELETE" (let [_ (clear-completed!)] (status 204))
+    _ (status 405)))

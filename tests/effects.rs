@@ -124,3 +124,22 @@ fn effects_run_directly() {
     assert_eq!(value, Value::Int(2));
     assert_eq!(logged, ["42: start", "item 1", "item 2"]);
 }
+
+#[test]
+fn host_functions_can_take_optional_arguments() {
+    // `t | nil` bounds what a parameter takes: a string, nil, or a value
+    // that is one or the other, but nothing else.
+    let mut cb = host();
+    cb.add_host("title!", "model", vec![Ty::maybe(Ty::str())], Ty::maybe(Ty::int())).unwrap();
+    assert_eq!(cb.lookup("title!").unwrap().type_string(), "(String | nil) => Int | nil ! {model}");
+    let src = "(defn a! [] (title! \"x\"))
+               (defn b! [] (title! nil))
+               (defn c! [d] (title! (get d \"k\")))
+               (defn d! [] (+ 1 (?? (title! nil) 0)))";
+    cb.add_source(src).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(cb.lookup("c!").unwrap().type_string(), "(Dict[String | nil]) => Int | nil ! {model}");
+    let e = cb.add_source("(defn e! [] (title! 5))").unwrap_err().to_string();
+    assert!(e.contains("Int is not a String"), "{e}");
+    let e = cb.add_source("(defn f! [] (+ 1 (title! nil)))").unwrap_err().to_string();
+    assert!(e.contains("nil is not a Int"), "{e}");
+}

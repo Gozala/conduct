@@ -39,6 +39,18 @@ change and reloads, follows the route's filter, and its memory holds
 exactly the same blocks after 200 requests as before them. Another test
 runs the same glue on Wasmtime's own `wasi:http@0.3.0`.
 
+Both of the demo's routes are written in conduct too:
+[`/api/todos`](examples/todos-route.cdt) and
+[`/api/todos/:id`](examples/todo-route.cdt). Each compiles to a component
+of the demo's `route-component` world: it exports `wasi:http/handler`
+and calls the demo's `demo:todo/model` directly, with Roc-style effects.
+One test serves them on Wasmtime's own `wasi:http` handler, with a model
+whose `async` functions suspend before they answer. Another runs the
+whole demo in conduct on the polyfill: `<todo-app>`'s requests go to the
+conduct routes, each in a store of its own as the demo's service worker
+keeps them, and the routes change the model. Neither the element's
+memory nor the routes' grows over 120 more requests.
+
 ```
 $ cargo run -- check examples/todo-item.cdt
 #2b845adc8c attributes : List[String]
@@ -51,6 +63,9 @@ $ cargo run -- check examples/todo-item.cdt
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
 wrote todo-item.wasm (22770 bytes)
+
+$ cargo run -- route examples/todos-route.cdt -o todos.wasm
+wrote todos.wasm (29373 bytes)
 ```
 
 Every type above is inferred. `attr`'s type says it returns the
@@ -59,7 +74,8 @@ dictionary's value type with `nil` taken out, or a `String`. The same
 each: the codebase holds it once.
 
 `cargo test` runs everything: the reader, inference, hashing, the code
-generator on Wasmtime, and the element on the polyfill.
+generator on Wasmtime, the elements and routes on the polyfill, and the
+routes on Wasmtime.
 
 ## The language
 
@@ -138,6 +154,14 @@ optional is expected, and nothing is wrapped. To use the value,
 Simple-sub, a type `t \ nil` that may only flow into things: the one case
 of MLstruct's negation types (`t & ¬nil`) that optionals need first.
 
+Inferred optionals are unions, and Simple-sub keeps unions out of what a
+parameter accepts. A declared type sometimes needs one there: the
+model's `update!` takes a title that is a `String` or `nil`. So there is
+a second addition, `t | nil` as a type of its own, which can bound what
+flows in. It needs no choice to solve: nil heads no other type, so `s <:
+t | nil` holds when `s` is nil or when `s <: t`. Source code has no
+annotations yet, so only host declarations use it.
+
 ### Matching
 
 A keyword is a value whose type is the set of just itself, and keyword
@@ -201,8 +225,8 @@ it can reach outside itself.
 
 A host function is declared with its capability and type
 (`Codebase::add_host`) and compiled to a core import from
-`conduct:host`. Binding a component world's imports to such
-declarations is the next step for routes.
+`conduct:host`, unless the module provides it itself, as a route does
+for the model's functions.
 
 ### Hashing
 
@@ -314,22 +338,67 @@ The other exports are lifted synchronously, and `host.emit` is lowered
 synchronously. An element imports `wasi:http` only if its `update` can
 ask for a request.
 
+## Routes
+
+A route is one function with effects, and the path it serves:
+
+```text
+pattern : String                    such as "/api/todos/:id"
+handle! : (Request) => Response ! {model}
+
+Request  = {method: String, path: String, params: Dict[String],
+            query: Dict[String], headers: Dict[String], body: String}
+Response = {status: Int, headers: Dict[String], body: String}
+```
+
+`params` holds what the pattern's `:name` segments matched, and `query`
+the decoded query string, as the demo's authoring library gives a Zena
+route. A route's codebase starts with the model's functions and a
+[prelude](src/route.cdt) of `json`, `status` and `problem`, the helpers
+the Zena routes import. Unlike an element's `update`, `handle!` does its
+work itself: it calls the model and waits for it.
+
+```text
+query!           : (:all | :active | :completed) => {todos: List[Todo], counts: {active: Int, completed: Int}}
+add!             : (String) => {todo: Todo | nil, error: :not-found | :empty-title | nil}
+update!          : (String, String | nil, Bool | nil) => {todo: Todo | nil, error: ...}
+remove!          : (String) => {error: :not-found | :empty-title | nil}
+toggle-all!      : (Bool) => nil
+clear-completed! : () => nil
+                   each ! {model}
+```
+
+A model `result` is a record with optional fields, not a tagged union:
+a union of records with different fields keeps only the fields they
+share, so `{:todo some?}` in a `match` is how a route tells success from
+failure. The `filter` enum is a keyword set, so a misspelled filter is a
+type error.
+
+The glue exports `wasi:http/handler#handle`, lifted with the async
+ABI's callback form. It reads the request and its body, runs `handle!`,
+gives the response back with `task.return`, and then writes the
+response's body as the host reads it. It calls the model's `async`
+functions with the synchronous ABI, which blocks the task until the
+model answers; a task of an `async` function may block. Stream and
+future operations are async-lowered, and the glue waits on each one that
+blocks with `waitable-set.wait`, since their synchronous forms need a
+feature beyond the async ABI. So `handle!` is ordinary straight-line
+code, and the host does the suspending: Wasmtime with fibers, the
+polyfill with stack switching, JSPI, or nested turns.
+
 ## Next
 
-The demo's other parts each need something this slice does not have:
-
-1. **Routes**: `wasi:http/handler` and the async `demo:todo/model`
-   imports, bound as host functions with their capabilities, and a
-   blocking handler export so effectful calls can wait.
-2. **The language proposal** in `notes/language.md`: qualified keys,
-   absence as failure, attributes and concepts, macros.
-3. **Narrowing in later clauses**: a clause does not learn that the ones
+1. **The language proposal** in `notes/language.md`: qualified keys,
+   absence as failure, attributes and concepts, macros. Absence as
+   failure would change the model's results above.
+2. **Narrowing in later clauses**: a clause does not learn that the ones
    before it failed. That needs MLstruct's negation types in general,
    not just `t \ nil`.
-4. **The codebase in Dialog**: definitions as facts, names as assertions
+3. **The codebase in Dialog**: definitions as facts, names as assertions
    that point at hashes.
-5. **The compiler in the browser**: its dependencies are pure Rust, but
-   building it for `wasm32` has not been tried yet.
+4. **The compiler in the browser**: its dependencies are pure Rust, but
+   building it for `wasm32` has not been tried yet. With it, the demo's
+   page could compile conduct as it compiles Zena.
 
 [Wasm Component Model Polyfill]: https://github.com/dialog-db/wasm-component-model-polyfill
 [`examples/todo-item.cdt`]: examples/todo-item.cdt

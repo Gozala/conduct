@@ -1,0 +1,17 @@
+;; What every route starts with, as the demo's `authoring:route` gives
+;; its Zena routes: responses, and the response for a model error.
+
+;; A response with `value` as its JSON body.
+(defn json [value code]
+  {:status code :headers {"content-type" "application/json"} :body (to-json value)})
+
+;; A response with no body.
+(defn status [code]
+  {:status code :headers {} :body ""})
+
+;; The response for a model error: 404 for an unknown todo, 422 for an
+;; empty title.
+(defn problem [error]
+  (match error
+    :not-found (status 404)
+    _ (status 422)))

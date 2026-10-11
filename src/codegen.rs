@@ -179,6 +179,9 @@ pub struct Builder<'a> {
     max_arity: usize,
     exports: Vec<String>,
     rtdata: u32,
+    /// Host functions the module defines itself, by name: their glue
+    /// calls the component's imports.
+    provided: HashMap<String, String>,
 }
 
 impl<'a> Builder<'a> {
@@ -197,6 +200,7 @@ impl<'a> Builder<'a> {
             max_arity: 4,
             exports: vec![],
             rtdata: 0,
+            provided: HashMap::new(),
         };
         b.rtdata = b.static_bytes(RUNTIME_DATA.to_vec());
         b
@@ -243,8 +247,19 @@ impl<'a> Builder<'a> {
         addr
     }
 
-    /// The import of the host function `name`, declared once.
+    /// Call the module's function `func` for the host function `name`,
+    /// instead of importing it. The function borrows its arguments and
+    /// returns an owned value, as an imported one does.
+    pub fn provide_host(&mut self, name: &str, func: &str) {
+        self.provided.insert(name.to_string(), func.to_string());
+    }
+
+    /// The import of the host function `name`, declared once, or the
+    /// function provided for it.
     fn host_import(&mut self, name: &str, arity: usize) -> String {
+        if let Some(func) = self.provided.get(name) {
+            return func.clone();
+        }
         let id = format!("$host_{}", Hash::of(name.as_bytes()).hex().get(..12).unwrap_or_default());
         let import = format!(
             "(import \"conduct:host\" \"{name}\" (func {id}{} (result i64)))",
