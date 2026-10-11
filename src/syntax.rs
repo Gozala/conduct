@@ -32,9 +32,9 @@ pub enum Expr {
     List(Vec<Expr>),
     /// `:active`: a keyword, a value whose type is that keyword alone.
     Keyword(String),
-    /// `(match e p1 r1 p2 r2 ... :else r)`: the result of the first
-    /// pattern `e` matches. Without `:else`, the patterns must be able to
-    /// cover every value (see [`Pattern::cover`]).
+    /// `(match e p1 r1 p2 r2 ... _ r)`: the result of the first pattern
+    /// `e` matches; `_` matches anything. Without `_`, the patterns must
+    /// be able to cover every value (see [`Pattern::cover`]).
     Match(Box<Expr>, Vec<(Pattern, Expr)>, Option<Box<Expr>>),
 }
 
@@ -291,11 +291,11 @@ fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
     let mut default = None;
     let pairs: Vec<&[Sexp]> = clauses.chunks(2).collect();
     for (i, pair) in pairs.iter().enumerate() {
-        if let Sexp::Keyword(k, kspan) = &pair[0]
-            && k == "else"
+        if let Sexp::Symbol(s, sspan) = &pair[0]
+            && s == "_"
         {
             if i + 1 != pairs.len() {
-                return err("`:else` must be the last clause of a `match`", *kspan);
+                return err("`_` matches anything, so it must be the last clause of a `match`", *sspan);
             }
             default = Some(boxed(&pair[1])?);
             continue;
@@ -307,13 +307,13 @@ fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
         arms.push((pattern, expr(&pair[1])?));
     }
     if arms.is_empty() {
-        return err("a `match` needs a pattern besides `:else`", span);
+        return err("a `match` needs a pattern besides `_`", span);
     }
     // Keywords are a closed set the type checker can see the whole of;
     // strings and integers never are, so leaving them out must be said.
     if default.is_none() && !Pattern::cover(&arms.iter().map(|(p, _)| p).collect::<Vec<_>>()) {
         return err(
-            "this `match` cannot cover every value without `:else`: only keywords, `nil` with `some?`, \
+            "this `match` cannot cover every value without a `_` clause: only keywords, `nil` with `some?`, \
              or one field matched against those can",
             span,
         );
@@ -328,6 +328,7 @@ fn pattern(form: &Sexp) -> Result<Pattern> {
         Sexp::Int(n, _) => Pattern::Int(*n),
         Sexp::Symbol(s, _) if s == "nil" => Pattern::Nil,
         Sexp::Symbol(s, _) if s == "some?" => Pattern::Some,
+        Sexp::Symbol(s, _) if s == "_" => Pattern::Any,
         Sexp::Map(items, mspan) if !items.is_empty() && items.len().is_multiple_of(2) => {
             let mut fields: Vec<(String, Pattern)> = Vec::new();
             for pair in items.chunks(2) {
@@ -346,7 +347,7 @@ fn pattern(form: &Sexp) -> Result<Pattern> {
         other => {
             return err(
                 format!(
-                    "a `match` pattern is a keyword, string, or integer, `nil`, `some?`, or a record of those, not `{other}`"
+                    "a `match` pattern is a keyword, string, or integer, `nil`, `some?`, `_`, or a record of those, not `{other}`"
                 ),
                 other.span(),
             );

@@ -87,8 +87,8 @@ generator on Wasmtime, and the element on the polyfill.
 
 (match status                           ; the first pattern that matches
   :active "Active"
-  :suspended "Paused")                  ; no :else: status is :active | :suspended
-(match handler "add" 1 "clear" 2 :else 0)   ; strings need :else
+  :suspended "Paused")                  ; no `_`: status is :active | :suspended
+(match handler "add" 1 "clear" 2 _ 0)   ; strings need a final `_`
 (match job                              ; record patterns narrow `job`
   {:status :active} (str "Since " (:since job))
   {:status :suspended} "paused")
@@ -150,13 +150,17 @@ a check narrows a value in TypeScript: matching `(:n job)` against
 against `{:status :active}` makes its status `:active`. A narrowed field
 is typed like a record update, so this needed no new machinery.
 
-A `match` without `:else` must be able to cover every value: its
+`_` matches anything. As the last clause it is the default; inside a
+record pattern, `{:status _}`, it asks only that the field be there. A
+`match` without a final `_` must be able to cover every value: its
 patterns are all keywords, or `nil` and `some?`, or one field matched
-against those in every clause. Then the match constrains its value to
+against those in every clause, or one clause is a record of `_`s. Then the match constrains its value to
 what it covers, and leaving a case out is a type error. With no
 annotations, nothing else says what the value may be, so that error
 appears where a value outside the cases flows in, `(describe {:status
-:done})`, not at the match. Any other `match` must end with `:else`.
+:done})`, not at the match. Any other `match` must end with `_`.
+`:else` is not special in a `match`: a keyword is an entity (`:else` is
+`else:`), so it is a pattern like any other.
 
 What narrowing does not cover is a predicate you define:
 `(defn active? [j] ...)` returns a `Bool`, and what its being true says

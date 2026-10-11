@@ -213,7 +213,7 @@
       "edit" (with model [(edit value)])
       "clear" (with model [(change "DELETE" "/api/todos" "")])
       ;; A handler the element does not know changes nothing.
-      :else (with model []))))
+      _ (with model []))))
 
 ;; The view
 

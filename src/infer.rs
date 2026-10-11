@@ -115,12 +115,12 @@ impl Infer<'_> {
             Term::Match(scrutinee, clauses, default) => {
                 let t = self.term(scrutinee, env, level)?;
                 if default.is_none() {
-                    // No `:else`: the value must be one the patterns
+                    // No `_` clause: the value must be one the patterns
                     // cover, so the match is exhaustive.
                     let patterns: Vec<&Pattern> = clauses.iter().map(|(p, _)| p).collect();
                     if let Some(shape) = cover_type(&patterns) {
                         s.constrain(&t, &shape).map_err(|e| {
-                            TypeError(format!("a `match` without `:else` must cover every value it is given: {e}"))
+                            TypeError(format!("a `match` without a `_` clause must cover every value it is given: {e}"))
                         })?;
                     }
                 }
@@ -194,6 +194,7 @@ impl Infer<'_> {
             Pattern::Int(_) => Ty::int(),
             Pattern::Nil => Ty::nil(),
             Pattern::Some => Ty::without(t),
+            Pattern::Any => t,
             Pattern::Fields(fields) => {
                 let mut out = t.clone();
                 for (name, p) in fields {
@@ -298,6 +299,11 @@ fn optional(s: &Solver, t: Ty, level: u32) -> Ty {
 /// the keywords named, or a record whose one field is covered. `nil`
 /// with `some?` covers anything.
 fn cover_type(patterns: &[&Pattern]) -> Option<Ty> {
+    // An irrefutable clause covers by itself; the fields it names are
+    // required by the reads that test them.
+    if patterns.iter().any(|p| p.irrefutable()) {
+        return None;
+    }
     if patterns.iter().all(|p| matches!(p, Pattern::Keyword(_))) {
         return Some(Ty::keys(patterns.iter().filter_map(|p| match p {
             Pattern::Keyword(k) => Some(k.clone()),

@@ -451,7 +451,7 @@ impl<'a> Builder<'a> {
             Term::Keyword(k) => format!("(i64.const {})", self.static_keyword(k)),
             Term::Match(scrutinee, clauses, default) => {
                 // A `let` of the value and a chain of `if`s on its
-                // equality with each pattern. A match without `:else`
+                // equality with each pattern. A match without `_`
                 // is exhaustive, so its last `else` is never taken.
                 let mut chain = match default {
                     Some(d) => shift(d, 1, 0),
@@ -899,6 +899,7 @@ fn pattern_test(value: Term, pattern: &Pattern) -> Term {
         Pattern::Int(n) => Term::Prim(Op::Eq, vec![value, Term::Int(*n)]),
         Pattern::Nil => is_nil(value),
         Pattern::Some => Term::Prim(Op::Not, vec![is_nil(value)]),
+        Pattern::Any => Term::Bool(true),
         Pattern::Fields(fields) => {
             let mut tests =
                 fields.iter().map(|(name, p)| pattern_test(Term::Field(name.clone(), Box::new(value.clone())), p));
