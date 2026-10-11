@@ -23,6 +23,8 @@ pub enum Prim {
     Bool,
     Str,
     Nil,
+    /// A parsed JSON value, read with the `json-` built-ins.
+    Json,
 }
 
 impl Prim {
@@ -32,6 +34,7 @@ impl Prim {
             Prim::Bool => "Bool",
             Prim::Str => "String",
             Prim::Nil => "nil",
+            Prim::Json => "Json",
         }
     }
 }
@@ -58,7 +61,7 @@ pub enum Ty {
     List(Rc<Ty>),
     Dict(Rc<Ty>),
     View,
-    Emit,
+    Effect,
     Var(Var),
     Without(Rc<Ty>),
     /// A record with one field set: what `(assoc r :k v)` returns. Like
@@ -116,13 +119,13 @@ impl Ty {
 
     /// An identity for the constraint cache. Composite types are shared
     /// through `Rc`, so the address of their allocation names them.
-    fn key(&self) -> (u8, usize) {
+    fn key(&self) -> Key {
         match self {
             Ty::Top => (0, 0),
             Ty::Bot => (1, 0),
             Ty::Prim(p) => (2, *p as usize),
             Ty::View => (3, 0),
-            Ty::Emit => (4, 0),
+            Ty::Effect => (4, 0),
             Ty::Var(v) => (5, v.id as usize),
             Ty::Fn(params, _) => (6, Rc::as_ptr(params) as *const u8 as usize),
             Ty::Record(fields) => (7, Rc::as_ptr(fields) as *const u8 as usize),
@@ -152,8 +155,19 @@ impl fmt::Display for TypeError {
 
 impl std::error::Error for TypeError {}
 
+/// A type's identity in the constraint cache.
+type Key = (u8, usize);
+
 /// The constraints already seen while solving one constraint.
-type Cache = HashSet<((u8, usize), (u8, usize))>;
+#[derive(Default)]
+struct Cache {
+    pairs: HashSet<(Key, Key)>,
+    /// Field reads through a record update, `record <: {name: t}`. The
+    /// one-field record is built fresh for each read, so its address
+    /// cannot identify the constraint; without this a model that flows
+    /// back into its own update would be read through forever.
+    reads: HashSet<(Key, String, Key)>,
+}
 
 /// Variable allocation and constraint solving.
 #[derive(Default)]
@@ -180,19 +194,21 @@ impl Solver {
 
     /// Require `lhs` to be a subtype of `rhs`.
     pub fn constrain(&self, lhs: &Ty, rhs: &Ty) -> Result<(), TypeError> {
-        let mut cache = HashSet::new();
+        let mut cache = Cache::default();
         self.go(lhs, rhs, &mut cache)
             .map_err(|e| TypeError(format!("{e}\n  while checking that {} fits {}", Shallow(lhs), Shallow(rhs))))
     }
 
     fn go(&self, lhs: &Ty, rhs: &Ty, cache: &mut Cache) -> Result<(), TypeError> {
-        if !cache.insert((lhs.key(), rhs.key())) {
+        if !cache.pairs.insert((lhs.key(), rhs.key())) {
             return Ok(());
         }
         match (lhs, rhs) {
             (Ty::Bot, _) | (_, Ty::Top) => Ok(()),
             (Ty::Prim(a), Ty::Prim(b)) if a == b => Ok(()),
-            (Ty::View, Ty::View) | (Ty::Emit, Ty::Emit) => Ok(()),
+            // JSON's `null` is nil, so nil is a JSON value.
+            (Ty::Prim(Prim::Nil), Ty::Prim(Prim::Json)) => Ok(()),
+            (Ty::View, Ty::View) | (Ty::Effect, Ty::Effect) => Ok(()),
             (Ty::Fn(p0, r0), Ty::Fn(p1, r1)) => {
                 if p0.len() != p1.len() {
                     return Err(TypeError(format!(
@@ -245,7 +261,7 @@ impl Solver {
                     for (name, t) in wanted.iter() {
                         if name == field {
                             self.go(value, t, cache)?;
-                        } else {
+                        } else if cache.reads.insert((record.key(), name.clone(), t.key())) {
                             self.go(record, &Ty::record([(name.clone(), t.clone())]), cache)?;
                         }
                     }
@@ -393,7 +409,7 @@ impl fmt::Display for Shallow<'_> {
             Ty::Bot => write!(f, "Nothing"),
             Ty::Prim(p) => write!(f, "{}", p.name()),
             Ty::View => write!(f, "View"),
-            Ty::Emit => write!(f, "Emit"),
+            Ty::Effect => write!(f, "Effect"),
             Ty::Var(_) => write!(f, "a value whose type is still being inferred"),
             Ty::Fn(params, _) => write!(f, "a function of {} argument(s)", params.len()),
             Ty::Record(fields) => {
@@ -422,7 +438,7 @@ pub enum Type {
     Bot,
     Prim(Prim),
     View,
-    Emit,
+    Effect,
     Var(u32),
     Fn(Vec<Type>, Box<Type>),
     Record(BTreeMap<String, Type>),
@@ -455,7 +471,7 @@ fn coalesce_go(
         Ty::Bot => Type::Bot,
         Ty::Prim(p) => Type::Prim(*p),
         Ty::View => Type::View,
-        Ty::Emit => Type::Emit,
+        Ty::Effect => Type::Effect,
         Ty::Fn(params, ret) => Type::Fn(
             params.iter().map(|p| coalesce_go(p, !pol, in_process, recursive, next)).collect(),
             Box::new(coalesce_go(ret, pol, in_process, recursive, next)),
@@ -914,7 +930,7 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
         Type::Bot => write!(f, "Nothing"),
         Type::Prim(p) => write!(f, "{}", p.name()),
         Type::View => write!(f, "View"),
-        Type::Emit => write!(f, "Emit"),
+        Type::Effect => write!(f, "Effect"),
         Type::Var(v) => write!(f, "{}", var(*v)),
         Type::Fn(params, ret) => {
             if prec > 0 {

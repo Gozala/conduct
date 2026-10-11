@@ -154,3 +154,41 @@ fn record_update_and_trim() {
     assert_eq!(run(src, "t", &[]), Value::Str("padded".into()));
     assert_eq!(run(src, "same", &[]), Value::Bool(true));
 }
+
+#[test]
+fn json_round_trips() {
+    let doc = r#"{\"todos\":[{\"id\":\"a\",\"title\":\"Buy \\\"oat\\\" milk \\u00e9\\ud83d\\ude00\",\"completed\":true}],\"counts\":{\"active\":2,\"completed\":-1.5e3}}"#;
+    let src = format!(
+        "(def doc (parse-json \"{doc}\"))
+         (def first-title (json-str (json-get (first (json-items (json-get doc \"todos\"))) \"title\")))
+         (def done (json-bool (json-get (first (json-items (json-get doc \"todos\"))) \"completed\")))
+         (def active (json-int (json-get (json-get doc \"counts\") \"active\")))
+         (def completed (json-int (json-get (json-get doc \"counts\") \"completed\")))
+         (def missing (json-int (json-get doc \"nope\")))
+         (def bad (json-str (parse-json \"{{\\\"a\\\": }}\")))
+         (def encoded (to-json {{\"title\" \"say \\\"hi\\\"\\n\" \"completed\" false \"tags\" [1 nil true]}}))
+         (def again (json-str (json-get (parse-json encoded) \"title\")))"
+    );
+    assert_eq!(run(&src, "first-title", &[]), Value::Str("Buy \"oat\" milk é😀".into()));
+    assert_eq!(run(&src, "done", &[]), Value::Bool(true));
+    assert_eq!(run(&src, "active", &[]), Value::Int(2));
+    assert_eq!(run(&src, "completed", &[]), Value::Int(-1));
+    assert_eq!(run(&src, "missing", &[]), Value::Int(0));
+    assert_eq!(run(&src, "bad", &[]), Value::Str("".into()));
+    assert_eq!(
+        run(&src, "encoded", &[]),
+        Value::Str(r#"{"title":"say \"hi\"\u000a","completed":false,"tags":[1,null,true]}"#.into())
+    );
+    assert_eq!(run(&src, "again", &[]), Value::Str("say \"hi\"\n".into()));
+}
+
+#[test]
+fn split_strings() {
+    let src = "(def parts (split \"7\\nBuy milk\\nnow\" \"\\n\"))
+               (def whole (split \"abc\" \"\"))
+               (def edges (split \",a,\" \",\"))";
+    let s = |x: &str| Value::Str(x.into());
+    assert_eq!(run(src, "parts", &[]), Value::List(vec![s("7"), s("Buy milk"), s("now")]));
+    assert_eq!(run(src, "whole", &[]), Value::List(vec![s("abc")]));
+    assert_eq!(run(src, "edges", &[]), Value::List(vec![s(""), s("a"), s("")]));
+}

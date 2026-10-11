@@ -23,14 +23,19 @@ elements and routes are written in Zena, in conduct.
 
 ## Status
 
-Three of the demo's four elements are written in conduct:
-[`todo-item`](examples/todo-item.cdt), [`todo-input`](examples/todo-input.cdt)
-and [`todo-footer`](examples/todo-footer.cdt). Each compiles to a
-component of the demo's `element-component` world, and the tests drive
-them through the polyfill, natively over Wasmtime, the way the demo's
-page drives an element: create, render, handle events, change
-attributes, several instances at once. The fourth, `<todo-app>`, needs
-HTTP requests (see [Next](#next)).
+All four of the demo's elements are written in conduct:
+[`todo-item`](examples/todo-item.cdt), [`todo-input`](examples/todo-input.cdt),
+[`todo-footer`](examples/todo-footer.cdt) and [`todo-app`](examples/todo-app.cdt).
+Each compiles to a component of the demo's `element-component` world.
+The tests drive the first three through the polyfill, natively over
+Wasmtime, the way the demo's page drives an element: create, render,
+handle events, change attributes, several instances at once.
+
+`<todo-app>` talks to the demo's routes over HTTP. Its logic is done and
+tested: a conduct program feeds its `update` the events and responses it
+would see and checks the requests it asks for and the pages it renders.
+The glue does not perform its requests yet; that needs
+`wasi:http/client` (see [Next](#next)).
 
 ```
 $ cargo run -- check examples/todo-item.cdt
@@ -38,12 +43,12 @@ $ cargo run -- check examples/todo-item.cdt
 #f7a2cda090 styles : String
 #12298b70de attr : (Dict[a], String) -> a \ nil | String
 #844dd5f2e4 init : (Any) -> {editing: Bool}
-#b74820340e stay : (a) -> {emit: List[Nothing], model: a}
-#3e5ab238a2 update : ({editing: Bool}, Any, {key: Any, value: Any}, Dict[String | nil]) -> {emit: List[Emit], model: {editing: Bool}}
+#bc229b7bd2 stay : (a) -> {effects: List[Nothing], model: a}
+#5190a34e4c update : ({editing: Bool}, Any, {key: Any, value: Any}, Dict[String | nil]) -> {effects: List[Effect], model: {editing: Bool}}
 #96a1911470 view : ({editing: Bool}, Dict[String | nil]) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (18085 bytes)
+wrote todo-item.wasm (21376 bytes)
 ```
 
 Every type above is inferred. `attr`'s type says it returns the
@@ -83,7 +88,18 @@ generator on Wasmtime, and the element on the polyfill.
 
 (h "li" {"class" "done"} [child ...] {"click" "handler"})   ; a view
 (emit "todo-toggle" id)                                     ; an event to send
+(fetch "PATCH" "/api/todos/a" body "changed")               ; a request to make
+
+(split "a\nb" "\n") (trim " a ")                            ; text
+(parse-json body) (to-json {"title" t})                     ; JSON in and out
+(json-get j "todos") (json-items j)                         ; Json -> Json, List[Json]
+(json-str j) (json-int j) (json-bool j)                     ; Json -> String, Int, Bool
 ```
+
+JSON is one type, `Json`, read with accessors that answer a neutral value
+(`""`, `0`, `false`, `nil`, `[]`) when the document has another shape
+there, as the Zena demo's `text`, `flag` and `count` helpers do. `nil` is
+a `Json`, since JSON's `null` is nil. Malformed text parses to `nil`.
 
 Built-ins are applied in full; they are not yet values. A local or a
 definition with a built-in's name shadows it, so a parameter can be
@@ -165,13 +181,23 @@ An element is pure definitions in the Elm architecture's shape:
 attributes : List[String]          the attributes it observes
 styles     : String                the CSS of its shadow root
 init       : (Dict[String]) -> m   its first model
-update     : (m, String, Event, Dict[String]) -> {model: m, emit: List[Emit]}
+update     : (m, String, Event, Dict[String]) -> {model: m, effects: List[Effect]}
 view       : (m, Dict[String]) -> View
+
+Event = {kind: String, value: String | nil, checked: Bool | nil,
+         key: String | nil, status: Int | nil}
 ```
 
-`update` does not send custom events: it returns them, and generated glue
-sends them through the world's `host.emit` import. So element code stays
-pure, and the glue is the only code with effects. `element::check`
+`update` does nothing itself: it returns effects as data, and generated
+glue performs them. An `emit` effect sends a custom event through the
+world's `host.emit` import. A `fetch` effect names a method, a path, a
+body and a handler, and its response is meant to come back to `update`
+under that handler as an event of kind `"response"` with the body and
+status. So element code stays pure, and the glue is the only code with
+effects. The element's lifecycle goes through `update` too: the glue
+dispatches `"connected"` when an element is created and
+`"attribute-changed"`, with the attribute's name as the value, when an
+observed attribute changes. `element::check`
 checks the definitions against this contract by subtyping, with the
 model type being whatever `init` returns.
 
@@ -193,8 +219,9 @@ This keeps the async ABI out of the compiler until a slice needs it.
 
 The demo's other parts each need something this slice does not have:
 
-1. **`<todo-app>`**: `wasi:http/client`, which brings resources, streams,
-   and calls that must wait.
+1. **`<todo-app>`'s requests**: the glue performs `fetch` effects through
+   `wasi:http/client`, which brings resources, streams, futures, and a
+   call that must wait.
 2. **Routes**: `wasi:http/handler` and the async `demo:todo/model`
    imports. Effects stop being data returned from `update`, and the
    effect system (inferred, as Roc infers purity, and mapped to the

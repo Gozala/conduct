@@ -58,7 +58,7 @@
 (defn attr [attrs name] (?? (get attrs name) ""))
 
 (defn update [model handler event attrs]
-  {:model model :emit (if (= handler "clear") [(emit "todo-clear" "")] [])})
+  {:model model :effects (if (= handler "clear") [(emit "todo-clear" "")] [])})
 
 (defn link [attrs filter label href]
   (h "li" {}

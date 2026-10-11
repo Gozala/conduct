@@ -7,16 +7,26 @@
 //! attributes : List[String]          the attributes it observes
 //! styles     : String                the CSS of its shadow root
 //! init       : (Dict[String]) -> m   its first model, from its attributes
-//! update     : (m, String, Event, Dict[String]) -> {model: m, emit: List[Emit]}
+//! update     : (m, String, Event, Dict[String]) -> {model: m, effects: List[Effect]}
 //! view       : (m, Dict[String]) -> View
 //! ```
 //!
 //! where `Event` is `{kind: String, value: String | nil,
-//! checked: Bool | nil, key: String | nil}`. The handler name `update`
-//! receives is the one the view's events named. Custom events are not
-//! sent by `update`: it returns them, as `(emit name detail)` values,
-//! and the glue sends them. So element code stays pure, and the glue is
-//! the only code with effects.
+//! checked: Bool | nil, key: String | nil, status: Int | nil}`.
+//!
+//! `update` hears everything that happens to the element, by handler
+//! name: the handlers the view's events name, `"connected"` when the
+//! element joins the document, and `"attribute-changed"` (with the
+//! attribute's name as the event's value) after an observed attribute
+//! changes. It performs nothing itself. It returns effects as values,
+//! `(emit name detail)` for a custom event and
+//! `(fetch method url body handler)` for an HTTP request whose response
+//! comes back to `update` under `handler`, with the body as the event's
+//! value and the status as its `status`. The glue performs them. So
+//! element code stays pure, and the glue is the only code with effects.
+//!
+//! This iteration sends custom events; performing `fetch` through the
+//! world's `wasi:http/client` import is the next step.
 //!
 //! The glue, generated here, keeps each element's model and attributes
 //! between calls and speaks the canonical ABI of the `demo:element`
@@ -85,6 +95,7 @@ pub fn event_type(cb: &Codebase, level: u32) -> Ty {
         ("value".to_string(), optional(Ty::str())),
         ("checked".to_string(), optional(Ty::bool())),
         ("key".to_string(), optional(Ty::str())),
+        ("status".to_string(), optional(Ty::int())),
     ])
 }
 
@@ -124,7 +135,7 @@ pub fn check(cb: &Codebase) -> Result<ElementDefs, ElementError> {
         defs.update,
         Ty::func(
             vec![model.clone(), Ty::str(), event_type(cb, level), attrs()],
-            Ty::record([("model".to_string(), model.clone()), ("emit".to_string(), Ty::list(Ty::Emit))]),
+            Ty::record([("model".to_string(), model.clone()), ("effects".to_string(), Ty::list(Ty::Effect))]),
         ),
     )?;
     fits("view", Some(defs.view), Ty::func(vec![model, attrs()], Ty::View))?;
@@ -174,6 +185,8 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     let checked = b.static_str("checked");
     let value = b.static_str("value");
     let true_str = b.static_str("true");
+    let connected = b.static_str("connected");
+    let changed = b.static_str("attribute-changed");
 
     b.add_import("(import \"demo:element/host\" \"emit\" (func $host_emit (param i32 i32 i32 i32 i32)))");
 
@@ -407,7 +420,9 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     (i64.store (call $slot (local.get $id)) {init})
     (local.get $id))
   (func (export "{iface}#connected") (param $id i32)
-    (call $release))
+    (call $release)
+    (call $dispatch (local.get $id) (call $lit_owned (i64.const {connected}))
+      (call $event_new (call $lit_owned (i64.const {connected})) (i64.const 2) (i64.const 2) (i64.const 2) (i64.const 2))))
   (func (export "{iface}#disconnected") (param $id i32)
     (call $release)
     (call $drop (i64.load (call $slot (local.get $id))))
@@ -425,8 +440,10 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
         (then (call $dict_assoc (local.get $attrs) (local.get $name) (local.get $val)))
         (else (call $dict_dissoc (local.get $attrs) (local.get $name)))))
     (call $drop (local.get $attrs))
-    (call $drop (local.get $name))
-    (call $drop (local.get $val)))
+    (call $drop (local.get $val))
+    ;; Tell `update`, with the attribute's name as the event's value.
+    (call $dispatch (local.get $id) (call $lit_owned (i64.const {changed}))
+      (call $event_new (call $lit_owned (i64.const {changed})) (local.get $name) (i64.const 2) (i64.const 2) (i64.const 2))))
   (func (export "{iface}#render") (param $id i32) (result i32)
     (local $v i64) (local $n i32) (local $arr i32)
     (call $release)
@@ -442,30 +459,37 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
   (func (export "cabi_post_{iface}#render") (param i32) (call $release))
 "#
     );
-    // handle-event: (id, handler, event{kind, value?, checked?, key?})
-    // flattens to 13 parameters.
+    // An event record, fields sorted by id as every record is. Each
+    // argument is consumed.
     let mut fields = [
-        (field_id("kind"), "(call $arg_str (local.get $kp) (local.get $kn))".to_string()),
-        (field_id("value"), "(call $opt_str (local.get $vd) (local.get $vp) (local.get $vn))".to_string()),
-        (
-            field_id("checked"),
-            "(if (result i64) (local.get $cd) (then (call $bool (local.get $cv))) (else (i64.const 2)))".to_string(),
-        ),
-        (field_id("key"), "(call $opt_str (local.get $yd) (local.get $yp) (local.get $yn))".to_string()),
+        (field_id("kind"), "(local.get $kind)"),
+        (field_id("value"), "(local.get $value)"),
+        (field_id("checked"), "(local.get $checked)"),
+        (field_id("key"), "(local.get $key)"),
+        (field_id("status"), "(local.get $status)"),
     ];
     fields.sort_by_key(|f| f.0);
-    let mut event = String::from("(local.set $w (call $obj (i32.const 3) (i32.const 4) (i32.const 64)))");
+    let mut stores = String::new();
     for (i, (id, v)) in fields.iter().enumerate() {
         let _ = write!(
-            event,
+            stores,
             " (i64.store offset={} (local.get $w) (i64.const {id})) (i64.store offset={} (local.get $w) {v})",
             8 + 16 * i,
             16 + 16 * i
         );
     }
-    let handle = if update.is_empty() {
-        // No `update`: the event is lifted, so its buffers are freed, and
-        // dropped.
+    let _ = write!(
+        x,
+        r#"  (func $event_new (param $kind i64) (param $value i64) (param $checked i64) (param $key i64) (param $status i64) (result i64)
+    (local $w i32)
+    (local.set $w (call $obj (i32.const 3) (i32.const 5) (i32.const 80))){stores}
+    (i64.extend_i32_u (local.get $w)))
+  (func $lit_owned (param $s i64) (result i64)
+    (call $dup (local.get $s)))
+"#
+    );
+    // Run `update` on one element and perform the effects it returns.
+    let dispatch = if update.is_empty() {
         "    (call $drop (local.get $handler))\n    (call $drop (local.get $event))".to_string()
     } else {
         format!(
@@ -473,34 +497,43 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     (i64.store (call $slot (local.get $id)) (i64.const 2))
     (local.set $r {update})
     (i64.store (call $slot (local.get $id)) (call $rec_get (local.get $r) (i64.const {model})))
-    (local.set $emits (call $rec_get (local.get $r) (i64.const {emit})))
+    (local.set $effects (call $rec_get (local.get $r) (i64.const {effects})))
     (call $drop (local.get $r))
-    (local.set $n (call $len (local.get $emits)))
+    (local.set $n (call $len (local.get $effects)))
     (block $done (loop $next
       (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
-      (local.set $e (call $ptr (call $list_get (local.get $emits) (local.get $i))))
-      (call $host_emit (local.get $id)
-        (call $str_data (i64.load offset=8 (local.get $e))) (call $len (i64.load offset=8 (local.get $e)))
-        (call $str_data (i64.load offset=16 (local.get $e))) (call $len (i64.load offset=16 (local.get $e))))
+      (local.set $e (call $ptr (call $list_get (local.get $effects) (local.get $i))))
+      ;; A custom event goes out through the host; a fetch waits for the
+      ;; `wasi:http/client` glue.
+      (if (i32.eq (i32.load (local.get $e)) (i32.const 7))
+        (then
+          (call $host_emit (local.get $id)
+            (call $str_data (i64.load offset=8 (local.get $e))) (call $len (i64.load offset=8 (local.get $e)))
+            (call $str_data (i64.load offset=16 (local.get $e))) (call $len (i64.load offset=16 (local.get $e))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $next)))
-    (call $drop (local.get $emits))"#,
+    (call $drop (local.get $effects))"#,
             model = field_id("model"),
-            emit = field_id("emit"),
+            effects = field_id("effects"),
         )
     };
     let _ = write!(
         x,
-        r#"  (func (export "{iface}#handle-event") (param $id i32) (param $hp i32) (param $hn i32)
+        r#"  (func $dispatch (param $id i32) (param $handler i64) (param $event i64)
+    (local $model i64) (local $r i64) (local $effects i64) (local $n i32) (local $i i32) (local $e i32)
+{dispatch})
+  (func (export "{iface}#handle-event") (param $id i32) (param $hp i32) (param $hn i32)
     (param $kp i32) (param $kn i32) (param $vd i32) (param $vp i32) (param $vn i32)
     (param $cd i32) (param $cv i32) (param $yd i32) (param $yp i32) (param $yn i32)
-    (local $handler i64) (local $event i64) (local $model i64) (local $r i64) (local $emits i64) (local $w i32)
-    (local $n i32) (local $i i32) (local $e i32)
     (call $release)
-    (local.set $handler (call $arg_str (local.get $hp) (local.get $hn)))
-    {event}
-    (local.set $event (i64.extend_i32_u (local.get $w)))
-{handle})"#
+    (call $dispatch (local.get $id)
+      (call $arg_str (local.get $hp) (local.get $hn))
+      (call $event_new
+        (call $arg_str (local.get $kp) (local.get $kn))
+        (call $opt_str (local.get $vd) (local.get $vp) (local.get $vn))
+        (if (result i64) (local.get $cd) (then (call $bool (local.get $cv))) (else (i64.const 2)))
+        (call $opt_str (local.get $yd) (local.get $yp) (local.get $yn))
+        (i64.const 2))))"#
     );
     b.add_func(x);
     // For tests: how many blocks are allocated and not yet freed.

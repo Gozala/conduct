@@ -240,12 +240,25 @@ fn contract_violations_are_type_errors() {
     let mut cb = Codebase::new();
     cb.add_source(
         "(defn init [a] {:n 0})
-         (defn update [m handler e a] {:model 1 :emit []})
+         (defn update [m handler e a] {:model 1 :effects []})
          (defn view [m a] (h \"p\" {} [(:n m)]))",
     )
     .unwrap();
     let err = element::check(&cb).err().unwrap().to_string();
     assert!(err.contains("does not fit"), "{err}");
+}
+
+const TODO_APP: &str = include_str!("../examples/todo-app.cdt");
+
+/// `<todo-app>`'s model flows back into its own updates, which once sent
+/// the contract check around a cycle forever. Its logic is tested in
+/// `app_logic.rs`; here it builds and renders its spinner on the polyfill.
+#[tokio::test(flavor = "current_thread")]
+async fn todo_app_builds_and_renders() {
+    let mut el = Element::load(TODO_APP).await;
+    let id = el.create(&[("filter", "")]).await;
+    let page = el.render(id).await;
+    assert!(page.contains("spinner"), "{page}");
 }
 
 const TODO_INPUT: &str = include_str!("../examples/todo-input.cdt");

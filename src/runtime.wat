@@ -19,6 +19,7 @@
   ;;              then the free variables
   ;;   6 view     4, then tag, attributes, children, events
   ;;   7 emit     2, then name, detail
+  ;;   8 fetch    4, then method, url, body, handler
   ;;
   ;; Memory is reference counted, after Perceus: every block has an
   ;; 8-byte prefix, its reference count then its size class, just before
@@ -160,7 +161,7 @@
       (then (call $drop_values (i32.add (local.get $p) (i32.const 8)) (i32.shl (local.get $n) (i32.const 1)))))
     (if (i32.eq (local.get $k) (i32.const 5))
       (then (call $drop_values (i32.add (local.get $p) (i32.const 16)) (local.get $n))))
-    (if (i32.or (i32.eq (local.get $k) (i32.const 6)) (i32.eq (local.get $k) (i32.const 7)))
+    (if (i32.or (i32.or (i32.eq (local.get $k) (i32.const 6)) (i32.eq (local.get $k) (i32.const 7))) (i32.eq (local.get $k) (i32.const 8)))
       (then (call $drop_values (i32.add (local.get $p) (i32.const 8)) (local.get $n))))
     (call $free (local.get $p)))
 
@@ -582,3 +583,369 @@
     (i64.store offset=8 (local.get $p) (call $dup (local.get $name)))
     (i64.store offset=16 (local.get $p) (call $dup (local.get $detail)))
     (i64.extend_i32_u (local.get $p)))
+
+  (func $fetch_new (param $method i64) (param $url i64) (param $body i64) (param $handler i64) (result i64)
+    (local $p i32)
+    (local.set $p (call $obj (i32.const 8) (i32.const 4) (i32.const 32)))
+    (i64.store offset=8 (local.get $p) (call $dup (local.get $method)))
+    (i64.store offset=16 (local.get $p) (call $dup (local.get $url)))
+    (i64.store offset=24 (local.get $p) (call $dup (local.get $body)))
+    (i64.store offset=32 (local.get $p) (call $dup (local.get $handler)))
+    (i64.extend_i32_u (local.get $p)))
+
+  ;; Splitting
+  (func $find_at (param $s i64) (param $sep i64) (param $from i32) (result i32)
+    ;; The byte index of the next `sep` in `s` at or after `from`, or -1.
+    (local $n i32) (local $m i32) (local $i i32)
+    (local.set $n (call $len (local.get $s)))
+    (local.set $m (call $len (local.get $sep)))
+    (local.set $i (local.get $from))
+    (block $done
+      (loop $next
+        (br_if $done (i32.gt_u (i32.add (local.get $i) (local.get $m)) (local.get $n)))
+        (if (call $bytes_eq (i32.add (call $str_data (local.get $s)) (local.get $i)) (call $str_data (local.get $sep)) (local.get $m))
+          (then (return (local.get $i))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))
+    (i32.const -1))
+  (func $str_split (param $s i64) (param $sep i64) (result i64)
+    (local $count i32) (local $at i32) (local $from i32) (local $p i32) (local $k i32) (local $m i32)
+    (local.set $m (call $len (local.get $sep)))
+    (if (i32.eqz (local.get $m))
+      (then
+        (local.set $p (call $list_new (i32.const 1)))
+        (call $list_set (local.get $p) (i32.const 0) (call $dup (local.get $s)))
+        (return (i64.extend_i32_u (local.get $p)))))
+    (local.set $count (i32.const 1))
+    (block $done
+      (loop $next
+        (local.set $at (call $find_at (local.get $s) (local.get $sep) (local.get $from)))
+        (br_if $done (i32.lt_s (local.get $at) (i32.const 0)))
+        (local.set $count (i32.add (local.get $count) (i32.const 1)))
+        (local.set $from (i32.add (local.get $at) (local.get $m)))
+        (br $next)))
+    (local.set $p (call $list_new (local.get $count)))
+    (local.set $from (i32.const 0))
+    (block $done
+      (loop $next
+        (local.set $at (call $find_at (local.get $s) (local.get $sep) (local.get $from)))
+        (if (i32.lt_s (local.get $at) (i32.const 0)) (then (local.set $at (call $len (local.get $s)))))
+        (call $list_set (local.get $p) (local.get $k)
+          (call $str_new (i32.add (call $str_data (local.get $s)) (local.get $from)) (i32.sub (local.get $at) (local.get $from))))
+        (local.set $k (i32.add (local.get $k) (i32.const 1)))
+        (br_if $done (i32.ge_u (local.get $k) (local.get $count)))
+        (local.set $from (i32.add (local.get $at) (local.get $m)))
+        (br $next)))
+    (i64.extend_i32_u (local.get $p)))
+
+  ;; JSON. Parsed values are ordinary values: objects are dictionaries,
+  ;; arrays lists, numbers integers (a fraction or exponent is dropped),
+  ;; `null` nil. A malformed document parses to nil.
+  (global $jp (mut i32) (i32.const 0))
+  (global $je (mut i32) (i32.const 0))
+  (global $jerr (mut i32) (i32.const 0))
+  (func $j_peek (result i32)
+    (if (result i32) (i32.lt_u (global.get $jp) (global.get $je))
+      (then (i32.load8_u (global.get $jp)))
+      (else (i32.const -1))))
+  (func $j_ws
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (global.get $jp) (global.get $je)))
+        (br_if $done (i32.eqz (call $is_space (i32.load8_u (global.get $jp)))))
+        (global.set $jp (i32.add (global.get $jp) (i32.const 1)))
+        (br $next))))
+  (func $j_fail (result i64)
+    (global.set $jerr (i32.const 1))
+    (i64.const 0x02))
+  (func $j_expect (param $text i32) (param $n i32) (result i32)
+    ;; Consume the literal `text` (n bytes of runtime data) if it is next.
+    (if (i32.gt_u (i32.add (global.get $jp) (local.get $n)) (global.get $je)) (then (return (i32.const 0))))
+    (if (i32.eqz (call $bytes_eq (global.get $jp) (i32.add (global.get $rtdata) (local.get $text)) (local.get $n)))
+      (then (return (i32.const 0))))
+    (global.set $jp (i32.add (global.get $jp) (local.get $n)))
+    (i32.const 1))
+  (func $j_hex (result i32)
+    ;; Four hex digits as a number, or -1.
+    (local $i i32) (local $c i32) (local $v i32)
+    (if (i32.gt_u (i32.add (global.get $jp) (i32.const 4)) (global.get $je)) (then (return (i32.const -1))))
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (i32.const 4)))
+        (local.set $c (i32.load8_u (i32.add (global.get $jp) (local.get $i))))
+        (local.set $v (i32.shl (local.get $v) (i32.const 4)))
+        (if (i32.and (i32.ge_u (local.get $c) (i32.const 48)) (i32.le_u (local.get $c) (i32.const 57)))
+          (then (local.set $v (i32.or (local.get $v) (i32.sub (local.get $c) (i32.const 48)))))
+          (else
+            (local.set $c (i32.or (local.get $c) (i32.const 32)))
+            (if (i32.and (i32.ge_u (local.get $c) (i32.const 97)) (i32.le_u (local.get $c) (i32.const 102)))
+              (then (local.set $v (i32.or (local.get $v) (i32.sub (local.get $c) (i32.const 87)))))
+              (else (return (i32.const -1))))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))
+    (global.set $jp (i32.add (global.get $jp) (i32.const 4)))
+    (local.get $v))
+  (func $utf8 (param $at i32) (param $c i32) (result i32)
+    ;; Encode code point `c` at `at`, returning the bytes written.
+    (if (i32.lt_u (local.get $c) (i32.const 0x80))
+      (then (i32.store8 (local.get $at) (local.get $c)) (return (i32.const 1))))
+    (if (i32.lt_u (local.get $c) (i32.const 0x800))
+      (then
+        (i32.store8 (local.get $at) (i32.or (i32.const 0xc0) (i32.shr_u (local.get $c) (i32.const 6))))
+        (i32.store8 offset=1 (local.get $at) (i32.or (i32.const 0x80) (i32.and (local.get $c) (i32.const 0x3f))))
+        (return (i32.const 2))))
+    (if (i32.lt_u (local.get $c) (i32.const 0x10000))
+      (then
+        (i32.store8 (local.get $at) (i32.or (i32.const 0xe0) (i32.shr_u (local.get $c) (i32.const 12))))
+        (i32.store8 offset=1 (local.get $at) (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $c) (i32.const 6)) (i32.const 0x3f))))
+        (i32.store8 offset=2 (local.get $at) (i32.or (i32.const 0x80) (i32.and (local.get $c) (i32.const 0x3f))))
+        (return (i32.const 3))))
+    (i32.store8 (local.get $at) (i32.or (i32.const 0xf0) (i32.shr_u (local.get $c) (i32.const 18))))
+    (i32.store8 offset=1 (local.get $at) (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $c) (i32.const 12)) (i32.const 0x3f))))
+    (i32.store8 offset=2 (local.get $at) (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $c) (i32.const 6)) (i32.const 0x3f))))
+    (i32.store8 offset=3 (local.get $at) (i32.or (i32.const 0x80) (i32.and (local.get $c) (i32.const 0x3f))))
+    (i32.const 4))
+  (func $j_string (result i64)
+    ;; At an opening quote. A decoded string is never longer than its
+    ;; source, so the rest of the document bounds the buffer.
+    (local $buf i32) (local $n i32) (local $c i32) (local $u i32) (local $lo i32) (local $out i64)
+    (global.set $jp (i32.add (global.get $jp) (i32.const 1)))
+    (local.set $buf (call $alloc (i32.sub (global.get $je) (global.get $jp))))
+    (block $done
+      (loop $next
+        (if (i32.ge_u (global.get $jp) (global.get $je))
+          (then (call $free (local.get $buf)) (return (call $j_fail))))
+        (local.set $c (i32.load8_u (global.get $jp)))
+        (global.set $jp (i32.add (global.get $jp) (i32.const 1)))
+        (br_if $done (i32.eq (local.get $c) (i32.const 34)))
+        (if (i32.eq (local.get $c) (i32.const 92))
+          (then
+            (local.set $c (call $j_peek))
+            (global.set $jp (i32.add (global.get $jp) (i32.const 1)))
+            (if (i32.eq (local.get $c) (i32.const 110)) (then (local.set $c (i32.const 10))))
+            (if (i32.eq (local.get $c) (i32.const 116)) (then (local.set $c (i32.const 9))))
+            (if (i32.eq (local.get $c) (i32.const 114)) (then (local.set $c (i32.const 13))))
+            (if (i32.eq (local.get $c) (i32.const 98)) (then (local.set $c (i32.const 8))))
+            (if (i32.eq (local.get $c) (i32.const 102)) (then (local.set $c (i32.const 12))))
+            (if (i32.eq (local.get $c) (i32.const 117))
+              (then
+                (local.set $u (call $j_hex))
+                (if (i32.lt_s (local.get $u) (i32.const 0))
+                  (then (call $free (local.get $buf)) (return (call $j_fail))))
+                ;; A high surrogate pairs with the low one after it.
+                (if (i32.and (i32.ge_u (local.get $u) (i32.const 0xd800)) (i32.le_u (local.get $u) (i32.const 0xdbff)))
+                  (then
+                    (if (call $j_expect (i32.const 28) (i32.const 2))
+                      (then
+                        (local.set $lo (call $j_hex))
+                        (if (i32.and (i32.ge_s (local.get $lo) (i32.const 0xdc00)) (i32.le_s (local.get $lo) (i32.const 0xdfff)))
+                          (then (local.set $u (i32.add (i32.const 0x10000)
+                            (i32.or (i32.shl (i32.sub (local.get $u) (i32.const 0xd800)) (i32.const 10))
+                                    (i32.sub (local.get $lo) (i32.const 0xdc00)))))))))))
+                (local.set $n (i32.add (local.get $n) (call $utf8 (i32.add (local.get $buf) (local.get $n)) (local.get $u))))
+                (br $next)))))
+        (i32.store8 (i32.add (local.get $buf) (local.get $n)) (local.get $c))
+        (local.set $n (i32.add (local.get $n) (i32.const 1)))
+        (br $next)))
+    (local.set $out (call $str_new (local.get $buf) (local.get $n)))
+    (call $free (local.get $buf))
+    (local.get $out))
+  (func $j_number (result i64)
+    (local $neg i32) (local $n i64) (local $c i32) (local $any i32)
+    (if (i32.eq (call $j_peek) (i32.const 45))
+      (then (local.set $neg (i32.const 1)) (global.set $jp (i32.add (global.get $jp) (i32.const 1)))))
+    (block $done
+      (loop $next
+        (local.set $c (call $j_peek))
+        (br_if $done (i32.or (i32.lt_s (local.get $c) (i32.const 48)) (i32.gt_s (local.get $c) (i32.const 57))))
+        (local.set $n (i64.add (i64.mul (local.get $n) (i64.const 10)) (i64.extend_i32_u (i32.sub (local.get $c) (i32.const 48)))))
+        (local.set $any (i32.const 1))
+        (global.set $jp (i32.add (global.get $jp) (i32.const 1)))
+        (br $next)))
+    (if (i32.eqz (local.get $any)) (then (return (call $j_fail))))
+    ;; Skip a fraction and an exponent.
+    (block $done
+      (loop $next
+        (local.set $c (call $j_peek))
+        (br_if $done (i32.eqz (i32.or (i32.or (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
+          (i32.or (i32.eq (local.get $c) (i32.const 46)) (i32.eq (i32.or (local.get $c) (i32.const 32)) (i32.const 101))))
+          (i32.or (i32.eq (local.get $c) (i32.const 43)) (i32.eq (local.get $c) (i32.const 45))))))
+        (global.set $jp (i32.add (global.get $jp) (i32.const 1)))
+        (br $next)))
+    (if (local.get $neg) (then (local.set $n (i64.sub (i64.const 0) (local.get $n)))))
+    (i64.or (i64.shl (local.get $n) (i64.const 1)) (i64.const 1)))
+  (func $j_value (result i64)
+    (local $c i32) (local $acc i64) (local $next_acc i64) (local $key i64) (local $val i64)
+    (call $j_ws)
+    (local.set $c (call $j_peek))
+    (if (i32.eq (local.get $c) (i32.const 34)) (then (return (call $j_string))))
+    (if (i32.eq (local.get $c) (i32.const 123))
+      (then
+        (global.set $jp (i32.add (global.get $jp) (i32.const 1)))
+        (local.set $acc (i64.extend_i32_u (call $dict_new (i32.const 0))))
+        (call $j_ws)
+        (if (i32.eq (call $j_peek) (i32.const 125))
+          (then (global.set $jp (i32.add (global.get $jp) (i32.const 1))) (return (local.get $acc))))
+        (block $done
+          (loop $next
+            (call $j_ws)
+            (if (i32.ne (call $j_peek) (i32.const 34)) (then (call $drop (local.get $acc)) (return (call $j_fail))))
+            (local.set $key (call $j_string))
+            (call $j_ws)
+            (if (i32.or (global.get $jerr) (i32.eqz (call $j_expect (i32.const 25) (i32.const 1))))
+              (then (call $drop (local.get $key)) (call $drop (local.get $acc)) (return (call $j_fail))))
+            (local.set $val (call $j_value))
+            (if (global.get $jerr)
+              (then (call $drop (local.get $key)) (call $drop (local.get $val)) (call $drop (local.get $acc)) (return (i64.const 0x02))))
+            (local.set $next_acc (call $dict_assoc (local.get $acc) (local.get $key) (local.get $val)))
+            (call $drop (local.get $acc))
+            (call $drop (local.get $key))
+            (call $drop (local.get $val))
+            (local.set $acc (local.get $next_acc))
+            (call $j_ws)
+            (br_if $next (call $j_expect (i32.const 26) (i32.const 1)))
+            (br_if $done (call $j_expect (i32.const 24) (i32.const 1)))
+            (call $drop (local.get $acc))
+            (return (call $j_fail))))
+        (return (local.get $acc))))
+    (if (i32.eq (local.get $c) (i32.const 91))
+      (then
+        (global.set $jp (i32.add (global.get $jp) (i32.const 1)))
+        (local.set $acc (i64.extend_i32_u (call $list_new (i32.const 0))))
+        (call $j_ws)
+        (if (i32.eq (call $j_peek) (i32.const 93))
+          (then (global.set $jp (i32.add (global.get $jp) (i32.const 1))) (return (local.get $acc))))
+        (block $done
+          (loop $next
+            (local.set $val (call $j_value))
+            (if (global.get $jerr) (then (call $drop (local.get $val)) (call $drop (local.get $acc)) (return (i64.const 0x02))))
+            (local.set $next_acc (call $conj (local.get $acc) (local.get $val)))
+            (call $drop (local.get $acc))
+            (call $drop (local.get $val))
+            (local.set $acc (local.get $next_acc))
+            (call $j_ws)
+            (br_if $next (call $j_expect (i32.const 26) (i32.const 1)))
+            (br_if $done (call $j_expect (i32.const 10) (i32.const 1)))
+            (call $drop (local.get $acc))
+            (return (call $j_fail))))
+        (return (local.get $acc))))
+    (if (call $j_expect (i32.const 0) (i32.const 4)) (then (return (i64.const 0x12))))
+    (if (call $j_expect (i32.const 4) (i32.const 5)) (then (return (i64.const 0x0a))))
+    (if (call $j_expect (i32.const 19) (i32.const 4)) (then (return (i64.const 0x02))))
+    (if (i32.or (i32.eq (local.get $c) (i32.const 45)) (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57))))
+      (then (return (call $j_number))))
+    (call $j_fail))
+  (func $json_parse (param $s i64) (result i64)
+    (local $v i64)
+    (global.set $jp (call $str_data (local.get $s)))
+    (global.set $je (i32.add (global.get $jp) (call $len (local.get $s))))
+    (global.set $jerr (i32.const 0))
+    (local.set $v (call $j_value))
+    (call $j_ws)
+    (if (i32.or (global.get $jerr) (i32.lt_u (global.get $jp) (global.get $je)))
+      (then (call $drop (local.get $v)) (return (i64.const 0x02))))
+    (local.get $v))
+
+  (func $json_quote (param $s i64) (result i64)
+    ;; `s` as a JSON string literal.
+    (local $n i32) (local $i i32) (local $c i32) (local $size i32) (local $p i32) (local $at i32) (local $src i32)
+    (local.set $n (call $len (local.get $s)))
+    (local.set $src (call $str_data (local.get $s)))
+    (local.set $size (i32.const 2))
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (local.set $c (i32.load8_u (i32.add (local.get $src) (local.get $i))))
+        (local.set $size (i32.add (local.get $size)
+          (if (result i32) (i32.or (i32.eq (local.get $c) (i32.const 34)) (i32.eq (local.get $c) (i32.const 92)))
+            (then (i32.const 2))
+            (else (if (result i32) (i32.lt_u (local.get $c) (i32.const 32)) (then (i32.const 6)) (else (i32.const 1)))))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))
+    (local.set $p (call $obj (i32.const 1) (local.get $size) (local.get $size)))
+    (local.set $at (i32.add (local.get $p) (i32.const 8)))
+    (i32.store8 (local.get $at) (i32.const 34))
+    (local.set $at (i32.add (local.get $at) (i32.const 1)))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (local.set $c (i32.load8_u (i32.add (local.get $src) (local.get $i))))
+        (if (i32.or (i32.eq (local.get $c) (i32.const 34)) (i32.eq (local.get $c) (i32.const 92)))
+          (then
+            (i32.store8 (local.get $at) (i32.const 92))
+            (i32.store8 offset=1 (local.get $at) (local.get $c))
+            (local.set $at (i32.add (local.get $at) (i32.const 2))))
+          (else
+            (if (i32.lt_u (local.get $c) (i32.const 32))
+              (then
+                ;; \u00XX
+                (i32.store8 (local.get $at) (i32.const 92))
+                (i32.store8 offset=1 (local.get $at) (i32.const 117))
+                (i32.store8 offset=2 (local.get $at) (i32.const 48))
+                (i32.store8 offset=3 (local.get $at) (i32.const 48))
+                (i32.store8 offset=4 (local.get $at) (i32.add (i32.const 48) (i32.shr_u (local.get $c) (i32.const 4))))
+                (i32.store8 offset=5 (local.get $at)
+                  (i32.add (i32.and (local.get $c) (i32.const 15))
+                    (select (i32.const 87) (i32.const 48) (i32.gt_u (i32.and (local.get $c) (i32.const 15)) (i32.const 9)))))
+                (local.set $at (i32.add (local.get $at) (i32.const 6))))
+              (else
+                (i32.store8 (local.get $at) (local.get $c))
+                (local.set $at (i32.add (local.get $at) (i32.const 1)))))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))
+    (i32.store8 (local.get $at) (i32.const 34))
+    (i64.extend_i32_u (local.get $p)))
+  (func $json_encode (param $v i64) (result i64)
+    ;; Dictionaries become objects, lists arrays; a record or anything
+    ;; else without a JSON form becomes null, since records carry field
+    ;; ids, not names.
+    (local $k i32) (local $i i32) (local $n i32) (local $out i64)
+    (if (i64.eq (i64.and (local.get $v) (i64.const 1)) (i64.const 1)) (then (return (call $int_to_str (local.get $v)))))
+    (if (i64.eq (local.get $v) (i64.const 0x12)) (then (return (call $lit (i32.const 0) (i32.const 4)))))
+    (if (i64.eq (local.get $v) (i64.const 0x0a)) (then (return (call $lit (i32.const 4) (i32.const 5)))))
+    (local.set $k (call $kind (local.get $v)))
+    (if (i32.eq (local.get $k) (i32.const 1)) (then (return (call $json_quote (local.get $v)))))
+    (if (i32.eq (local.get $k) (i32.const 2))
+      (then
+        (local.set $out (call $lit (i32.const 9) (i32.const 1)))
+        (local.set $n (call $len (local.get $v)))
+        (block $done
+          (loop $next
+            (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+            (if (local.get $i) (then (local.set $out (call $concat_owned (local.get $out) (call $lit (i32.const 26) (i32.const 1))))))
+            (local.set $out (call $concat_owned (local.get $out) (call $json_encode (call $list_get (local.get $v) (local.get $i)))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $next)))
+        (return (call $concat_owned (local.get $out) (call $lit (i32.const 10) (i32.const 1))))))
+    (if (i32.eq (local.get $k) (i32.const 4))
+      (then
+        (local.set $out (call $lit (i32.const 23) (i32.const 1)))
+        (local.set $n (call $len (local.get $v)))
+        (block $done
+          (loop $next
+            (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+            (if (local.get $i) (then (local.set $out (call $concat_owned (local.get $out) (call $lit (i32.const 26) (i32.const 1))))))
+            (local.set $out (call $concat_owned (local.get $out) (call $json_quote (call $dict_key (local.get $v) (local.get $i)))))
+            (local.set $out (call $concat_owned (local.get $out) (call $lit (i32.const 25) (i32.const 1))))
+            (local.set $out (call $concat_owned (local.get $out) (call $json_encode (call $dict_val (local.get $v) (local.get $i)))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $next)))
+        (return (call $concat_owned (local.get $out) (call $lit (i32.const 24) (i32.const 1))))))
+    (call $lit (i32.const 19) (i32.const 4)))
+  (func $json_get (param $j i64) (param $key i64) (result i64)
+    (if (result i64) (i32.eq (call $kind (local.get $j)) (i32.const 4))
+      (then (call $dict_get (local.get $j) (local.get $key)))
+      (else (i64.const 0x02))))
+  (func $json_items (param $j i64) (result i64)
+    (if (result i64) (i32.eq (call $kind (local.get $j)) (i32.const 2))
+      (then (call $dup (local.get $j)))
+      (else (i64.extend_i32_u (call $list_new (i32.const 0))))))
+  (func $json_str (param $j i64) (result i64)
+    (if (result i64) (i32.eq (call $kind (local.get $j)) (i32.const 1))
+      (then (call $dup (local.get $j)))
+      (else (call $lit (i32.const 0) (i32.const 0)))))
+  (func $json_int (param $j i64) (result i64)
+    (select (local.get $j) (i64.const 1) (i64.eq (i64.and (local.get $j) (i64.const 1)) (i64.const 1))))
+  (func $json_bool (param $j i64) (result i64)
+    (call $bool (i64.eq (local.get $j) (i64.const 0x12))))

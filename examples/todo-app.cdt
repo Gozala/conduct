@@ -1,0 +1,291 @@
+;; <todo-app>: the TodoMVC application. It owns the list: it is the one
+;; element that calls the API, and it passes the todos to its children
+;; as attributes. A child reports what a person did with a custom event,
+;; and this element calls a route and renders again with the new list.
+;; Its `filter` attribute holds the filter, which the page sets from the
+;; URL hash.
+;;
+;; The page shows a spinner inside this element while it compiles the
+;; elements, and the element keeps showing it, through a slot, until the
+;; list has loaded. Then the element reveals the list: it lays the list
+;; out out of sight to learn its height, and then, at once, grows or
+;; shrinks its frame to that height, fades the spinner out as it rises,
+;; and fades the list in as it rises into place.
+;;
+;; The Zena version awaits each request in its handler. Here `update`
+;; returns a `fetch` effect naming the handler its response comes back
+;; to: a change goes out under "changed", and "changed" asks for the
+;; list again under "loaded".
+
+(def attributes ["filter"])
+
+(def styles "
+      :host {
+        display: block;
+        max-width: 560px;
+        margin: 0 auto;
+      }
+      .frame {
+        position: relative;
+        transition: height 450ms cubic-bezier(0.2, 0, 0, 1);
+      }
+      .frame[data-phase=\"measuring\"] {
+        height: 240px;
+      }
+      .spinner {
+        position: absolute;
+        top: 0;
+        right: 0;
+        left: 0;
+        height: 240px;
+        transition: opacity 450ms cubic-bezier(0.2, 0, 0, 1), transform 450ms cubic-bezier(0.2, 0, 0, 1);
+      }
+      .frame[data-phase=\"revealing\"] .spinner {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      .content {
+        transition: opacity 450ms cubic-bezier(0.2, 0, 0, 1), transform 450ms cubic-bezier(0.2, 0, 0, 1);
+      }
+      .frame:not([data-phase=\"shown\"]) .content {
+        position: absolute;
+        top: 0;
+        right: 0;
+        left: 0;
+      }
+      .frame[data-phase=\"measuring\"] .content {
+        opacity: 0;
+        transform: translateY(10px);
+        pointer-events: none;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .frame,
+        .spinner,
+        .content {
+          transition-duration: 1ms;
+        }
+        .about {
+          animation: none;
+        }
+      }
+      .todoapp {
+        background: var(--md-sys-color-surface-container-low);
+        border-radius: var(--md-sys-shape-corner-extra-large);
+        box-shadow: var(--md-sys-elevation-2);
+        overflow: hidden;
+      }
+      h1 {
+        margin: 0;
+        padding: 28px 24px 8px;
+        font: var(--md-sys-typescale-display-small);
+        color: var(--md-sys-color-primary);
+        letter-spacing: 0;
+      }
+      .todo-list {
+        list-style: none;
+        margin: 0;
+        padding: 0 8px 8px;
+      }
+      .info {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        padding: 24px 0 0;
+        color: var(--md-sys-color-on-surface-variant);
+        font: var(--md-sys-typescale-body-medium);
+      }
+      .about-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
+        padding: 0 14px 0 10px;
+        border: 1px solid var(--md-sys-color-outline-variant);
+        border-radius: var(--md-sys-shape-corner-full);
+        background: transparent;
+        color: var(--md-sys-color-on-surface-variant);
+        font: var(--md-sys-typescale-label-large);
+        cursor: pointer;
+      }
+      .about-toggle:hover,
+      .about-toggle[aria-expanded=\"true\"] {
+        background: var(--md-sys-color-surface-container-high);
+        color: var(--md-sys-color-on-surface);
+      }
+      .about-toggle .icon {
+        display: inline-grid;
+        place-items: center;
+        width: 18px;
+        height: 18px;
+        border: 1.5px solid currentColor;
+        border-radius: 50%;
+        font: 700 11px / 1 var(--md-ref-typeface);
+      }
+      .about {
+        padding: 0 8px;
+        animation: about-in 450ms cubic-bezier(0.2, 0, 0, 1);
+      }
+      .about p {
+        margin: 0 0 12px;
+      }
+      .about p:last-child {
+        margin: 0;
+      }
+      .about a {
+        color: var(--md-sys-color-primary);
+      }
+      @keyframes about-in {
+        from {
+          opacity: 0;
+          transform: translateY(-6px);
+        }
+      }
+    ")
+
+(defn attr [attrs name] (?? (get attrs name) ""))
+
+(defn filter-of [attrs]
+  (let [f (attr attrs "filter")] (if (= f "") "all" f)))
+
+(defn init [attrs]
+  {:todos [] :active 0 :completed 0 :phase "measuring" :height "" :about false})
+
+;; Requests
+
+(defn load [attrs]
+  (fetch "GET" (str "/api/todos?filter=" (filter-of attrs)) "" "loaded"))
+
+(defn change [method path body]
+  (fetch method path body "changed"))
+
+(defn todo-of [j]
+  {:id (json-str (json-get j "id"))
+   :title (json-str (json-get j "title"))
+   :completed (json-bool (json-get j "completed"))})
+
+(defn loaded [model body]
+  (let [doc (parse-json body)
+        counts (json-get doc "counts")]
+    (assoc (assoc (assoc model :todos (map todo-of (json-items (json-get doc "todos"))))
+                  :active (json-int (json-get counts "active")))
+           :completed (json-int (json-get counts "completed")))))
+
+(defn find-todo [model id]
+  (first (filter (fn [todo] (= (:id todo) id)) (:todos model))))
+
+(defn edit [value]
+  ;; The detail is the id, a newline, and the new title. An edit to an
+  ;; empty title deletes the todo.
+  (let [parts (split value "\n")
+        id (?? (first parts) "")
+        title (trim (?? (first (rest parts)) ""))]
+    (if (= title "")
+      (change "DELETE" (str "/api/todos/" id) "")
+      (change "PATCH" (str "/api/todos/" id) (to-json {"title" title})))))
+
+(defn with [model effects] {:model model :effects effects})
+
+(defn update [model handler event attrs]
+  (let [value (?? (:value event) "")]
+    (cond
+      ;; Loading the list.
+      (= handler "connected") (with model [(load attrs)])
+      (and (= handler "attribute-changed") (= value "filter")) (with model [(load attrs)])
+      (= handler "loaded") (with (loaded model value) [])
+      (= handler "changed") (with model [(load attrs)])
+      ;; The steps of the reveal, which call no route.
+      (= handler "measured")
+        (with (assoc (assoc model :height value)
+                     :phase (if (= (:phase model) "measuring") "revealing" (:phase model)))
+              [])
+      (= handler "revealed")
+        (with (assoc model :phase (if (= (:phase model) "revealing") "shown" (:phase model))) [])
+      (= handler "about") (with (assoc model :about (not (:about model))) [])
+      ;; What a person did.
+      (= handler "add") (with model [(change "POST" "/api/todos" (to-json {"title" value}))])
+      (= handler "toggleAll")
+        (with model [(change "PATCH" "/api/todos" (to-json {"completed" (= value "true")}))])
+      (= handler "toggle")
+        (if-some [todo (find-todo model value)]
+          (with model [(change "PATCH" (str "/api/todos/" (:id todo))
+                               (to-json {"completed" (not (:completed todo))}))])
+          (with model []))
+      (= handler "destroy") (with model [(change "DELETE" (str "/api/todos/" value) "")])
+      (= handler "edit") (with model [(edit value)])
+      (= handler "clear") (with model [(change "DELETE" "/api/todos" "")])
+      :else (with model []))))
+
+;; The view
+
+(defn link [href label]
+  (h "a" {"href" href "target" "_blank" "rel" "noopener"} [label]))
+
+(defn paragraph [words] (h "p" {} words))
+
+(def about
+  [(paragraph
+     ["This app demonstrates some of the potential of the "
+      (link "https://component-model.bytecodealliance.org/" "Wasm Component Model")
+      ". It has not shipped in web browsers, but you can use it today via the "
+      (link "https://github.com/dialog-db/wasm-component-model-polyfill" "Wasm Component Model Polyfill")
+      "."])
+   (paragraph
+     ["The site consists of a Rust app shell and a Rust service worker, shipped as two Wasm core modules with a "
+      (link "https://wasm-bindgen.github.io/wasm-bindgen/" "wasm-bindgen")
+      " JS shim. The shell defines a closed set of custom elements and the service worker a closed set of routes. Each element is implemented in a "
+      (link "https://github.com/Gozala/conduct" "conduct")
+      " source file."])
+   (paragraph
+     ["conduct compiles each element to a Wasm component: pure definitions, stored by hash, with every type inferred."])])
+
+(defn info [model]
+  (h "div" {"class" "info"}
+    [(h "button" {"type" "button"
+                  "class" "about-toggle"
+                  "aria-expanded" (if (:about model) "true" "false")
+                  "aria-controls" "about"}
+        [(h "span" {"class" "icon" "aria-hidden" "true"} ["i"]) "About this demo"]
+        {"click" "about"})
+     (if (:about model) (h "div" {"id" "about" "class" "about"} about) nil)]))
+
+(defn item [todo]
+  (h "todo-item" {"key" (:id todo)
+                  "todo-id" (:id todo)
+                  "title" (:title todo)
+                  "completed" (if (:completed todo) "true" "false")}
+     []
+     {"todo-toggle" "toggle" "todo-destroy" "destroy" "todo-edit" "edit"}))
+
+(defn frame-attrs [model]
+  (let [base {"class" "frame" "data-phase" (:phase model)}]
+    (if (= (:phase model) "revealing")
+      (assoc base "style" (str "height: " (:height model) "px"))
+      base)))
+
+(defn view [model attrs]
+  (let [total (+ (:active model) (:completed model))
+        header (h "header" {"class" "header"}
+                 [(h "h1" {} ["todos"])
+                  (h "todo-input" {"has-todos" (if (> total 0) "true" "false")
+                                   "all-completed" (if (and (> total 0) (= (:active model) 0)) "true" "false")}
+                     []
+                     {"todo-add" "add" "todo-toggle-all" "toggleAll"})])
+        main (if (> total 0)
+               [(h "section" {"class" "main"} [(h "ul" {"class" "todo-list"} (map item (:todos model)))])
+                (h "todo-footer" {"active" (str (:active model))
+                                  "completed" (str (:completed model))
+                                  "filter" (filter-of attrs)}
+                   []
+                   {"todo-clear" "clear"})]
+               [])
+        list (h "section" {"class" "todoapp"} [header main])
+        content [list (info model)]]
+    (if (= (:phase model) "shown")
+      (h "div" {"class" "frame" "data-phase" (:phase model)}
+        [(h "div" {"class" "content" "key" "content"} content)])
+      ;; The spinner is the page's, which the slot shows.
+      (h "div" (frame-attrs model)
+        [(h "div" {"class" "spinner" "key" "spinner"} [(h "slot")])
+         (h "div" {"class" "content" "key" "content"} content
+            {"resize" "measured" "transitionend" "revealed"})]))))

@@ -50,9 +50,10 @@ pub const KIND_DICT: u32 = 4;
 pub const KIND_CLOSURE: u32 = 5;
 pub const KIND_VIEW: u32 = 6;
 pub const KIND_EMIT: u32 = 7;
+pub const KIND_FETCH: u32 = 8;
 
 const RUNTIME: &str = include_str!("runtime.wat");
-const RUNTIME_DATA: &[u8] = b"truefalse[] <value>";
+const RUNTIME_DATA: &[u8] = b"truefalse[] <value>null{}:,\"\\u";
 /// Addresses below this hold scratch space: the canonical ABI return
 /// area at 0 and the allocator's free-list heads at 64.
 const STATIC_START: u32 = 1024;
@@ -790,6 +791,15 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::H => format!("(call $view_new {} {} {} {})", a[0], a[1], a[2], a[3]),
         Op::Emit => format!("(call $emit_new {} {})", a[0], a[1]),
         Op::Trim => format!("(call $str_trim {})", a[0]),
+        Op::Fetch => format!("(call $fetch_new {} {} {} {})", a[0], a[1], a[2], a[3]),
+        Op::Split => format!("(call $str_split {} {})", a[0], a[1]),
+        Op::ParseJson => format!("(call $json_parse {})", a[0]),
+        Op::ToJson => format!("(call $json_encode {})", a[0]),
+        Op::JsonGet => format!("(call $json_get {} {})", a[0], a[1]),
+        Op::JsonItems => format!("(call $json_items {})", a[0]),
+        Op::JsonStr => format!("(call $json_str {})", a[0]),
+        Op::JsonInt => format!("(call $json_int {})", a[0]),
+        Op::JsonBool => format!("(call $json_bool {})", a[0]),
     }
 }
 
@@ -888,6 +898,12 @@ pub enum Value {
         events: Vec<(String, Value)>,
     },
     Emit(String, String),
+    Fetch {
+        method: String,
+        url: String,
+        body: String,
+        handler: String,
+    },
 }
 
 /// Decode `v` by reading the module's memory.
@@ -935,6 +951,12 @@ pub fn decode(memory: &[u8], v: i64) -> Value {
             events: dict(i64_at(p + 32)),
         },
         KIND_EMIT => Value::Emit(str_of(i64_at(p + 8)), str_of(i64_at(p + 16))),
+        KIND_FETCH => Value::Fetch {
+            method: str_of(i64_at(p + 8)),
+            url: str_of(i64_at(p + 16)),
+            body: str_of(i64_at(p + 24)),
+            handler: str_of(i64_at(p + 32)),
+        },
         k => panic!("unknown object kind {k} at {p}"),
     }
 }

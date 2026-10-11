@@ -58,13 +58,13 @@
     (and (= handler "key") (= (:key event) "Enter"))
       (let [title (trim (?? (:value event) ""))]
         (if (= title "")
-          {:model model :emit []}
-          {:model (assoc model :clear true) :emit [(emit "todo-add" title)]}))
-    (= handler "key") {:model (assoc model :clear false) :emit []}
+          {:model model :effects []}
+          {:model (assoc model :clear true) :effects [(emit "todo-add" title)]}))
+    (= handler "key") {:model (assoc model :clear false) :effects []}
     (= handler "toggleAll")
       {:model model
-       :emit [(emit "todo-toggle-all" (if (= (:checked event) true) "true" "false"))]}
-    :else {:model model :emit []}))
+       :effects [(emit "todo-toggle-all" (if (= (:checked event) true) "true" "false"))]}
+    :else {:model model :effects []}))
 
 (defn field [model]
   (let [base {"class" "new-todo" "placeholder" "What needs to be done?" "autofocus" ""}]
