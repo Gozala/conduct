@@ -347,7 +347,7 @@ fn resolve(
             b(scrutinee, scope)?,
             clauses
                 .iter()
-                .map(|(p, r)| Ok((resolve(p, scope, lookup)?, resolve(r, scope, lookup)?)))
+                .map(|(p, r)| Ok((p.clone(), resolve(r, scope, lookup)?)))
                 .collect::<Result<_, ResolveError>>()?,
             match default {
                 Some(d) => Some(b(d, scope)?),

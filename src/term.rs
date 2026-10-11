@@ -224,9 +224,78 @@ pub enum Term {
     List(Vec<Term>),
     Prim(Op, Vec<Term>),
     Keyword(String),
-    /// The scrutinee, each clause's literal pattern and result, and the
-    /// `:else` result if there is one.
-    Match(Box<Term>, Vec<(Term, Term)>, Option<Box<Term>>),
+    /// The scrutinee, each clause's pattern and result, and the `:else`
+    /// result if there is one.
+    Match(Box<Term>, Vec<(Pattern, Term)>, Option<Box<Term>>),
+}
+
+/// What a `match` clause tests its value against.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pattern {
+    Keyword(String),
+    Str(String),
+    Int(i64),
+    /// The value is `nil`.
+    Nil,
+    /// The value is not `nil`: `some?`.
+    Some,
+    /// A record whose fields match their patterns, sorted by name.
+    Fields(Vec<(String, Pattern)>),
+}
+
+impl Pattern {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let text = |out: &mut Vec<u8>, s: &str| {
+            out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            out.extend_from_slice(s.as_bytes());
+        };
+        match self {
+            Pattern::Keyword(k) => {
+                out.push(0);
+                text(out, k);
+            }
+            Pattern::Str(s) => {
+                out.push(1);
+                text(out, s);
+            }
+            Pattern::Int(n) => {
+                out.push(2);
+                out.extend_from_slice(&n.to_le_bytes());
+            }
+            Pattern::Nil => out.push(3),
+            Pattern::Some => out.push(4),
+            Pattern::Fields(fields) => {
+                out.push(5);
+                out.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+                for (name, p) in fields {
+                    text(out, name);
+                    p.encode(out);
+                }
+            }
+        }
+    }
+
+    /// Whether these patterns, without `:else`, can cover every value
+    /// the match is given: all keywords, or `nil` and `some?`, or one
+    /// field, the same in each, whose patterns cover.
+    pub fn cover(patterns: &[&Pattern]) -> bool {
+        if patterns.iter().all(|p| matches!(p, Pattern::Keyword(_))) {
+            return true;
+        }
+        if patterns.len() == 2 && patterns.contains(&&Pattern::Nil) && patterns.contains(&&Pattern::Some) {
+            return true;
+        }
+        let Some(Pattern::Fields(first)) = patterns.first() else { return false };
+        let [(name, _)] = first.as_slice() else { return false };
+        let mut inner = Vec::new();
+        for p in patterns {
+            match p {
+                Pattern::Fields(fs) if fs.len() == 1 && fs[0].0 == *name => inner.push(&fs[0].1),
+                _ => return false,
+            }
+        }
+        Pattern::cover(&inner)
+    }
 }
 
 impl Term {
@@ -254,8 +323,7 @@ impl Term {
             | Term::CycleRef(_) => {}
             Term::Match(scrutinee, clauses, default) => {
                 scrutinee.walk(f);
-                for (pattern, result) in clauses {
-                    pattern.walk(f);
+                for (_, result) in clauses {
                     result.walk(f);
                 }
                 if let Some(d) = default {
@@ -425,7 +493,7 @@ impl Term {
                 scrutinee.encode(out, cycle_index);
                 uint(out, clauses.len() as u64);
                 for (pattern, result) in clauses {
-                    pattern.encode(out, cycle_index);
+                    pattern.encode(out);
                     result.encode(out, cycle_index);
                 }
                 match default {

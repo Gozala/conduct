@@ -3,6 +3,7 @@
 //! name-free terms that can be hashed.
 
 use crate::reader::{Sexp, Span};
+pub use crate::term::Pattern;
 use std::fmt;
 
 #[derive(Clone, Debug)]
@@ -32,10 +33,9 @@ pub enum Expr {
     /// `:active`: a keyword, a value whose type is that keyword alone.
     Keyword(String),
     /// `(match e p1 r1 p2 r2 ... :else r)`: the result of the first
-    /// pattern equal to `e`. Patterns are keyword, string, or integer
-    /// literals. Without `:else`, every pattern must be a keyword, and
-    /// `e` must be one of them.
-    Match(Box<Expr>, Vec<(Expr, Expr)>, Option<Box<Expr>>),
+    /// pattern `e` matches. Without `:else`, the patterns must be able to
+    /// cover every value (see [`Pattern::cover`]).
+    Match(Box<Expr>, Vec<(Pattern, Expr)>, Option<Box<Expr>>),
 }
 
 /// A top-level definition, before resolution.
@@ -287,29 +287,21 @@ fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
     if clauses.is_empty() || !clauses.len().is_multiple_of(2) {
         return err("`match` takes a value and pairs of a pattern and a result", span);
     }
-    let mut arms: Vec<(Expr, Expr)> = Vec::new();
+    let mut arms: Vec<(Pattern, Expr)> = Vec::new();
     let mut default = None;
     let pairs: Vec<&[Sexp]> = clauses.chunks(2).collect();
     for (i, pair) in pairs.iter().enumerate() {
-        let pattern = match &pair[0] {
-            Sexp::Keyword(k, kspan) if k == "else" => {
-                if i + 1 != pairs.len() {
-                    return err("`:else` must be the last clause of a `match`", *kspan);
-                }
-                default = Some(boxed(&pair[1])?);
-                continue;
+        if let Sexp::Keyword(k, kspan) = &pair[0]
+            && k == "else"
+        {
+            if i + 1 != pairs.len() {
+                return err("`:else` must be the last clause of a `match`", *kspan);
             }
-            Sexp::Keyword(k, _) => Expr::Keyword(k.clone()),
-            Sexp::Str(s, _) => Expr::Str(s.clone()),
-            Sexp::Int(n, _) => Expr::Int(*n),
-            other => {
-                return err(
-                    format!("a `match` pattern is a keyword, string, or integer literal, not `{other}`"),
-                    other.span(),
-                );
-            }
-        };
-        if arms.iter().any(|(p, _)| same_literal(p, &pattern)) {
+            default = Some(boxed(&pair[1])?);
+            continue;
+        }
+        let pattern = pattern(&pair[0])?;
+        if arms.iter().any(|(p, _)| *p == pattern) {
             return err(format!("the pattern `{}` appears twice", pair[0]), pair[0].span());
         }
         arms.push((pattern, expr(&pair[1])?));
@@ -319,19 +311,45 @@ fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
     }
     // Keywords are a closed set the type checker can see the whole of;
     // strings and integers never are, so leaving them out must be said.
-    if default.is_none()
-        && let Some((open, _)) = arms.iter().find(|(p, _)| !matches!(p, Expr::Keyword(_)))
-    {
-        let kind = if matches!(open, Expr::Str(_)) { "strings" } else { "integers" };
-        return err(format!("a `match` on {kind} never covers every value: end it with an `:else` clause"), span);
+    if default.is_none() && !Pattern::cover(&arms.iter().map(|(p, _)| p).collect::<Vec<_>>()) {
+        return err(
+            "this `match` cannot cover every value without `:else`: only keywords, `nil` with `some?`, \
+             or one field matched against those can",
+            span,
+        );
     }
     Ok(Expr::Match(boxed(scrutinee)?, arms, default))
 }
 
-fn same_literal(a: &Expr, b: &Expr) -> bool {
-    match (a, b) {
-        (Expr::Keyword(x), Expr::Keyword(y)) | (Expr::Str(x), Expr::Str(y)) => x == y,
-        (Expr::Int(x), Expr::Int(y)) => x == y,
-        _ => false,
-    }
+fn pattern(form: &Sexp) -> Result<Pattern> {
+    Ok(match form {
+        Sexp::Keyword(k, _) => Pattern::Keyword(k.clone()),
+        Sexp::Str(s, _) => Pattern::Str(s.clone()),
+        Sexp::Int(n, _) => Pattern::Int(*n),
+        Sexp::Symbol(s, _) if s == "nil" => Pattern::Nil,
+        Sexp::Symbol(s, _) if s == "some?" => Pattern::Some,
+        Sexp::Map(items, mspan) if !items.is_empty() && items.len().is_multiple_of(2) => {
+            let mut fields: Vec<(String, Pattern)> = Vec::new();
+            for pair in items.chunks(2) {
+                let Sexp::Keyword(name, kspan) = &pair[0] else {
+                    return err("a record pattern's keys are keywords", pair[0].span());
+                };
+                if fields.iter().any(|(n, _)| n == name) {
+                    return err(format!("field `:{name}` appears twice"), *kspan);
+                }
+                fields.push((name.clone(), pattern(&pair[1])?));
+            }
+            let _ = mspan;
+            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            Pattern::Fields(fields)
+        }
+        other => {
+            return err(
+                format!(
+                    "a `match` pattern is a keyword, string, or integer, `nil`, `some?`, or a record of those, not `{other}`"
+                ),
+                other.span(),
+            );
+        }
+    })
 }

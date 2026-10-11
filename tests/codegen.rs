@@ -215,3 +215,24 @@ fn keywords_and_match() {
     assert_eq!(run(src, "kept", &[]), Value::List(vec![Value::Int(3)]));
     assert_eq!(run("(def k :ok)", "k", &[]), Value::Keyword("ok".into()));
 }
+
+#[test]
+fn matching_shapes() {
+    let src = r#"
+(defn since [job] (match (:started-at job) nil "not started" some? (str "Since " (:started-at job))))
+(defn describe [job]
+  (match job
+    {:status :active :owner {:name "ann"}} "ann's"
+    {:status :active} (str "Since " (:since job))
+    {:status :suspended} "paused"
+    :else "other"))
+(def a [(since {:started-at nil}) (since {:started-at "May"})])
+(def b [(describe {:status :active :since "May" :owner {:name "ann"}})
+        (describe {:status :active :since "May" :owner {:name "bo"}})
+        (describe {:status :suspended :since "" :owner {:name ""}})
+        (describe {:status :gone :since "" :owner {:name ""}})])
+"#;
+    let strs = |v: &[&str]| Value::List(v.iter().map(|s| Value::Str(s.to_string())).collect());
+    assert_eq!(run(src, "a", &[]), strs(&["not started", "Since May"]));
+    assert_eq!(run(src, "b", &[]), strs(&["ann's", "Since May", "paused", "other"]));
+}

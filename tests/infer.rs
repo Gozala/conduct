@@ -137,11 +137,51 @@ fn a_match_with_else_takes_anything() {
 fn a_match_on_strings_or_integers_must_say_else() {
     let mut cb = Codebase::new();
     let err = cb.add_source("(defn f [h] (match h \"toggle\" 1 \"save\" 2))").unwrap_err().to_string();
-    assert!(err.contains("a `match` on strings never covers every value: end it with an `:else` clause"), "{err}");
+    assert!(err.contains("cannot cover every value without `:else`"), "{err}");
     let err = cb.add_source("(defn g [n] (match n 1 :one))").unwrap_err().to_string();
-    assert!(err.contains("on integers"), "{err}");
+    assert!(err.contains("cannot cover"), "{err}");
     let err = cb.add_source("(defn h [k] (match k :a 1 :a 2))").unwrap_err().to_string();
     assert!(err.contains("appears twice"), "{err}");
     let err = cb.add_source("(defn i [k] (match k :else 1 :a 2))").unwrap_err().to_string();
     assert!(err.contains("must be the last"), "{err}");
+}
+
+#[test]
+fn a_match_narrows_what_it_tested() {
+    // Matching a field narrows the record it was read from: in the
+    // `some?` branch, `(:n job)` is not nil, so `+` takes it.
+    let src = "(defn inc [job] (match (:n job) nil 0 some? (+ (:n job) 1)))";
+    assert_eq!(ty(src, "inc"), "({n: Int | nil}) -> Int");
+    let mut cb = Codebase::new();
+    cb.add_source(src).unwrap();
+    assert!(cb.add_source("(def x (inc {:n nil}))").is_ok());
+    // Without the match, nil reaches `+`.
+    cb.add_source("(defn bad [job] (+ (:n job) 1))").unwrap();
+    assert!(cb.add_source("(def y (bad {:n nil}))").is_err());
+    // A record pattern narrows the matched value; with one field matched
+    // against keywords in every clause, it needs no `:else`.
+    let src = "(defn describe [job]
+                 (match job
+                   {:status :active} (str \"Since \" (:since job))
+                   {:status :suspended} \"paused\"))";
+    assert_eq!(ty(src, "describe"), "({since: Any, status: :active | :suspended}) -> String");
+    let mut cb = Codebase::new();
+    cb.add_source(src).unwrap();
+    let err = cb.add_source("(def x (describe {:status :done :since 1}))").unwrap_err().to_string();
+    assert!(err.contains(":done is not one of :active | :suspended"), "{err}");
+    // The narrowed field's type is the pattern's, inside its branch.
+    let src = "(defn keep [s] (match s :a s :b s))";
+    assert_eq!(ty(src, "keep"), "(:a | :b) -> :a | :b");
+    let src = "(defn active [job] (match job {:status :active} (:status job) :else :other))";
+    assert_eq!(ty(src, "active"), "({status: Any}) -> :active | :other");
+}
+
+#[test]
+fn a_match_without_else_must_be_able_to_cover() {
+    let mut cb = Codebase::new();
+    let err = cb.add_source("(defn f [j] (match j {:a :x} 1 {:b :y} 2))").unwrap_err().to_string();
+    assert!(err.contains("cannot cover every value without `:else`"), "{err}");
+    let err = cb.add_source("(defn g [j] (match j some? 1))").unwrap_err().to_string();
+    assert!(err.contains("cannot cover"), "{err}");
+    assert!(cb.add_source("(defn h [j] (match j nil 0 some? 1))").is_ok());
 }

@@ -35,7 +35,7 @@
 //! done yet.
 
 use crate::codebase::Codebase;
-use crate::term::{Hash, Op, Term};
+use crate::term::{Hash, Op, Pattern, Term};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
@@ -458,7 +458,7 @@ impl<'a> Builder<'a> {
                     None => Term::Nil,
                 };
                 for (pattern, result) in clauses.iter().rev() {
-                    let test = Term::Prim(Op::Eq, vec![Term::Local(0), pattern.clone()]);
+                    let test = pattern_test(Term::Local(0), pattern);
                     chain = Term::If(Box::new(test), Box::new(shift(result, 1, 0)), Box::new(chain));
                 }
                 let lowered = Term::Let(scrutinee.clone(), Box::new(chain));
@@ -887,6 +887,24 @@ fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
         | Term::Ref(_)
         | Term::CycleRef(_)
         | Term::Keyword(_) => {}
+    }
+}
+
+/// A Bool term that says whether `value` matches `pattern`.
+fn pattern_test(value: Term, pattern: &Pattern) -> Term {
+    let is_nil = |v: Term| Term::Prim(Op::IsNil, vec![v]);
+    match pattern {
+        Pattern::Keyword(k) => Term::Prim(Op::Eq, vec![value, Term::Keyword(k.clone())]),
+        Pattern::Str(s) => Term::Prim(Op::Eq, vec![value, Term::Str(s.clone())]),
+        Pattern::Int(n) => Term::Prim(Op::Eq, vec![value, Term::Int(*n)]),
+        Pattern::Nil => is_nil(value),
+        Pattern::Some => Term::Prim(Op::Not, vec![is_nil(value)]),
+        Pattern::Fields(fields) => {
+            let mut tests =
+                fields.iter().map(|(name, p)| pattern_test(Term::Field(name.clone(), Box::new(value.clone())), p));
+            let first = tests.next().expect("a record pattern has a field");
+            tests.fold(first, |acc, t| Term::And(Box::new(acc), Box::new(t)))
+        }
     }
 }
 
