@@ -34,8 +34,8 @@ When two principles conflict, the earlier one wins.
 
 A consequence of 7 for 2: a definition is checked once and stored by
 hash, so its type cannot depend on code written later. Nothing global is
-inferred from its uses; an attribute's value type is declared or is
-`Any` (see the open decisions).
+inferred from its uses: an unknown type in a definition stays a type
+variable at its boundary, instantiated fresh at each use (section 3).
 
 ## 1. Values
 
@@ -106,8 +106,40 @@ names are unique in a module; another module's are reached as
 `point/x`. Every declaration of one global name must agree on its type.
 
 `as:` takes a primitive (`text`, `integer`, `natural`, ...), a listed
-set of keywords, or a concept for a value nested under the key. No
-predicates in this version.
+set of keywords, a concept for a value nested under the key, or a type
+with variables (below). No predicates in this version.
+
+### Type variables, named and anonymous
+
+Inference is already parametric underneath: Simple-sub gives every
+unconstrained position its own type variable. Generics are that
+variable given a *name*, Elm-style, so it can be shared across
+positions:
+
+```scheme
+(attribute items the: io.gozala/items as: (list a))
+(concept box with: {value: a})
+```
+
+A named variable ties its occurrences together: a `box` of integers and
+a `box` of strings are the same concept at different `a`.
+
+**An omitted `as:` is the anonymous form of the same variable.** It is
+not `Any`: it is an open type, with no upper bound declared, that each
+use constrains from below. A use that adds to it makes it a number
+there, one that reads a key from it makes it a record with at least that
+key. "Open" is not specific to records; open records are only what you
+get when the uses are field reads. Named or anonymous, it is the same
+machinery; the one difference is whether the variable is named, and so
+shared.
+
+**Under hashing** (principle 7), the variable cannot be solved globally
+from later uses. Whether named or anonymous, it stays polymorphic at the
+definition's boundary and is instantiated fresh at each use, as Elm
+does with a lowercase type variable. That keeps check-once sound, and it
+avoids the problem Roc has met where an open type closes partway through
+inference, so that the result depends on the order expressions are
+checked.
 
 **Compiler:** the `attribute` form; a global constraint on each key in
 the solver (any record with `io.gozala.point/x` has an `integer` there,
@@ -190,18 +222,21 @@ classification is stored.
 
 ### Checks
 
+- **Matching over concept variants requires a ranked classification.**
+  To `match` on `done`, `pending` and `idle`, a classification such as
+  `(concept job [done pending idle])` must be declared and the value
+  matched as that classification. With no ranked declaration there is
+  no concept-variant match. The order therefore always exists, and the
+  question of ambiguous arms does not arise. (Inferring the order where
+  the lattice decides it could be allowed later; it is a relaxation, so
+  it can be added without breaking code, while taking inference away
+  after code relies on it could not.)
 - **A wider concept ranked above a narrower one is an error.**
   `[idle done pending]` fails: every `done` is an `idle`, so `done`
   could never be chosen. The lattice decides "wider": a concept with
   more attributes fits wherever one with fewer is expected.
-- **A `match` without a classification** may order arms the lattice
-  orders (narrower first, whatever order they are written in). Two arms
-  that overlap where neither is narrower are an error that asks for a
-  classification: the order between incomparable concepts must be
-  stated, never decided by where an arm happens to be written.
 - **Narrowing** follows the chosen case. Concepts only test which
-  attributes a value has, so overlap, nesting and coverage are decided
-  exactly.
+  attributes a value has, so nesting and coverage are decided exactly.
 
 **Compiler:** the `concept` form; concepts as constructors and as
 patterns; ranked classifications; the rank and overlap checks.
@@ -262,8 +297,9 @@ Each step is a pull request with tests; each keeps the demo working.
    the prelude and platform declare theirs; every example rewritten.
 2. **Concepts.** The form, constructors, patterns, ranked
    classifications, narrowing.
-3. **Checks.** Rank order against the lattice, overlap in matches,
-   coverage of classifications.
+3. **Checks and type variables.** Rank order against the lattice,
+   coverage of classifications, named type variables in attributes and
+   concepts.
 4. **Macros, tier 1.**
 
 The acceptance test: the demo's elements and routes, and the job
@@ -271,16 +307,13 @@ example above, written as you would want to read them.
 
 ## Open decisions
 
-1. **An attribute without `as:`.** Its value type is `Any`, narrowed
-   where it is used, or `as:` is required. (It cannot be inferred from
-   uses, by principle 7.)
-2. **Lambdas and labels.** `fn` unlabeled, as above, or labeled like
+1. **Lambdas and labels.** `fn` unlabeled, as above, or labeled like
    `define` with callers of function values passing labels.
-3. **`maybe:` in concepts**, for attributes a value may have.
-4. **Modules.** How a module is declared, and how its namespace relates
+2. **`maybe:` in concepts**, for attributes a value may have.
+3. **Modules.** How a module is declared, and how its namespace relates
    to the attributes' `the:` names.
-5. **Predicates in types**, later.
-6. **Macro default, for tier 2.**
+4. **Predicates in types**, later.
+5. **Macro default, for tier 2.**
 
 ## Decided in discussion
 
@@ -298,5 +331,13 @@ example above, written as you would want to read them.
 - Overlapping concepts are ranked by a declared classification, never
   by where a match arm is written; a wider concept ranked above a
   narrower one does not compile.
+- Matching over concept variants requires a declared ranked
+  classification; the value is matched as that classification.
+- Generics are named type variables (`(list a)`, `{value: a}`), Elm
+  style; an omitted `as:` is the anonymous form of the same variable,
+  an open type constrained by each use, not `Any`.
+- A type variable, named or anonymous, stays polymorphic at its
+  definition's boundary and is instantiated fresh per use, so nothing
+  is solved from code written later.
 - Data is declared, code is inferred.
 - No predicates in types in this version.
