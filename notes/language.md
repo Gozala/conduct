@@ -327,6 +327,12 @@ jerd (Jared Forsyth) planned a third arrangement: macros receive a
 introduces binders (`define`, `match`) cannot have its arguments typed
 before it runs.
 
+Scopes answers the same question by having two kinds instead of a
+default: *sugars* rewrite raw syntax and may introduce binders,
+*spices* are compile-time functions over typed values. Conduct takes
+that split: tier 1 macros are sugars, and code that needs types is a
+separate kind, not a mode of the same macros.
+
 ## 8. Plan
 
 Each step is a pull request with tests; each keeps the demo working.
