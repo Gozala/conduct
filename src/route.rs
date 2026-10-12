@@ -1,29 +1,28 @@
 //! Routes of the TodoMVC demo's route world, written in conduct.
 //!
-//! A route is one function with effects, in Roc's style, and an
+//! A route is one definition marked `!`, which makes a task, and an
 //! optional constant:
 //!
 //! ```text
 //! pattern : String                the path it serves, such as "/api/todos/:id"
-//! handle! : (Request) => Response ! {model}
+//! handle  : (request) -> (task response with: {model})
 //! ```
 //!
-//! where `Request` is `{method: String, path: String, params:
-//! Dict[String], query: Dict[String], headers: Dict[String], body:
-//! String}` and `Response` is `{status: Int, headers: Dict[String],
-//! body: String}`. `params` holds the parts of the path that the
-//! pattern's `:name` segments match.
+//! defined `(define (handle! request) ..)`, where the route prelude
+//! claims `request` as `{method path params search headers body}` and
+//! `response` as `{code headers body}`. `params` holds the parts of the
+//! path that the pattern's `:name` segments match.
 //!
 //! The route calls the demo's todo model directly, through host
-//! functions that use the `model` capability: `query!`, `add!`,
-//! `update!`, `remove!`, `toggle-all!` and `clear-completed!`. A model
-//! `result` is a union of variants: `{:ok todo}` or `{:error why}`,
-//! where `why` is `:not-found` or `:empty-title`, and a `result` with no
-//! value is `:ok` itself.
+//! functions whose tasks need the `model` capability: `(query! ..)`,
+//! `(add! ..)`, `(update! ..)`, `(remove! ..)`, `(toggle-all! ..)` and
+//! `(clear-completed!)`. A model `result` is a union of variants:
+//! `(ok todo)` or `(error why)`, where `why` is `:not-found` or
+//! `:empty-title`, and a `result` with no value is `:ok` itself.
 //!
 //! The glue exports `wasi:http/handler@0.3.0#handle`, lifted with the
-//! async ABI's callback form. It reads the request, body and all, runs
-//! `handle!`, returns the response with `task.return`, and then writes
+//! async ABI's callback form. It reads the request, body and all,
+//! performs `handle`'s task, returns the response with `task.return`, and then writes
 //! the response's body. The model's functions are `async` in the WIT,
 //! and the glue calls them with the synchronous ABI: each call blocks
 //! the task until the model answers. Bodies are read and written with
@@ -125,16 +124,16 @@ fn model_functions() -> Vec<(&'static str, &'static str, Vec<Ty>, Ty)> {
     let counts = Ty::record([field(key::ACTIVE_COUNT, Ty::int()), field(key::COMPLETED_COUNT, Ty::int())]);
     vec![
         (
-            "query!",
+            "query",
             "query",
             vec![filter],
             Ty::record([field(key::TODOS, Ty::list(todo_type())), field(key::COUNTS, counts)]),
         ),
-        ("add!", "add", vec![Ty::str()], todo_result()),
+        ("add", "add", vec![Ty::str()], todo_result()),
         // A WIT function with `option` parameters takes one record of its
         // named parameters, where an absent attribute is `none`.
         (
-            "update!",
+            "update",
             "update",
             vec![Ty::record([
                 field(key::ID, Ty::str()),
@@ -144,13 +143,13 @@ fn model_functions() -> Vec<(&'static str, &'static str, Vec<Ty>, Ty)> {
             todo_result(),
         ),
         (
-            "remove!",
+            "remove",
             "remove",
             vec![Ty::str()],
             Ty::tags([("ok".to_string(), None), (key::ERROR.to_string(), Some(model_error()))]),
         ),
-        ("toggle-all!", "toggle-all", vec![Ty::bool()], Ty::record([])),
-        ("clear-completed!", "clear-completed", vec![], Ty::record([])),
+        ("toggle-all", "toggle-all", vec![Ty::bool()], Ty::record([])),
+        ("clear-completed", "clear-completed", vec![], Ty::record([])),
     ]
 }
 
@@ -164,7 +163,7 @@ pub fn codebase() -> Result<Codebase, Error> {
     Ok(cb)
 }
 
-/// The record `handle!` receives.
+/// The record `handle` receives.
 pub fn request_type() -> Ty {
     Ty::record([
         field(key::METHOD, Ty::str()),
@@ -176,7 +175,7 @@ pub fn request_type() -> Ty {
     ])
 }
 
-/// The record `handle!` answers.
+/// The record `handle`'s task answers.
 pub fn response_type() -> Ty {
     Ty::record([field(key::STATUS, Ty::int()), field(key::HEADERS, Ty::dict(Ty::str())), field(key::BODY, Ty::str())])
 }
@@ -189,11 +188,12 @@ pub struct RouteDefs {
 
 /// Find the route's definitions and check them against the contract.
 pub fn check(cb: &Codebase) -> Result<RouteDefs, RouteError> {
-    let handle = *cb.names.get("handle!").ok_or(RouteError::Missing("handle!"))?;
+    let handle = *cb.names.get("handle").ok_or(RouteError::Missing("handle"))?;
     let s = &cb.solver;
     let ty = s.instantiate(&cb.defs[&handle].scheme, 1);
-    let expected = Ty::func_eff(vec![request_type()], response_type(), Ty::caps([MODEL.to_string()]), vec![]);
-    s.constrain(&ty, &expected).map_err(|error| RouteError::Contract { name: "handle!", error })?;
+    let task = Ty::task(response_type(), Ty::caps([MODEL.to_string()]));
+    let expected = Ty::func(vec![request_type()], task, &[]);
+    s.constrain(&ty, &expected).map_err(|error| RouteError::Contract { name: "handle", error })?;
     let pattern = match cb.names.get("pattern") {
         None => None,
         Some(h) => match &cb.defs[h].term {
@@ -487,7 +487,10 @@ pub fn core_wat(cb: &Codebase) -> Result<String, RouteError> {
         None => String::new(),
     };
 
-    let handle = b.call(defs.handle, &["(local.get $request)".into()])?;
+    let handle = b.perform(defs.handle, &["(local.get $request)".into()]).map_err(|_| RouteError::Contract {
+        name: "handle",
+        error: TypeError("a route's `handle` is defined marked `!`, `(define (handle! request) ..)`".into()),
+    })?;
     let mut x = String::new();
     x.push_str(&record_func(
         "$request_new",

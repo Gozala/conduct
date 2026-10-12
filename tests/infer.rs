@@ -15,7 +15,7 @@ fn infers_basic_functions() {
     assert_eq!(ty("(define (id x) x)", "id"), "(a) -> a");
     assert_eq!(ty("(define (inc x) (+ x 1))", "inc"), "(Int) -> Int");
     assert_eq!(ty("(define (k x y) x)", "k"), "(a, y: Any) -> a");
-    assert_eq!(ty("(define (app f x) (f x))", "app"), "((a) => b ! c, x: a) => b ! c");
+    assert_eq!(ty("(define (app f x) (f x))", "app"), "((a) -> b, x: a) -> b");
 }
 
 #[test]

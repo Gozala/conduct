@@ -81,6 +81,9 @@ pub enum Op {
     /// Whether a value is a record with a field: only `match` uses it,
     /// so it has no name in source and is not in [`Op::ALL`].
     HasField,
+    /// Perform a task with an environment on top of the others: what
+    /// `(perform t with: env)` compiles to. Not in source either.
+    WithEnv,
 }
 
 impl Op {
@@ -162,6 +165,7 @@ impl Op {
             Op::JsonBool => "json-bool",
             Op::JsonType => "json-type",
             Op::HasField => "has-field?",
+            Op::WithEnv => "with-env",
         }
     }
 
@@ -236,6 +240,13 @@ pub enum Term {
     /// A call of a function the host provides, by its import name. Only
     /// a host definition's body has one.
     Host(String, Vec<Term>),
+    /// Work not done yet: a task whose performing evaluates the body.
+    Task(Box<Term>),
+    /// Perform a task: what `!` after a name means.
+    Perform(Box<Term>),
+    /// A task that performs another in an environment: each capability
+    /// it provides, with an implementation of each of its operations.
+    Handle(Box<Term>, Vec<(String, Vec<(String, Term)>)>),
 }
 
 /// What a `match` clause tests its value against.
@@ -406,7 +417,11 @@ impl Term {
                     d.walk(f);
                 }
             }
-            Term::Fn(_, b) | Term::Field(_, b) => b.walk(f),
+            Term::Fn(_, b) | Term::Field(_, b) | Term::Task(b) | Term::Perform(b) => b.walk(f),
+            Term::Handle(t, caps) => {
+                t.walk(f);
+                caps.iter().flat_map(|(_, ops)| ops).for_each(|(_, i)| i.walk(f));
+            }
             Term::App(callee, args, _) => {
                 callee.walk(f);
                 args.iter().for_each(|a| a.walk(f));
@@ -560,6 +575,23 @@ impl Term {
                 out.push(0x19);
                 text(out, name);
                 many(out, args, cycle_index);
+            }
+            Term::Task(body) => {
+                out.push(0x1a);
+                body.encode(out, cycle_index);
+            }
+            Term::Perform(t) => {
+                out.push(0x1b);
+                t.encode(out, cycle_index);
+            }
+            Term::Handle(t, caps) => {
+                out.push(0x1c);
+                t.encode(out, cycle_index);
+                uint(out, caps.len() as u64);
+                for (cap, ops) in caps {
+                    text(out, cap);
+                    entries(out, ops, cycle_index);
+                }
             }
             Term::Match(scrutinee, clauses, default) => {
                 out.push(0x18);

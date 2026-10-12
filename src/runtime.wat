@@ -545,6 +545,42 @@
     ;; The type checker rules this out.
     unreachable)
 
+  ;; Environments: what `(perform t with: env)` provides while `t` runs.
+  ;; Each frame is a block of the environment record (owned) and the
+  ;; frame below it.
+  (global $env_top (mut i32) (i32.const 0))
+
+  (func $with_env (param $env i64) (param $task i64) (result i64)
+    ;; Perform `task` with `env` on top of the environments. Borrows both.
+    (local $f i32) (local $r i64)
+    (local.set $f (call $alloc (i32.const 16)))
+    (i64.store (local.get $f) (call $dup (local.get $env)))
+    (i32.store offset=8 (local.get $f) (global.get $env_top))
+    (global.set $env_top (local.get $f))
+    (local.set $r (call $apply0 (local.get $task)))
+    (global.set $env_top (i32.load offset=8 (local.get $f)))
+    (call $drop (i64.load (local.get $f)))
+    (call $free (local.get $f))
+    (local.get $r))
+
+  (func $env_find (param $cap i64) (param $op i64) (result i64)
+    ;; The innermost environment's implementation of the operation `op`
+    ;; of the capability `cap`, owned, or 0 when none provides it.
+    (local $f i32) (local $impls i64) (local $r i64)
+    (local.set $f (global.get $env_top))
+    (block $done
+      (loop $next
+        (br_if $done (i32.eqz (local.get $f)))
+        (if (i64.eq (call $has_field (i64.load (local.get $f)) (local.get $cap)) (i64.const 0x12))
+          (then
+            (local.set $impls (call $rec_get (i64.load (local.get $f)) (local.get $cap)))
+            (local.set $r (call $rec_get (local.get $impls) (local.get $op)))
+            (call $drop (local.get $impls))
+            (return (local.get $r))))
+        (local.set $f (i32.load offset=8 (local.get $f)))
+        (br $next)))
+    (i64.const 0))
+
   (func $has_field (param $v i64) (param $id i64) (result i64)
     ;; Whether `v` is a record with the field `id`: a variant with that
     ;; key, or a record that has it.

@@ -3,6 +3,47 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Tasks
+
+- **Calls are pure; `!` performs.** A definition marked `!` makes a
+  task; `(f! x)` performs what `(f x)` answers; `(t!)` performs a task
+  held in a value, since a definition with no parameters is a value.
+  The naming rule (a name ends with `!` exactly when it uses
+  capabilities) is gone: `!` is never part of a name, so the check is
+  syntax, and a function given to `map` needs no effect polymorphism.
+- **A task's body is the only place that performs.** A function's body
+  is pure even inside a task, so `(map xs each: (fn [x] (log! x)))` is
+  an error, and `fn!` makes a function that answers a task.
+- **Arrows are pure.** `Ty::Fn` keeps its effect slot, always pure now;
+  capabilities live on `Ty::Task`. Taking the slot out is mechanical and
+  left for a cleanup.
+- **A task is a closure of no parameters,** and performing one calls
+  it. Performing a definition's task where it is made calls a performing
+  entry compiled for it, so `(stamp! x)` makes no task. Elements' and
+  routes' memory tests run unchanged.
+- **Environments are tail-resumptive handlers.** An implementation
+  answers its operation's result and the task goes on, so no coroutines
+  or continuations are needed: a host call looks up the innermost
+  environment that provides its capability, a stack of records the
+  runtime keeps, and calls the implementation in the import's place.
+  Handlers that abort or resume later need coroutines, and are not here.
+- **Implementations are pure.** One that performs would make the
+  environment need capabilities of its own; the type rule for that is
+  simple, but running the implementation's task in the right
+  environment is the coroutine work above.
+- **Subtracting capabilities without negation types.** `(perform t
+  with: env)` needs `t`'s capabilities less `env`'s labels. A
+  `CapsPlus(rest, provided)` upper bound says it: a set flowing into it
+  flows into `rest` once `provided` is taken out. The labels are always
+  written out, so nothing needs MLstruct's negation.
+- **`{}` is both an empty dictionary and a record with no attributes.**
+  Implementations and functions with nothing to answer need an empty
+  record, and `{}` already meant an empty dictionary. Its type,
+  `Prim::Empty`, fits both; at run time it is an empty dictionary, which
+  record operations treat as a record with no fields.
+- **Host functions are named without `!`,** and `add_host` refuses a
+  name with one: a call performs them with it, as any task.
+
 ## Claims
 
 - **A claim with a `define` of the same name, in the same source, is a

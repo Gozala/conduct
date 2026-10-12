@@ -14,6 +14,9 @@ pub trait Globals {
     fn scheme(&self, hash: &Hash) -> Option<Scheme>;
     /// The value type claimed for an attribute, by its global name.
     fn attribute(&self, global: &str) -> Option<Ty>;
+    /// The host functions that need a capability: each one's name and
+    /// type.
+    fn operations(&self, capability: &str) -> Vec<(String, Scheme)>;
 }
 
 pub struct Infer<'a> {
@@ -21,9 +24,10 @@ pub struct Infer<'a> {
     pub globals: &'a dyn Globals,
     /// The types of the members of the cycle being checked.
     pub cycle: Vec<Ty>,
-    /// The effect of each function body being checked, innermost last:
-    /// every call adds the callee's effect to the innermost.
-    pub effects: std::cell::RefCell<Vec<Ty>>,
+    /// What each body being checked may do, innermost last: `None` for a
+    /// function's body or a top-level value, which are pure, and the
+    /// capabilities of a task's body, which may perform.
+    pub effects: std::cell::RefCell<Vec<Option<Ty>>>,
 }
 
 type Result<T> = std::result::Result<T, TypeError>;
@@ -51,22 +55,90 @@ impl Infer<'_> {
                 let arity = labels.len();
                 let params: Vec<Ty> = (0..arity).map(|_| s.fresh_ty(level)).collect();
                 env.extend(params.iter().cloned().map(Binding::Mono));
-                // The body's effect is the function's, not its creator's.
-                let effect = s.fresh_ty(level);
-                self.effects.borrow_mut().push(effect.clone());
+                // Calls are pure: a function's body performs nothing, even
+                // inside a task's.
+                self.effects.borrow_mut().push(None);
                 let ret = self.term(body, env, level);
                 self.effects.borrow_mut().pop();
                 env.truncate(env.len() - arity);
-                Ty::func_eff(params, ret?, effect, labels[1.min(arity)..].to_vec())
+                Ty::func_eff(params, ret?, Ty::pure(), labels[1.min(arity)..].to_vec())
             }
             Term::App(callee, args, labels) => {
                 let f = self.term(callee, env, level)?;
                 let args = args.iter().map(|a| self.term(a, env, level)).collect::<Result<Vec<_>>>()?;
                 let ret = s.fresh_ty(level);
-                let effect = s.fresh_ty(level);
-                s.constrain(&f, &Ty::func_eff(args, ret.clone(), effect.clone(), labels.clone()))?;
-                self.perform(effect)?;
+                s.constrain(&f, &Ty::func_eff(args, ret.clone(), Ty::pure(), labels.clone()))?;
                 ret
+            }
+            Term::Task(body) => {
+                let caps = s.fresh_ty(level);
+                self.effects.borrow_mut().push(Some(caps.clone()));
+                let result = self.term(body, env, level);
+                self.effects.borrow_mut().pop();
+                Ty::task(result?, caps)
+            }
+            Term::Perform(task) => {
+                let t = self.term(task, env, level)?;
+                let (result, caps) = (s.fresh_ty(level), s.fresh_ty(level));
+                s.constrain(&t, &Ty::task(result.clone(), caps.clone()))
+                    .map_err(|e| TypeError(format!("`!` performs a task: {e}")))?;
+                let body = self.effects.borrow().last().cloned().flatten();
+                match body {
+                    Some(body) => s.constrain(&caps, &body)?,
+                    None => {
+                        return Err(TypeError(
+                            "`!` performs, and only a task's body may: mark the definition, `(define (name! ..) ..)`, \
+                             or the function, `(fn! [..] ..)`"
+                                .into(),
+                        ));
+                    }
+                }
+                result
+            }
+            Term::Handle(task, provided) => {
+                let t = self.term(task, env, level)?;
+                let (result, caps) = (s.fresh_ty(level), s.fresh_ty(level));
+                s.constrain(&t, &Ty::task(result.clone(), caps.clone()))
+                    .map_err(|e| TypeError(format!("`perform` takes a task: {e}")))?;
+                let mut names = std::collections::BTreeSet::new();
+                for (cap, ops) in provided {
+                    let wanted = self.globals.operations(cap);
+                    if wanted.is_empty() {
+                        return Err(TypeError(format!("no host function uses the capability `{cap}`")));
+                    }
+                    for (op, _) in &wanted {
+                        if !ops.iter().any(|(o, _)| o == op) {
+                            return Err(TypeError(format!("an environment that provides `{cap}` implements `{op}`")));
+                        }
+                    }
+                    for (op, implementation) in ops {
+                        let Some((_, scheme)) = wanted.iter().find(|(o, _)| o == op) else {
+                            return Err(TypeError(format!("`{cap}` has no operation `{op}`")));
+                        };
+                        // An implementation answers what performing the
+                        // operation would.
+                        // An operation of no parameters is a task, and is
+                        // implemented by its answer.
+                        let expected = match s.instantiate(scheme, level) {
+                            Ty::Fn(params, ret, _, labels) => {
+                                let answer = match &*ret {
+                                    Ty::Task(answer, _) => (**answer).clone(),
+                                    other => other.clone(),
+                                };
+                                Ty::func_eff((*params).clone(), answer, Ty::pure(), (*labels).clone())
+                            }
+                            Ty::Task(answer, _) => (*answer).clone(),
+                            other => other,
+                        };
+                        let i = self.term(implementation, env, level)?;
+                        s.constrain(&i, &expected)
+                            .map_err(|e| TypeError(format!("the implementation of `{op}`: {e}")))?;
+                    }
+                    names.insert(cap.clone());
+                }
+                let rest = s.fresh_ty(level);
+                s.constrain(&caps, &Ty::CapsPlus(std::rc::Rc::new(rest.clone()), std::rc::Rc::new(names)))?;
+                Ty::task(result, rest)
             }
             Term::Let(value, body) => {
                 let t = self.term(value, env, level + 1)?;
@@ -110,6 +182,7 @@ impl Infer<'_> {
                 let v = self.attribute(name, value, env, level)?;
                 Ty::update(r, name.clone(), v)
             }
+            Term::Dict(entries) if entries.is_empty() => Ty::Prim(crate::types::Prim::Empty),
             Term::Dict(entries) => {
                 let values = entries.iter().map(|(_, t)| self.term(t, env, level)).collect::<Result<Vec<_>>>()?;
                 Ty::dict(self.join(values, level)?)
@@ -182,7 +255,7 @@ impl Infer<'_> {
                     s.constrain(arg, param)
                         .map_err(|e| TypeError(format!("argument {} of `{}`: {e}", i + 1, op.name())))?;
                 }
-                self.perform(effect)?;
+                let _ = effect;
                 ret
             }
         })
@@ -234,15 +307,6 @@ impl Infer<'_> {
         Ok(t)
     }
 
-    /// The innermost function body may use what `effect` uses.
-    fn perform(&self, effect: Ty) -> Result<()> {
-        let current = self.effects.borrow().last().cloned();
-        match current {
-            Some(body) => self.solver.constrain(&effect, &body),
-            None => Ok(()),
-        }
-    }
-
     /// A variable that every one of `types` flows into.
     fn join(&self, types: impl IntoIterator<Item = Ty>, level: u32) -> Result<Ty> {
         let out = self.solver.fresh_ty(level);
@@ -257,13 +321,7 @@ impl Infer<'_> {
 /// variables for its generic parts.
 pub fn signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty, Ty) {
     let var = || s.fresh_ty(level);
-    // `map` and `filter` use whatever their function uses.
-    if let Op::Map | Op::Filter = op {
-        let (a, b, e) = (var(), var(), var());
-        let f_ret = if op == Op::Map { b.clone() } else { Ty::bool() };
-        let out = if op == Op::Map { Ty::list(b) } else { Ty::list(a.clone()) };
-        return (vec![Ty::func_eff(vec![a.clone()], f_ret, e.clone(), vec![]), Ty::list(a)], out, e);
-    }
+    let _ = var;
     let (params, ret) = pure_signature(s, op, argc, level);
     (params, ret, Ty::pure())
 }
@@ -330,6 +388,7 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         Op::JsonBool => (vec![json()], Ty::bool()),
         Op::JsonType => (vec![json()], Ty::str()),
         Op::HasField => (vec![Ty::Top, Ty::str()], Ty::bool()),
+        Op::WithEnv => (vec![Ty::Top, Ty::Top], Ty::Top),
     }
 }
 

@@ -166,7 +166,7 @@ fn signatures_are_checked_and_shown() {
          (claim pi : integer)
          (define pi 3)",
     );
-    assert_eq!(cb.type_of("twice").unwrap(), "((a) => a ! b, x: a) => a ! b");
+    assert_eq!(cb.type_of("twice").unwrap(), "((a) -> a, x: a) -> a");
     assert_eq!(cb.type_of("id").unwrap(), "(a) -> a");
     let e = error("(claim (id ?a) : ?a) (define (id x) (+ x 1))");
     assert!(e.contains("?a, any type the caller chooses is not a Int"), "{e}");
@@ -192,13 +192,15 @@ fn a_signature_is_what_callers_see() {
 #[test]
 fn capabilities_in_signatures() {
     let mut cb = Codebase::new();
-    cb.add_host("print!", "print", vec![conduct::types::Ty::str()], conduct::types::Ty::record([])).unwrap();
+    cb.add_host("print", "print", vec![conduct::types::Ty::str()], conduct::types::Ty::record([])).unwrap();
     cb.add_source("(claim (greet! text) with: {print} : {}) (define (greet! who) (print! who))").unwrap();
-    assert_eq!(cb.type_of("greet!").unwrap(), "(String) => {} ! {print}");
-    let e =
-        cb.add_source("(claim (quiet text) with: {} : {}) (define (quiet who) (print! who))").unwrap_err().to_string();
+    assert_eq!(cb.type_of("greet").unwrap(), "(String) -> (task {} with: {print})");
+    let e = cb
+        .add_source("(claim (quiet! text) with: {} : {}) (define (quiet! who) (print! who))")
+        .unwrap_err()
+        .to_string();
     assert!(e.contains("this uses `print`, where only pure code is allowed"), "{e}");
     // Left out, they are what the body uses.
     cb.add_source("(claim (hi! text) : {}) (define (hi! who) (print! who))").unwrap();
-    assert_eq!(cb.type_of("hi!").unwrap(), "(String) => {} ! {print}");
+    assert_eq!(cb.type_of("hi").unwrap(), "(String) -> (task {} with: {print})");
 }

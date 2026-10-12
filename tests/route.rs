@@ -245,11 +245,11 @@ fn model(todos: &[(&str, bool)]) -> Arc<Mutex<Model>> {
 fn routes_fit_the_contract() {
     let todos = load(TODOS);
     assert_eq!(
-        todos.type_of("handle!").unwrap(),
+        todos.type_of("handle").unwrap(),
         // The claim, `(handle! request) with: {model} : response`, is what
         // callers see.
-        "({body: String, headers: Dict[String], method: String, params: Dict[String], path: String, query: Dict[String]}) \
-         => {body: String, code: Int, headers: Dict[String]} ! {model}"
+        "({body: String, headers: Dict[String], method: String, params: Dict[String], path: String, search: Dict[String]}) \
+         -> (task {body: String, code: Int, headers: Dict[String]} with: {model})"
     );
     route::component(&todos).unwrap_or_else(|e| panic!("{e}"));
     let todo = load(TODO);
@@ -259,7 +259,7 @@ fn routes_fit_the_contract() {
 #[test]
 fn a_route_uses_only_the_model() {
     let mut cb = route::codebase().unwrap();
-    cb.add_host("now!", "clock", vec![], conduct::types::Ty::int()).unwrap();
+    cb.add_host("now", "clock", vec![], conduct::types::Ty::int()).unwrap();
     cb.add_source("(define (handle! r) (do (now!) (status 200)))").unwrap();
     let e = route::component(&cb).unwrap_err().to_string();
     assert!(e.contains("this uses `clock`, where only {model} may be used"), "{e}");
