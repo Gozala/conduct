@@ -114,7 +114,8 @@ impl Codebase {
         let args = (0..arity).rev().map(Term::Local).collect();
         // A host function takes at most one argument, by position; the
         // labels are only there to make the term well formed.
-        let labels: Vec<String> = (0..arity).map(|i| if i == 0 { "value".to_string() } else { format!("arg{i}") }).collect();
+        let labels: Vec<String> =
+            (0..arity).map(|i| if i == 0 { "value".to_string() } else { format!("arg{i}") }).collect();
         let term = Term::Fn(labels.clone(), Box::new(Term::Host(name.to_string(), args)));
         let ty = Ty::func_eff(params, ret, Ty::caps([capability.to_string()]), labels[1.min(labels.len())..].to_vec());
         let mut bytes = Vec::new();
@@ -239,7 +240,11 @@ impl Codebase {
                         return Some(Target::Cycle(i as u32, labels));
                     }
                     let h = resolved.get(name).or_else(|| self.names.get(name))?;
-                    let term = staged.iter().find(|s| s.hash == *h).map(|s| &s.term).or_else(|| self.defs.get(h).map(|d| &d.term));
+                    let term = staged
+                        .iter()
+                        .find(|s| s.hash == *h)
+                        .map(|s| &s.term)
+                        .or_else(|| self.defs.get(h).map(|d| &d.term));
                     let labels = match term {
                         Some(Term::Fn(labels, _)) => Some(labels.clone()),
                         _ => None,
@@ -728,7 +733,10 @@ fn builtin(op: Op, args: Vec<(Option<String>, Term)>) -> Result<Term, ResolveErr
         }
         None => {
             if let Some((Some(l), _)) = args.iter().find(|(l, _)| l.is_some()) {
-                return Err(ResolveError::Invalid(format!("the built-in `{}` takes no labels, given `{l}:`", op.name())));
+                return Err(ResolveError::Invalid(format!(
+                    "the built-in `{}` takes no labels, given `{l}:`",
+                    op.name()
+                )));
             }
             args.into_iter().map(|(_, t)| t).collect()
         }

@@ -9,11 +9,13 @@ compiled to WebAssembly components.
   its name-free term, as in Unison. Renaming a definition or its locals
   keeps its hash; mutually recursive definitions are hashed as a cycle.
   A definition is type checked once, ever.
-- **Full type inference with a lattice of types.** No annotations, ever.
-  Types have unions and intersections (Simple-sub's algebraic
-  subtyping), records are structural, and unions of variants grow
-  through inference, as in Roc. There is no `nil`: what may be missing
-  is an attribute, and failure is a variant.
+- **Data declared, code inferred, with a lattice of types.** Attributes
+  are claimed: a global name, a local one, and the type of its values.
+  Everything else is inferred, with no annotations. Types have unions
+  and intersections (Simple-sub's algebraic subtyping), records are
+  structural, and unions of variants grow through inference, as in Roc.
+  There is no `nil`: what may be missing is an attribute, and failure is
+  a variant.
 - **Wasm components as the target.** Compiled code carries a small
   runtime and no garbage collector, and speaks the canonical ABI
   directly, so it runs on Wasmtime or in a browser through the [Wasm
@@ -56,20 +58,21 @@ memory nor the routes' grows over 120 more requests.
 $ cargo run -- check examples/todo-item.cdt
 #2b845adc8c attributes : List[String]
 #f7a2cda090 styles : String
-#6f6700cfd4 attr : (Dict[a], String) -> a | String
-#844dd5f2e4 init : (Any) -> {editing: Bool}
-#bc229b7bd2 stay : (a) -> {effects: List[Nothing], model: a}
-#f499651368 update : ({editing: Bool}, Any, Any, Dict[String]) -> {effects: List[Effect], model: {editing: Bool}}
-#2e28f7026f view : ({editing: Bool}, Dict[String]) -> View
+#d60d3b9f7d attr : (String, of: Dict[a]) -> a | String
+#2ac3bbe7d7 init : (Any) -> {editing: Bool}
+#a65931f7a3 stay : (a) -> {effects: List[Nothing], model: a}
+#a9685e2029 update : ({editing: Bool}, attrs: Dict[String], event: Any, handler: Any) -> {effects: List[Effect], model: {editing: Bool}}
+#30c7ccb2ae view : ({editing: Bool}, attrs: Dict[String]) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (24689 bytes)
+wrote todo-item.wasm (24678 bytes)
 
 $ cargo run -- route examples/todos-route.cdt -o todos.wasm
-wrote todos.wasm (29917 bytes)
+wrote todos.wasm (29915 bytes)
 ```
 
-Every type above is inferred. `attr`'s type says it returns the
+Every type above is inferred; `editing` is the attribute the element
+claims. `attr`'s type says it returns the
 dictionary's value type, or the `String` it gives for a missing key. The same
 `attr` is written in all three elements, and it has the same hash in
 each: the codebase holds it once.
@@ -80,25 +83,36 @@ routes on Wasmtime.
 
 ## The language
 
+The design the language is heading for is in
+[notes/language.md](notes/language.md); what is built so far:
+
 ```clojure
-(def greeting "hello")                  ; a definition
-(defn inc [x] (+ x 1))                  ; a function
+(define greeting "hello")               ; a definition
+(define (inc x) (+ x 1))                ; a function
+(define (sum x with) (+ x with))        ; parameters after the first are labeled
+(sum 1 with: 2)                         ; the first goes without its label
+(sum with: 2 x: 1)                      ; or with it; labels in any order
+(define (greet who greeting: g) ..)     ; a label and a different local name
 (fn [x y] (+ x y))                      ; a lambda; closures capture
 (let [a 1 b (inc a)] (* a b))           ; sequential bindings, polymorphic
+(do (log! a) b)                         ; in order; the last is the value
 (if test then else)                     ; the test must be a Bool
 (cond a x b y :else z)
 (and a b) (or a b) (not a)
 
-{:title "Buy milk" :done false}         ; a record: keyword keys
-(:title todo)                           ; a field
+(claim title : (demo.todo/title text))  ; an attribute: local name, global name, values
+(claim done : (demo.todo/done boolean))
+{title: "Buy milk", done: false}        ; a record: claimed attributes as keys
+{demo.todo/title: "Buy milk"}           ; the same key, by its global name
+(title todo)                            ; read an attribute
+(title todo "untitled")                 ; an attribute, or the default
+(assoc todo done: true title: "Milk")   ; a copy of a record with attributes set
 {"class" "toggle" "type" "checkbox"}    ; a dictionary: string keys
 (get attrs "title" "")                  ; the value, or "" for no such key
-(:title todo "untitled")                ; an attribute, or the default
 (first xs "none")                       ; the first, or the default
 (assoc d "k" v) (dissoc d "k")
-(assoc todo :done true)                 ; a copy of a record with one field set
 [1 2 3] (count xs) (first xs) (rest xs) (concat xs ys) (conj xs x)
-(map f xs) (filter f xs)
+(map xs each: f) (filter xs where: f)
 (str "id: " 42)                         ; any values, as text
 (= a b)                                 ; structural, for every value
 
@@ -109,15 +123,15 @@ routes on Wasmtime.
   :suspended "Paused")                  ; no `_`: status is :active | :suspended
 (match handler "add" 1 "clear" 2 _ 0)   ; strings need a final `_`
 (match job                              ; record patterns narrow `job`
-  {:status :active} (str "Since " (:since job))
-  {:status :suspended} "paused")
-(match job {:n n} (+ n 1) _ 0)          ; n where job has :n
+  {state: :active} (str "Since " (since job))
+  {state: :suspended} "paused")
+(match job {n: n} (+ n 1) _ 0)          ; n where job has n
 
-{:ok todo} {:error :not-found}          ; variants: records of one field
-(if ok? {:ok t} {:error :empty-title})  ; {error: :empty-title} | {ok: ...}
+{ok: todo} {error: :not-found}          ; variants: records of one attribute
+(if ok? {ok: t} {error: :empty-title})  ; {error: :empty-title} | {ok: ...}
 (match (add! title)                     ; names in patterns bind
-  {:ok todo} (json (todo-json todo) 201)
-  {:error why} (problem why))           ; no `_`: these two variants cover
+  {ok: todo} (json (todo-json todo) status: 201)
+  {error: why} (problem why))           ; no `_`: these two variants cover
 
 
 (h "li" {"class" "done"} [child ...] {"click" "handler"})   ; a view
@@ -131,6 +145,33 @@ routes on Wasmtime.
 (json-type j)                                               ; "string", "null", ...
 ```
 
+### Labels
+
+A function takes one record of labeled parameters. The first may be
+passed without its label, and the others are passed by label, in any
+order, so a call says what each argument is: `(link "all" label: "All"
+href: "#/")`. Underneath, parameters are passed in a fixed order (the
+first, then the rest by label), so a labeled call costs what a
+positional one does. A function's type keeps its labels,
+`(Int, with: Int) -> Int`, and a call through a function value is
+checked against them. The first parameter's label is part of the
+definition's hash, since callers may use it.
+
+### Attributes
+
+A record's keys are attributes, and an attribute is claimed before it
+is used: `(claim title : (demo.todo/title text))` names the global key
+`demo.todo/title` that values carry, the local name `title` code uses,
+and the type of its values, which every record that sets it is checked
+against. A key no claim declares is an error, so a misspelled key is
+never a new key. Two claims of one global name must agree on its type.
+Types are shown with attributes by their local names.
+
+Every codebase claims `ok` and `error`; an element's prelude claims the
+element contract's attributes (`model`, `effects`, and an event's
+`kind`, `value`, `checked`, `key` and `status`), and a route's prelude
+claims a request's and a response's and the todo model's.
+
 JSON is one type, `Json`, read with accessors that answer a neutral value
 (`""`, `0`, `false`, `[]`) when the document has another shape there, as
 the Zena demo's `text`, `flag` and `count` helpers do, and `json-type`
@@ -143,7 +184,7 @@ definition with a built-in's name shadows it, so a parameter can be
 called `filter`.
 
 A record update keeps whatever else the record holds:
-`(defn bump [m] (assoc m :n (+ (:n m) 1)))` infers
+`(define (bump m) (assoc m n: (+ (n m) 1)))` infers
 `(a & {n: Int}) -> (a with n: Int)`, where `a` is the rest of the record,
 the way row polymorphism would type it.
 
@@ -161,19 +202,19 @@ There is no `nil`, after Roc's reasons for having no Maybe and Rich
 Hickey's "Maybe Not" ([notes][Maybe Not]), which agree once each is put
 where it belongs:
 
-- **What can fail answers a variant that says why:** `{:ok v}` or
-  `{:error :not-found}`, never "nothing".
+- **What can fail answers a variant that says why:** `{ok: v}` or
+  `{error: :not-found}`, never "nothing".
 - **Absence that means something is a variant that names it:**
-  `:unspecified | {:specified artist}`.
+  `:unspecified | {specified: artist}`.
 - **An attribute a record may not have is simply not there.** That is
   Hickey's point: optionality belongs to the context, not to the value.
   A record's type marks such a field `title?: String`, and reading it
-  takes a default, `(:title todo "untitled")`, or a `match`,
-  `{:title t}`. A record built in two branches, one with the attribute
+  takes a default, `(title todo "untitled")`, or a `match`,
+  `{title: t}`. A record built in two branches, one with the attribute
   and one without, has it as optional.
 
 With subtyping, the "Maybe Not" argument about change still holds:
-promising more (`{:ok v}` where `{:ok v} | :none` was promised) or
+promising more (`{ok: v}` where `{ok: v} | :none` was promised) or
 handling another variant breaks no caller.
 
 `get` and `first` take the value to give when there is none. A view
@@ -185,7 +226,7 @@ nothing to answer answers `{}`.
 A keyword is a value whose type is the set of just itself, and these
 sets are ordered by inclusion, so `(if b :active :suspended)` is
 `:active | :suspended`. A record of one field is a variant the same way:
-`{:ok t}` is the variant `ok` carrying `t`, and `(if c {:ok t} {:error
+`{ok: t}` is the variant `ok` carrying `t`, and `(if c {ok: t} {error:
 e})` is `{error: E} | {ok: T}`. Keywords are the variants that carry
 nothing, so `:ok | {error: String}` is one union too. As in Roc, unions
 grow through inference: a function that returns its callee's result or
@@ -193,21 +234,21 @@ a new error returns the union of both, `{error: :empty-title |
 :not-found} | {ok: a}`. Roc needs a row variable to keep a union open;
 here subtyping does that.
 
-A variant is still the record it is: `(:n {:n 1})` reads its field. But
+A variant is still the record it is: `(n {n: 1})` reads its attribute. But
 records of more fields have width subtyping, a record with more fields
 fitting where fewer are asked for, which is why two records with
 different fields join to the fields they share. A variant joins with
-other variants without losing its key; `{:ok 1 :extra 2}` is a record,
+other variants without losing its key; `{ok: 1, extra: 2}` is a record,
 not a variant.
 
 ### Matching
 
 `match` tests a value against patterns in order: keyword, string, and
 integer literals, `_`, names, and records of patterns. A name
-binds what it matched in the clause's result: `{:ok {:title t}}` binds
+binds what it matched in the clause's result: `{ok: {title: t}}` binds
 the title inside an `ok` variant. Each clause narrows what it tested inside its branch, the way
 a check narrows a value in TypeScript: matching `job` against
-`{:status :active}` makes its status `:active` in that branch. A narrowed field
+`{state: :active}` makes its state `:active` in that branch. A narrowed field
 is typed like a record update, so this needed no new machinery.
 
 A record pattern reads a field only where the value has it, so a
@@ -216,19 +257,19 @@ variant pattern asks nothing of the other variants: its binder's type is
 or its `ok` fits `a`.
 
 `_` matches anything. As the last clause it is the default; inside a
-record pattern, `{:status _}`, it asks only that the field be there. A
+record pattern, `{state: _}`, it asks only that the attribute be there. A
 `match` without a final `_` must be able to cover every value: its
 patterns are variants (keywords and one-field records) whose payload
 patterns cover, key by key, or one clause is a record of `_`s. Then the match constrains its value to what it covers,
 and leaving a case out is a type error. With no
 annotations, nothing else says what the value may be, so that error
-appears where a value outside the cases flows in, `(describe {:status
+appears where a value outside the cases flows in, `(describe {state:
 :done})`, not at the match. Any other `match` must end with `_`.
-`:else` is not special in a `match`: a keyword is an entity (`:else` is
-`else:`), so it is a pattern like any other.
+`:else` is not special in a `match`: it is a keyword, so it is a
+pattern like any other.
 
 What narrowing does not cover is a predicate you define:
-`(defn active? [j] ...)` returns a `Bool`, and what its being true says
+`(define (active? j) ...)` returns a `Bool`, and what its being true says
 about its argument is not part of its type. That would take Typed
 Racket's occurrence typing, inferred without annotations.
 
@@ -244,14 +285,14 @@ capabilities, so the capabilities in a function's type are exactly what
 it can reach outside itself.
 
 ```clojure
-(defn stamp! [msg] (let [t (now!)] (log! (str t ": " msg))))
+(define (stamp! msg) (let [t (now!)] (log! (str t ": " msg))))
 ; stamp! : (Any) => {} ! {clock, log}
 
-(defn all! [xs] (map (fn [x] (log! x)) xs))     ; map lends its function's effect
+(define (all! xs) (map xs each: (fn [x] (log! x))))   ; map lends its function's effect
 ; all! : (List[String]) => List[{}] ! {log}
 
-(defn apply [f x] (f x))                        ; effect-polymorphic
-; apply : ((a) => b ! c, a) => b ! c
+(define (apply f x) (f x))                            ; effect-polymorphic
+; apply : ((a) => b ! c, x: a) => b ! c
 ```
 
 - A name ends with `!` exactly when what it names uses a capability; a
@@ -400,7 +441,7 @@ the Zena routes import. Unlike an element's `update`, `handle!` does its
 work itself: it calls the model and waits for it.
 
 ```text
-query!           : (:all | :active | :completed) => {todos: List[Todo], counts: {active: Int, completed: Int}}
+query!           : (:all | :active | :completed) => {todos: List[Todo], counts: {active-count: Int, completed-count: Int}}
 add!             : (String) => {ok: Todo} | {error: :empty-title | :not-found}
 update!          : ({id: String, title?: String, completed?: Bool}) => {ok: Todo} | {error: ...}
 remove!          : (String) => :ok | {error: :empty-title | :not-found}
@@ -409,13 +450,13 @@ clear-completed! : () => {}
                    each ! {model}
 ```
 
-A model `result` is a union of variants, `{:ok v}` or `{:error e}`, and
+A model `result` is a union of variants, `{ok: v}` or `{error: e}`, and
 `:ok` alone when it carries nothing. Its `model-error` and the `filter`
 enum are keywords, so a misspelled filter is a type error. An `option`
 argument is an attribute that may be left out: a WIT function with
 `option` parameters takes one record of its named parameters, as
 `update!` does. An `option` result on its own, which says nothing of
-why, would be `{:some v} | :none`; the demo's model has none.
+why, would be `{some: v} | :none`; the demo's model has none.
 
 The glue exports `wasi:http/handler#handle`, lifted with the async
 ABI's callback form. It reads the request and its body, runs `handle!`,
@@ -431,12 +472,12 @@ polyfill with stack switching, JSPI, or nested turns.
 
 ## Next
 
-1. **The language proposal** in `notes/language.md`: qualified keys,
-   attributes and concepts (with `:maybe` attributes, which are the
-   optional fields here), macros, and ranked domains.
-2. **Variants by key presence**: a variant that carries more
-   attributes, `{:ok t :took 12}`, with a value that has two variant
-   keys an error unless a rank decides.
+1. **Claims** (`notes/language.md`, step 2): record types with optional
+   attributes, constructors and patterns such as `(ok todo)`, type
+   variables, variants ranked where their records overlap, and checked
+   signatures.
+2. **Tasks** (step 3): calls are pure, a function with effects returns a
+   task, and `!` performs it, in an environment of capabilities.
 3. **Narrowing in later clauses**: a clause does not learn that the ones
    before it failed. That needs MLstruct's negation types.
 4. **The codebase in Dialog**: definitions as facts, names as assertions

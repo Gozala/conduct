@@ -5,7 +5,7 @@
 //! process.
 
 use bytes::Bytes;
-use conduct::{Codebase, element};
+use conduct::element;
 use http_body_util::{BodyExt, Full};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -61,25 +61,27 @@ impl WasiHttpView for State {
 /// line, when it connects, and reports each response as a custom event.
 /// It posts a body to each URL but `/big`, which it gets with none.
 const FETCHER: &str = r#"
-(def attributes ["urls"])
-(defn init [attrs] {:n 0})
-(defn ask [url]
+(claim n : (t/n integer))
+(define attributes ["urls"])
+(define (init attrs) {n: 0})
+(define (ask url)
   (if (= (count (split url "/big")) 1)
     (fetch "POST" url (str "{\"url\":\"" url "\"}") "answer")
     (fetch "GET" url "" "answer")))
-(defn update [m handler event attrs]
+(define (update m handler event attrs)
   (cond
     (= handler "connected")
-      {:model m :effects (map ask (filter (fn [u] (not (= u ""))) (split (get attrs "urls" "") "\n")))}
+      {model: m
+       effects: (map (filter (split (get attrs "urls" "") "\n") where: (fn [u] (not (= u "")))) each: ask)}
     (= handler "answer")
-      {:model {:n (+ (:n m) 1)}
-       :effects [(emit "answered" (str (:status event 0) " " (:value event "")))]}
-    :else {:model m :effects []}))
-(defn view [m attrs] (h "p" {} [(str (:n m))] {}))
+      {model: {n: (+ (n m) 1)}
+       effects: [(emit "answered" (str (status event 0) " " (value event "")))]}
+    :else {model: m, effects: []}))
+(define (view m attrs) (h "p" {} [(str (n m))] {}))
 "#;
 
 async fn run(urls: &[&str]) -> (Vec<String>, Vec<String>) {
-    let mut cb = Codebase::new();
+    let mut cb = element::codebase();
     cb.add_source(FETCHER).unwrap_or_else(|e| panic!("{e}"));
     let bytes = element::component(&cb).unwrap_or_else(|e| panic!("{e}"));
 

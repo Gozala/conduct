@@ -179,10 +179,7 @@ fn define(args: &[Sexp], span: Span) -> Result<Def> {
             };
             let name = binder(name)?;
             if params.is_empty() {
-                return err(
-                    format!("`{name}` takes no parameters, so it is a value: `(define {name} value)`"),
-                    *hspan,
-                );
+                return err(format!("`{name}` takes no parameters, so it is a value: `(define {name} value)`"), *hspan);
             }
             let params = parameters(params, *hspan)?;
             Ok(Def { name, body: Expr::Fn(params, Box::new(sequence(body, span)?)), span })
@@ -234,16 +231,10 @@ fn claim(args: &[Sexp], span: Span) -> Result<Item> {
     let name = binder(&args[0])?;
     match ty {
         Sexp::List(items, tspan) => match items.as_slice() {
-            [Sexp::Symbol(global, _), value] if global.contains('/') => Ok(Item::Attribute(Attribute {
-                name,
-                global: global.clone(),
-                ty: type_expr(value)?,
-                span: *tspan,
-            })),
-            _ => err(
-                "this claim is an attribute, `(domain/name type)`; claims of other types come later",
-                *tspan,
-            ),
+            [Sexp::Symbol(global, _), value] if global.contains('/') => {
+                Ok(Item::Attribute(Attribute { name, global: global.clone(), ty: type_expr(value)?, span: *tspan }))
+            }
+            _ => err("this claim is an attribute, `(domain/name type)`; claims of other types come later", *tspan),
         },
         other => err("an attribute is claimed as `(domain/name type)`", other.span()),
     }
@@ -267,7 +258,9 @@ fn type_expr(form: &Sexp) -> Result<TypeExpr> {
                 .iter()
                 .map(|k| match k {
                     Sexp::Keyword(k, _) => Ok(k.clone()),
-                    other => err("a list of keywords, `[:a :b]`, is the only union an attribute takes yet", other.span()),
+                    other => {
+                        err("a list of keywords, `[:a :b]`, is the only union an attribute takes yet", other.span())
+                    }
                 })
                 .collect::<Result<_>>()?,
         ),
@@ -315,7 +308,9 @@ pub fn expr(form: &Sexp) -> Result<Expr> {
             _ => Expr::Var(name.clone(), *span),
         }),
         Sexp::Keyword(k, _) => Ok(Expr::Keyword(k.clone())),
-        Sexp::Label(l, span) => err(format!("the label `{l}:` names an argument or attribute; a value follows it"), *span),
+        Sexp::Label(l, span) => {
+            err(format!("the label `{l}:` names an argument or attribute; a value follows it"), *span)
+        }
         Sexp::Vector(items, _) => Ok(Expr::List(items.iter().map(expr).collect::<Result<_>>()?)),
         Sexp::Map(items, span) => map_literal(items, *span),
         Sexp::List(items, span) => list_form(items, *span),

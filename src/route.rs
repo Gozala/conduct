@@ -178,11 +178,7 @@ pub fn request_type() -> Ty {
 
 /// The record `handle!` answers.
 pub fn response_type() -> Ty {
-    Ty::record([
-        field(key::STATUS, Ty::int()),
-        field(key::HEADERS, Ty::dict(Ty::str())),
-        field(key::BODY, Ty::str()),
-    ])
+    Ty::record([field(key::STATUS, Ty::int()), field(key::HEADERS, Ty::dict(Ty::str())), field(key::BODY, Ty::str())])
 }
 
 /// The route's definitions.

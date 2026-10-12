@@ -93,7 +93,12 @@ impl Ty {
     }
     /// A pure function whose parameters after the first have `labels`.
     pub fn func(params: Vec<Ty>, ret: Ty, labels: &[&str]) -> Ty {
-        Ty::Fn(Rc::new(params), Rc::new(ret), Rc::new(Ty::pure()), Rc::new(labels.iter().map(|l| l.to_string()).collect()))
+        Ty::Fn(
+            Rc::new(params),
+            Rc::new(ret),
+            Rc::new(Ty::pure()),
+            Rc::new(labels.iter().map(|l| l.to_string()).collect()),
+        )
     }
     /// A function that may use the capabilities of `effect`.
     pub fn func_eff(params: Vec<Ty>, ret: Ty, effect: Ty, labels: Vec<String>) -> Ty {
@@ -289,11 +294,7 @@ impl Solver {
             (Ty::Fn(p0, r0, e0, l0), Ty::Fn(p1, r1, e1, l1)) => {
                 if p0.len() == p1.len() && l0 != l1 {
                     let text = |l: &[String]| l.iter().map(|l| format!("{l}:")).collect::<Vec<_>>().join(" ");
-                    return Err(TypeError(format!(
-                        "a function labeled `{}` is called with `{}`",
-                        text(l0),
-                        text(l1)
-                    )));
+                    return Err(TypeError(format!("a function labeled `{}` is called with `{}`", text(l0), text(l1))));
                 }
                 if p0.len() != p1.len() {
                     return Err(TypeError(format!(

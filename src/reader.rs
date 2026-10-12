@@ -247,7 +247,9 @@ mod tests {
     fn reads_labels() {
         let forms = read("(sum 1 with: 2) {io.gozala.person/name: \"Ada\"} :").unwrap();
         assert!(matches!(&forms[0], Sexp::List(items, _) if items[2] == Sexp::Label("with".into(), items[2].span())));
-        assert!(matches!(&forms[1], Sexp::Map(items, _) if matches!(&items[0], Sexp::Label(n, _) if n == "io.gozala.person/name")));
+        assert!(
+            matches!(&forms[1], Sexp::Map(items, _) if matches!(&items[0], Sexp::Label(n, _) if n == "io.gozala.person/name"))
+        );
         assert!(matches!(&forms[2], Sexp::Label(n, _) if n.is_empty()));
     }
 

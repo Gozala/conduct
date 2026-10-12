@@ -4,7 +4,7 @@
 
 mod support;
 
-use conduct::{Codebase, element};
+use conduct::element;
 use support::Host;
 use wcmp::*;
 
@@ -107,7 +107,7 @@ impl Element {
     }
 
     async fn load_with(source: &str, host: Host) -> Element {
-        let mut cb = Codebase::new();
+        let mut cb = element::codebase();
         cb.add_source(source).unwrap_or_else(|e| panic!("{e}"));
         let bytes = element::debug_component(&cb).unwrap_or_else(|e| panic!("{e}"));
         let backend = wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap();
@@ -257,18 +257,19 @@ async fn todo_item_renders_and_reports_changes() {
 
 #[test]
 fn contract_violations_are_type_errors() {
-    let mut cb = Codebase::new();
+    let mut cb = element::codebase();
     // `view` must return a View.
-    cb.add_source("(defn init [a] 0) (defn view [m a] \"not a view\")").unwrap();
+    cb.add_source("(define (init attrs) 0) (define (view m attrs) \"not a view\")").unwrap();
     let err = element::check(&cb).err().unwrap().to_string();
     assert!(err.contains("`view` does not fit"), "{err}");
 
     // `update` must return the model `view` accepts.
-    let mut cb = Codebase::new();
+    let mut cb = element::codebase();
     cb.add_source(
-        "(defn init [a] {:n 0})
-         (defn update [m handler e a] {:model 1 :effects []})
-         (defn view [m a] (h \"p\" {} [(:n m)]))",
+        "(claim n : (t/n integer))
+         (define (init attrs) {n: 0})
+         (define (update m handler event attrs) {model: 1, effects: []})
+         (define (view m attrs) (h \"p\" {} [(n m)]))",
     )
     .unwrap();
     let err = element::check(&cb).err().unwrap().to_string();
