@@ -2,268 +2,312 @@
 
 A synthesis of the design discussion, written to be built. Each section
 ends with what changes in the compiler. Syntax marked *provisional* is a
-placeholder for a decision still open (listed at the end). Parts already
-built are marked **(built)**.
+placeholder for a decision still open (listed at the end).
 
 ## Principles, in the order they win
 
-1. **Values are plain, immutable data.** Records, lists, strings,
-   numbers, keywords. There is no `nil`: what may be missing is an
-   attribute, and failure is a variant that says why.
-2. **Data is declared; code is inferred.** Attributes, concepts and
-   ranked classifications are type definitions, written by hand because
-   they are decisions (a global name, a shape, an order), not facts a
-   checker could find. Functions, effects, local records and narrowing
-   are inferred, and a function never needs an annotation. This is ML's
-   split: Elm, Roc and OCaml declare `type Job = ...` and infer the
-   code that uses it. An annotation on code is optional and only ever
-   asks for something inference cannot know, such as a ranking.
-3. **Declarations describe data; they never choose code.** An
-   attribute or a concept constrains and identifies data. None decides
-   which code runs, so there are no type classes.
+1. **Values are plain, immutable data.** Records, lists, text, numbers,
+   keywords. There is no `nil`: what may be missing is an attribute,
+   and failure is a variant that says why.
+2. **Data is declared; code is inferred.** Attributes, records and
+   variants are claimed by hand, because they are decisions (a global
+   name, a shape, an order), not facts a checker could find. Functions,
+   effects, local records and narrowing are inferred. A claim on code
+   is optional; when given, it is checked, and it is what callers see.
+3. **Claims describe data; they never choose code.** Nothing decides
+   which code runs from a type, so there are no type classes.
 4. **Data carries global names; programs use local ones.** A value
-   holds `io.gozala.point/x`; an attribute gives it the local name `x`
-   that code uses.
-5. **Effects are inferred and visible**, as in Roc. **(built)**
-6. **The core is small; the rest is macros.** Macros are pure,
-   hygienic by hash, and can read what the compiler knows.
+   holds `io.gozala.person/name`; a claim gives it the local name
+   `name` that code uses.
+5. **Calls are pure; performing is marked.** A function that has
+   effects returns a task. `!` after a name performs it, and only code
+   that is itself performing may say `!`.
+6. **The core is small; the rest is macros.**
 7. **A definition is its hash**, taken after macro expansion, over a
    name-free term. Types and expansions are derived data.
 
 When two principles conflict, the earlier one wins.
 
 A consequence of 7 for 2: a definition is checked once and stored by
-hash, so its type cannot depend on code written later. Nothing global is
-inferred from its uses: an unknown type in a definition stays a type
-variable at its boundary, instantiated fresh at each use (section 3).
+hash, so its type cannot depend on code written later. A type variable
+stays polymorphic at its definition's boundary and is instantiated
+fresh at each use.
 
 ## 1. Values
 
 ```scheme
-{x: 0, y: 0}                          ; a record: x and y name declared attributes
-{io.gozala.point/x: 0}                ; the same key, spelled out in full
-[1 2 3]                               ; a list
-:active                               ; a keyword, a value whose type is itself
-"text" 42
+{name: "Ada", age: 36}                 ; a record; name and age are claimed attributes
+{io.gozala.person/name: "Ada"}         ; the same key, spelled out in full
+[1 2 3]                                ; a list
+:active                                ; a keyword, a value whose type is itself
+"text" 42 true
 ```
 
-A record's keys are attributes. `x:` refers to the attribute declared
-with the local name `x`; the value holds its global name. A key no
-attribute declares is an error, so a misspelled key is never a new key.
+A record's keys are attributes. `name:` refers to the attribute claimed
+with the local name `name`; the value holds its global name. A key no
+claim declares is an error, so a misspelled key is never a new key.
 Commas are whitespace.
 
-`x:` and `:x` are distinct: `x:` names an attribute or a parameter's
-label, `:active` is a keyword value. (In Dialog the two spellings denote
-the same entity; in conduct a call needs to tell a label from a keyword
-argument.)
+`name:` and `:name` are distinct: `name:` is an attribute or a label,
+`:active` is a keyword value.
 
-The platform and the prelude declare the attributes their contracts use
-(`ok`, `error`, a route's request fields), so user code declares only
-its own domain.
+The platform and the prelude claim the attributes their contracts use
+(a response's `status`, a request's `method`, `ok`, `error`), so user
+code claims only its own domain.
 
-**Compiler:** the reader takes `name:` and `ns/name:` tokens; record
-literals resolve keys to declared attributes; field ids are taken from
-global names.
+## 2. Absence and failure
 
-## 2. Absence and failure **(built, with today's keys)**
+There is no `nil`, after Roc's reasons for having no Maybe and Hickey's
+"Maybe Not":
 
-There is no `nil`. Each use of "maybe" has its own form, after Roc's
-reasons for having no Maybe and Hickey's "Maybe Not", which agree once
-each is put where it belongs:
-
-- **What can fail answers a variant that says why:** `{ok: v}` or
-  `{error: :not-found}`.
-- **Absence that means something is a variant that names it:**
-  `:unspecified | {specified: artist}`.
+- **What can fail answers a variant that says why:** `(ok todo)` or
+  `(error :not-found)`.
 - **An attribute a value may not have is simply not there.** Reading it
-  takes a default, `(:title todo "untitled")`, or a `match`.
+  takes a default, `(title todo "untitled")`, or a `match`.
+- **Optionality belongs to the record, not the attribute.** `phone` is
+  optional in a `person` and may be required in a `contact`.
 
 `get` and `first` take the value to give when there is none. A function
-with nothing to answer answers `{}`. A WIT function with `option`
-parameters takes one record of its named parameters, an absent
-attribute meaning `none`. JSON keeps an opaque `null` inside `Json`,
-seen through `json-type`.
+with nothing to answer answers `{}`.
 
-Failure as control flow (Verse) is not used for data: failure that
-propagates by itself hides where absence was handled, which is Roc's
-objection to Maybe again. It may return for predicates in rules.
+## 3. Claims
 
-## 3. Attributes
+One form, `claim`, says what a name is or what type it has:
 
 ```scheme
-(attribute x
-  the: io.gozala.point/x
-  as: integer)
-
-(attribute status
-  the: io.gozala.job/status
-  as: [:pending :done])                 ; a listed set of keywords
+(claim NAME : TYPE)
+(claim (NAME PARAM ...) [with: CAPABILITIES] : TYPE)
 ```
 
-An attribute has a **local name** (`x`), a definition in its module,
-and a **global name** (`io.gozala.point/x`), the key values carry. Local
-names are unique in a module; another module's are reached as
-`point/x`. Every declaration of one global name must agree on its type.
+**A claim with a `define` of the same name is a signature** ("has this
+type"): it is checked against the definition, and callers see the
+claim, not the body. **A claim with no `define` defines a type** ("is
+this type"); what kind of type depends on its right-hand side.
 
-`as:` takes a primitive (`text`, `integer`, `natural`, ...), a listed
-set of keywords, a concept for a value nested under the key, or a type
-with variables (below). No predicates in this version.
-
-### Type variables, named and anonymous
-
-Inference is already parametric underneath: Simple-sub gives every
-unconstrained position its own type variable. Generics are that
-variable given a *name*, Elm-style, so it can be shared across
-positions:
+### Attributes
 
 ```scheme
-(attribute items the: io.gozala/items as: (list a))
-(concept box with: {value: a})
+(claim name  : (io.gozala.person/name text))
+(claim age   : (io.gozala.person/age integer))
+(claim phone : (io.gozala.contact/phone text))
 ```
 
-A named variable ties its occurrences together: a `box` of integers and
-a `box` of strings are the same concept at different `a`.
+An attribute is a global name (`domain/name`) applied to the type of
+its value. It gives the global name a local one. Every claim of one
+global name must agree on its type. An attribute is used three ways:
+as a key in records (`{name: "Ada"}`), as a member of record types
+(`{name age}`), and as an accessor (`(name person)`, or
+`(name person "anonymous")` with a default).
 
-**An omitted `as:` is the anonymous form of the same variable.** It is
-not `Any`: it is an open type, with no upper bound declared, that each
-use constrains from below. A use that adds to it makes it a number
-there, one that reads a key from it makes it a record with at least that
-key. "Open" is not specific to records; open records are only what you
-get when the uses are field reads. Named or anonymous, it is the same
-machinery; the one difference is whether the variable is named, and so
-shared.
+Value types: `text`, `integer`, `boolean`, `json`, `{}`, `(list a)`,
+`(dict a)`, keywords and unions of them (`[:active :completed]`), a
+record type, or a type variable.
 
-**Under hashing** (principle 7), the variable cannot be solved globally
-from later uses. Whether named or anonymous, it stays polymorphic at the
-definition's boundary and is instantiated fresh at each use, as Elm
-does with a lowercase type variable. That keeps check-once sound, and it
-avoids the problem Roc has met where an open type closes partway through
-inference, so that the result depends on the order expressions are
-checked.
+### Records
 
-**Compiler:** the `attribute` form; a global constraint on each key in
-the solver (any record with `io.gozala.point/x` has an `integer` there,
-wherever it was built); module namespaces.
+```scheme
+(claim person : {name age ? phone})    ; name and age required, phone optional
+(person "Ada" age: 36)                 ; a constructor: checked, and builds {name: .., age: ..}
+```
+
+A record type lists attributes, by local name or inline
+(`{(io.gozala.person/name text)}`); those after `?` are optional. It
+contains only attributes, never other records. A record type is open:
+a value with more attributes is still a `person`.
+
+A record claim is a type, a constructor and a pattern. The constructor
+takes the attributes as labels, the first being the default label (the
+same rule as functions, section 4).
+
+### Type variables and type constructors
+
+```scheme
+(claim (ok ?a)    : {(conduct.result/ok ?a)})
+(claim (error ?e) : {(conduct.result/error ?e)})
+(ok 5)                                  ; {conduct.result/ok: 5}
+```
+
+`?a` is a type variable. A named variable ties its occurrences
+together. Every variable is named; there is no anonymous `?`, which
+would make `(ok ?) : {.. ?}` claim nothing. A claim with parameters is
+a type constructor: `(ok integer)` is the type of `(ok 5)`.
+
+### Variants
+
+```scheme
+(claim (result ?ok error: ?error) : [(ok ?ok) (error ?error)])
+(claim pending-or-done : [done pending idle])
+```
+
+A variant lists record types in rank order. A value is the first case
+it fits. Where the cases are disjoint, as `ok` and `error` are, order
+does not matter; where they overlap, it decides (section 5).
+
+### Signatures
+
+```scheme
+(claim (greet! who: person) with: {print} : {})
+(claim (map list: (list ?a) each: ((\ ?a) : ?b)) : (list ?b))
+```
+
+A signature lists the parameters' types, labels as in `define`, then
+`:` and the result. In a parameter list a bare name is a type. A
+function type is `((\ PARAM ...) : RESULT)`. `with:` belongs only on a
+claim for a performing name (`greet!`, section 6) and is an upper bound
+on the capabilities it may need; left out, they are inferred.
+
+**Compiler:** `claim` replaces type rules; attributes in a global
+key-type table checked across claims; record types as constructors and
+patterns; type constructors with named variables; ranked variants;
+signatures checked by subsumption against the inferred type.
 
 ## 4. Functions
 
 ```scheme
-(define (sum x y) (+ x y))             ; puns (define (sum x: x y: y) ...)
-(sum x: 1 y: 2)                        ; labels at the call, in any order
-(sum y: 2 x: 1)                        ; the same call
+(define (sum x with) (+ x with))
+(sum 1 with: 2)                        ; the first parameter is the default label
+(sum x: 1 with: 2)                     ; or labeled, by name
+(sum with: 2 x: 1)                     ; labels in any order
 
-(define (inc _: n) (+ n 1))            ; one nameless parameter, first
-(inc 2)
-
-(define (greet _: name greeting:) (str greeting " " name))
-(greet "Bo" greeting: "Hi")
+(define (greet who greeting: g) (concat g " " who))  ; label `greeting`, local `g`
 ```
 
-Every parameter has a label, which by default is its name; `label: local`
-gives them separately. `_:` marks the one parameter passed without a
-label, which comes first. Underneath, a function's labeled parameters
-are one record argument and the nameless one is a separate argument, so
-a labeled parameter that may be left out is an optional attribute, and
-calling a function and building a concept are the same act. Calls to a
-known function can be compiled without building the record.
+A function takes one record of labeled parameters. The first parameter
+may be passed without its label; there is no implicit `of`. A label
+names a parameter, not an attribute: labels are local to a function.
 
-`let` binds with `[name value ...]`. `match` is as today, with concept
-patterns added (section 5).
+A function value has a type `((\ ?a with: ?b) : ?c)`: the first
+parameter is positional, the others labeled. A call through a function
+value passes the first positionally, the rest by label. Underneath, the
+parameters are passed in a fixed order (the first, then the rest by
+label), so a call costs what a positional call does.
 
-*Provisional:* `(fn [x] ...)` takes its parameters without labels, as
-Swift's closures do, so a function passed to `map` is called as `map`
-calls it. A defined function passed as a value needs `_:` on its first
-parameter.
+`let` binds with `[name value ...]`; `do` evaluates in order and
+answers its last form. *Provisional:* `(fn [x with] body)` is a
+function value, with `define`'s parameter rules.
 
-**Compiler:** `define` replaces `def`/`defn`; labels at calls; the
-record argument; `_:`.
+**Compiler:** `define` replaces `def`/`defn`; labels at calls resolved
+to positions; labeled function types; `fn` with labels.
 
-## 5. Concepts
+## 5. Ranked variants of overlapping records
 
-```scheme
-(concept idle    with: {description})
-(concept pending with: {description started-at})
-(concept done    with: {description completed-at})
-
-(done description: "Ship it" completed-at: now)  ; a constructor, checked
-```
-
-A concept is a named set of attributes a value has, and so a record
-type, a constructor, and a pattern. *Provisional:* `maybe:` beside
-`with:` lists attributes a value may have.
-
-### Ranked classifications
-
-Concepts overlap: facts accrete, so a job that finishes still has its
-`started-at`, and every job has a `description`. Which concept a value
-"is" therefore needs an order, and the order is declared once:
+Records overlap: facts accrete, so a job that finishes still has its
+`started-at`, and every job has a `description`. Which record a value
+"is" therefore needs an order, and a variant declares it once:
 
 ```scheme
-(concept job [done pending idle])      ; a job is the first of these it satisfies
+(claim description  : (io.gozala.job/description text))
+(claim started-at   : (io.gozala.job/started-at integer))
+(claim completed-at : (io.gozala.job/completed-at integer))
 
-(define (run! job: job)
+(claim idle    : {description})
+(claim pending : {description started-at})
+(claim done    : {description completed-at})
+(claim job     : [done pending idle])
+
+(define (report job)
   (match job
-    done    (print! "Done:" (description job))
-    pending (print! "Pending:" (description job))
-    idle    (print! "Idle:" (description job))))
+    (done description: d) (concat "Done: " d)
+    (pending description: d) (concat "Pending: " d)
+    (idle description: d) (concat "Idle: " d)))
 ```
 
-- Every value lands in exactly one case: the highest-ranked concept it
-  satisfies. A job with both `started-at` and `completed-at` is `done`.
-- The cases are disjoint, so the arms of a `match` on a classification
-  may come in any order.
-- A match covers the classification when it names every case, or ends
-  with `_`.
-- In each arm the value has that concept's attributes.
+- A value is the highest-ranked case it fits: a job with both
+  `started-at` and `completed-at` is `done`.
+- The cases are disjoint once ranked, so a `match`'s arms may come in
+  any order, and it covers the variant when it names every case or
+  ends with `_`.
+- In each arm the value has that case's attributes.
+- **A wider case ranked above a narrower one is an error:**
+  `[idle done pending]` fails, because every `done` is an `idle`, so
+  `done` could never be chosen.
+- **Matching over overlapping records requires a ranked variant.**
+  Without one there is no order, and the match does not compile.
+  (Inferring the order where the lattice decides it could be allowed
+  later; it is a relaxation.)
 
-This is Dialog's listed domain under `top`, with concepts in place of
-values; the same order can rank conflicting facts when the
-classification is stored.
+A pattern `(done description: d)` names a case and binds attributes by
+label, the first by position: `(ok value)`.
 
-### Checks
+**Compiler:** constructor patterns; classification by rank at run time
+(tests on which attributes are present, in rank order); the rank check.
 
-- **Matching over concept variants requires a ranked classification.**
-  To `match` on `done`, `pending` and `idle`, a classification such as
-  `(concept job [done pending idle])` must be declared and the value
-  matched as that classification. With no ranked declaration there is
-  no concept-variant match. The order therefore always exists, and the
-  question of ambiguous arms does not arise. (Inferring the order where
-  the lattice decides it could be allowed later; it is a relaxation, so
-  it can be added without breaking code, while taking inference away
-  after code relies on it could not.)
-- **A wider concept ranked above a narrower one is an error.**
-  `[idle done pending]` fails: every `done` is an `idle`, so `done`
-  could never be chosen. The lattice decides "wider": a concept with
-  more attributes fits wherever one with fewer is expected.
-- **Narrowing** follows the chosen case. Concepts only test which
-  attributes a value has, so nesting and coverage are decided exactly.
+## 6. Effects: tasks
 
-**Compiler:** the `concept` form; concepts as constructors and as
-patterns; ranked classifications; the rank and overlap checks.
+Calls are pure. A function that has effects returns a **task**, a value
+describing work that needs capabilities. `!` after a name performs.
 
-## 6. Effects **(built)**
+```scheme
+(define (show! output)                 ; defines what performing (show! output) does
+  (match output
+    (ok value) (print! value)
+    (error reason) (print! reason)))
 
-Roc's model, with capabilities:
+(show (ok "hi"))                       ; a task: (task {} with: {print}); allowed anywhere
+(show! (ok "hi"))                      ; performs it; allowed only in a performing body
 
-- A function that calls an effectful function is effectful. Its type
-  uses `=>`, and its name ends in `!`.
-- The set of capabilities a function reaches is part of its type, so a
-  type says what a function can touch. An empty set is pure.
-- Only the host provides effectful functions (a component's imports).
+(map items each: show)                 ; pure: a list of tasks
+(define (for-each! items each)
+  ...(each! item)...)                  ; the label stays `each`; the call is marked
+```
 
-Effectful calls run directly, blocking the task where the host can
-suspend (Wasmtime, the polyfill). Elements keep effects as data in
-`update`.
+The rules:
 
-## 7. Variants **(built, with today's keys)**
+1. **A call with `!` calls, then performs the task the call returns.**
+   It is allowed only in the body of a definition whose head is marked
+   `!`, or in a `perform`.
+2. **A body that performs must be defined with `!`.** The head tells
+   the reader without reading the body.
+3. **`!` appears only in call position.** As a value it is `show`;
+   `show` and `show!` are one definition with one hash.
+4. **A task's capabilities are inferred:** the union of what its body
+   performs. `show!` performs `print!`, so `show` returns
+   `(task {} with: {print})`.
+5. **`(t!)` performs a task held in a value.** There are no functions
+   of no parameters: `(define (later!) body)` defines a task, not a
+   function returning one, and a call with no arguments is the value
+   itself. So `(t!)` reads by rule 1: `(t)` is `t`, and `!` performs
+   it.
 
-Inferred unions grow as in Roc: `{ok: v} | {error: :not-found}`,
-keywords being the variants that carry nothing. They are the anonymous
-counterpart of a classification: a variant is told apart by its one
-key, a classification by its declared rank. Model results and WIT
-`result`s use variants.
+Since tasks are ordinary values, effect polymorphism is not needed:
+`map` over a function that returns tasks gives a list of tasks, and the
+type variable `?b` covers it.
 
-## 8. Macros
+### Environments
+
+```scheme
+(perform t with: {print: (fn [line] {})})   ; a task needing what t needs, less print
+(perform! t with: test-env)                 ; ...and perform that
+```
+
+An environment is a record of capability implementations, each a
+record of functions, one per operation. `(perform t with: env)` answers
+a task whose capabilities are `t`'s, less those `env` provides, plus
+those `env`'s implementations need. The environment's labels must be
+written out, so the subtraction is over known labels.
+
+Implementations answer: each returns the operation's result, and the
+work continues (tail-resumptive handlers). Handlers that abort or
+resume later need coroutines and are left for later.
+
+### The host
+
+The host's imports are the root environment. A route's `handle!` and an
+element's effects are tasks the platform performs. A capability is a
+WIT interface; an operation is one of its functions.
+
+**Compiler:**
+
+- **Types:** a task type `(task a with: caps)`; capability sets
+  inferred by union (today's `Ty::Caps`), carried on the task, not on
+  arrows; a subtraction constraint for `perform ... with:`.
+- **Code:** a task is a closure of no arguments. `(f! x)` on a known
+  `!` definition calls its performing entry directly, so the common
+  case allocates nothing. Primitive operations consult the current
+  environment (a stack of implementation records) and fall back to the
+  host import. Effects run in evaluation order, left to right.
+
+## 7. Macros
 
 Two tiers, the first one first:
 
@@ -271,7 +315,7 @@ Two tiers, the first one first:
    form, run by the compiler. Hygiene comes from hash addressing: a
    symbol in a macro's template resolves to a hash where the *macro* is
    defined; binders it introduces are fresh. Macros can read what the
-   compiler knows (a definition's type, a concept's attributes), as Lux
+   compiler knows (a definition's type, a record's attributes), as Lux
    macros run in `Meta` with the compiler's state. `cond`, `and`, `or`
    move out of the core into macros.
 2. **Typed quotes** later, after Chris Done's sketch: `~e` has type
@@ -279,27 +323,21 @@ Two tiers, the first one first:
    can be checked at its call, before expansion.
 
 jerd (Jared Forsyth) planned a third arrangement: macros receive a
-*typed* syntax tree and the typing environment, "all nodes ...
-type-checked before going in, unless explicitly quoted". Its catch puts
-tier 1 first here: a macro that introduces binders (`define`, `match`)
-cannot have its arguments typed before it runs. Which default conduct
-takes can wait until tier 2.
+*typed* syntax tree. Its catch puts tier 1 first here: a macro that
+introduces binders (`define`, `match`) cannot have its arguments typed
+before it runs.
 
-The compiler runs macros with an interpreter for the pure subset, so
-macros work wherever the compiler does, browser included.
-
-## 9. Plan
+## 8. Plan
 
 Each step is a pull request with tests; each keeps the demo working.
 
-1. **Labels and attributes.** `define` with labels and `_:`, `name:`
-   tokens, `attribute`, declared keys in records, module namespaces;
-   the prelude and platform declare theirs; every example rewritten.
-2. **Concepts.** The form, constructors, patterns, ranked
-   classifications, narrowing.
-3. **Checks and type variables.** Rank order against the lattice,
-   coverage of classifications, named type variables in attributes and
-   concepts.
+1. **Labels and attributes.** `define` with labels, `name:` tokens,
+   attribute claims, records keyed by attributes, accessors; the
+   prelude and platform claim theirs; every example rewritten.
+2. **Claims.** Record types, constructors and patterns, type
+   constructors and variables, variants with rank, signatures.
+3. **Tasks.** `!` as perform, task types, `perform` and environments,
+   the routes as tasks.
 4. **Macros, tier 1.**
 
 The acceptance test: the demo's elements and routes, and the job
@@ -307,37 +345,38 @@ example above, written as you would want to read them.
 
 ## Open decisions
 
-1. **Lambdas and labels.** `fn` unlabeled, as above, or labeled like
-   `define` with callers of function values passing labels.
-2. **`maybe:` in concepts**, for attributes a value may have.
-3. **Modules.** How a module is declared, and how its namespace relates
-   to the attributes' `the:` names.
-4. **Predicates in types**, later.
-5. **Macro default, for tier 2.**
+1. **Lambdas.** `fn` with a vector, or `(\ (x) body)` to match the
+   function type.
+2. **`?` in record types.** `{name ? phone}` and `{name ?phone}` differ
+   by one space; `{name (? phone)}` would not.
+3. **Record composition.** Spelling for "a person plus a phone", since
+   a record type lists only attributes.
+4. **Modules.** How a module is declared, and how its namespace relates
+   to the attributes' global names.
+5. **Handlers that do not resume** (abort, retry), and the coroutine
+   compilation they need.
+6. **Predicates in types**, later.
 
 ## Decided in discussion
 
-- `_` ends a `match`; `:else` is an ordinary keyword.
+- One `claim` form for attributes, records, variants and signatures; a
+  claim with a `define` is a signature, one without defines a type.
+- An attribute is `(domain/name type)`, distinct from a record; a
+  record lists attributes, required then optional after `?`.
+- No capitalization: a bare name in a claim is the type of that name.
+- Type variables are named, `?a`; no anonymous `?`.
+- Function types are `((\ params) : result)`.
+- `define`, with the first parameter as the default label; no `of`.
+- Variants list record types in rank order; a wider case above a
+  narrower one is an error; matching overlapping records requires one.
 - No `nil`: variants for failure, absent attributes for what may be
-  missing. Roc over Verse for data.
-- Variants are inferred unions; one payload per variant.
-- An attribute names its global key with `the:`; attributes are
-  nominal and always declared.
-- `define`, with every parameter labeled (punned by default) and at
-  most one nameless parameter, first.
-- `x:` names an attribute or label; `:x` is a keyword value.
-- A concept is a named set of attributes, usable as constructor,
-  pattern and type.
-- Overlapping concepts are ranked by a declared classification, never
-  by where a match arm is written; a wider concept ranked above a
-  narrower one does not compile.
-- Matching over concept variants requires a declared ranked
-  classification; the value is matched as that classification.
-- Generics are named type variables (`(list a)`, `{value: a}`), Elm
-  style; an omitted `as:` is the anonymous form of the same variable,
-  an open type constrained by each use, not `Any`.
-- A type variable, named or anonymous, stays polymorphic at its
-  definition's boundary and is instantiated fresh per use, so nothing
-  is solved from code written later.
+  missing, optionality on the record.
+- Effects are tasks: calls are pure, `!` performs, a performing body is
+  defined with `!`, `!` is never part of a value's name.
+- Capabilities are inferred and carried on the task type; `with:` on a
+  claim is an upper bound, and inferred when left out.
+- `(t!)` performs a task value: a definition with no parameters is a
+  value, so `(t)` is `t`. `(perform t with: env)` provides
+  capabilities from a record of implementations.
+- Roc's Task-era design, with the direct-call fast path for its cost.
 - Data is declared, code is inferred.
-- No predicates in types in this version.
