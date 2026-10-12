@@ -127,11 +127,20 @@ The design the language is heading for is in
   {state: :suspended} "paused")
 (match job {n: n} (+ n 1) _ 0)          ; n where job has n
 
-{ok: todo} {error: :not-found}          ; variants: records of one attribute
-(if ok? {ok: t} {error: :empty-title})  ; {error: :empty-title} | {ok: ...}
-(match (add! title)                     ; names in patterns bind
-  {ok: todo} (json (todo-json todo) status: 201)
-  {error: why} (problem why))           ; no `_`: these two variants cover
+(ok todo) (error :not-found)            ; variants: records of one attribute
+(if ok? (ok t) (error :empty-title))    ; (error :empty-title) | (ok ...)
+(match (add! title)                     ; constructors are patterns; names bind
+  (ok todo) (json (todo-json todo) status: 201)
+  (error why) (problem why))            ; no `_`: these two variants cover
+
+(claim person : {name age ? phone})     ; a record type: phone is optional
+(person "Ada" age: 36)                  ; its constructor
+(match p (person who age: n) ..)        ; and its pattern
+(claim (ok ?a) : {(conduct.result/ok ?a)})            ; a type constructor
+(claim (result ?a error: ?e) : [(ok ?a) (error ?e)])  ; a variant
+(claim job : [done pending idle])       ; overlapping records, in rank order
+(claim (half integer) : (result integer error: [:odd]))  ; a signature
+(claim (greet! person) with: {print} : {})              ; with capabilities
 
 
 (h "li" {"class" "done"} [child ...] {"click" "handler"})   ; a view
@@ -167,10 +176,67 @@ against. A key no claim declares is an error, so a misspelled key is
 never a new key. Two claims of one global name must agree on its type.
 Types are shown with attributes by their local names.
 
-Every codebase claims `ok` and `error`; an element's prelude claims the
-element contract's attributes (`model`, `effects`, and an event's
-`kind`, `value`, `checked`, `key` and `status`), and a route's prelude
-claims a request's and a response's and the todo model's.
+An element's prelude claims the element contract's attributes
+(`model`, `effects`, and an event's `kind`, `value`, `checked`, `key`
+and `status`), and a route's prelude claims a request's and a
+response's and the todo model's.
+
+### Claims
+
+One form, `claim`, says what a name is or what type it has. A claim of a
+name the same source defines is that definition's **signature**; any
+other claim **defines a type**:
+
+- `(claim name : (io.gozala.person/name text))` is an attribute.
+- `(claim person : {name age ? phone})` is a record type: attributes,
+  by local name or written in place, `{(io.gozala.person/name text)}`,
+  those after `?` optional. It is open: a value with more attributes is
+  still a `person`. It is also a constructor, `(person "Ada" age: 36)`,
+  whose first attribute is the default label, and a pattern,
+  `(person who age: n)`, which binds by label.
+- `(claim (ok ?a) : {(conduct.result/ok ?a)})` is a type constructor:
+  `?a` is a type variable, always named, and `(ok integer)` is the type
+  of `(ok 5)`. Every codebase claims `ok`, `error`, and
+  `(result ?value error: ?reason)`.
+- `(claim job : [done pending idle])` is a variant: its cases in rank
+  order.
+
+A signature lists the parameters' types, with labels as the definition
+has them, then `:` and the result: `(claim (half integer) : (result
+integer error: [:odd]))`. A function type is written `((\ ?a) : ?b)`.
+The definition is checked against its signature with the signature's
+variables as types the caller chooses, so `(claim (id ?a) : ?a)` does
+not fit `(define (id x) (+ x 1))`. Callers see the signature, not the
+inferred type, and the signature is part of the definition's hash.
+`with:` bounds the capabilities a function may use; left out, they are
+the ones its body uses.
+
+### Ranked variants
+
+Records overlap: a job that finishes still has its `started-at`. So a
+`match` over record types that overlap needs an order, and a variant
+declares it once. The arms of a `match` over its cases are tested in
+the variant's rank, wherever they are written, so a value is the first
+case it fits:
+
+```clojure
+(claim idle : {description})
+(claim pending : {description started-at})
+(claim done : {description completed-at})
+(claim job : [done pending idle])
+
+(define (report job)
+  (match job
+    (idle description: d) (str "Idle: " d)
+    (pending description: d) (str "Pending: " d)
+    (done description: d) (str "Done: " d)))
+```
+
+A job with both `started-at` and `completed-at` is `done`. A wider case
+ranked above a narrower one, `[idle done pending]`, is an error, since
+the narrower could never be chosen; and a `match` over cases that
+overlap, with no variant ranking them, does not compile. Records of one
+attribute (`ok`, `error`) are disjoint by their key, and need no rank.
 
 JSON is one type, `Json`, read with accessors that answer a neutral value
 (`""`, `0`, `false`, `[]`) when the document has another shape there, as
@@ -202,8 +268,8 @@ There is no `nil`, after Roc's reasons for having no Maybe and Rich
 Hickey's "Maybe Not" ([notes][Maybe Not]), which agree once each is put
 where it belongs:
 
-- **What can fail answers a variant that says why:** `{ok: v}` or
-  `{error: :not-found}`, never "nothing".
+- **What can fail answers a variant that says why:** `(ok v)` or
+  `(error :not-found)`, never "nothing".
 - **Absence that means something is a variant that names it:**
   `:unspecified | {specified: artist}`.
 - **An attribute a record may not have is simply not there.** That is
@@ -214,7 +280,7 @@ where it belongs:
   and one without, has it as optional.
 
 With subtyping, the "Maybe Not" argument about change still holds:
-promising more (`{ok: v}` where `{ok: v} | :none` was promised) or
+promising more (`(ok v)` where `(ok v) | :none` was promised) or
 handling another variant breaks no caller.
 
 `get` and `first` take the value to give when there is none. A view
@@ -226,12 +292,12 @@ nothing to answer answers `{}`.
 A keyword is a value whose type is the set of just itself, and these
 sets are ordered by inclusion, so `(if b :active :suspended)` is
 `:active | :suspended`. A record of one field is a variant the same way:
-`{ok: t}` is the variant `ok` carrying `t`, and `(if c {ok: t} {error:
-e})` is `{error: E} | {ok: T}`. Keywords are the variants that carry
-nothing, so `:ok | {error: String}` is one union too. As in Roc, unions
+`(ok t)` is the variant `ok` carrying `t`, and `(if c (ok t) (error
+e))` is `(error E) | (ok T)`. Keywords are the variants that carry
+nothing, so `:ok | (error String)` is one union too. As in Roc, unions
 grow through inference: a function that returns its callee's result or
-a new error returns the union of both, `{error: :empty-title |
-:not-found} | {ok: a}`. Roc needs a row variable to keep a union open;
+a new error returns the union of both, `(error (:empty-title |
+:not-found)) | (ok a)`. Roc needs a row variable to keep a union open;
 here subtyping does that.
 
 A variant is still the record it is: `(n {n: 1})` reads its attribute. But
@@ -245,7 +311,7 @@ not a variant.
 
 `match` tests a value against patterns in order: keyword, string, and
 integer literals, `_`, names, and records of patterns. A name
-binds what it matched in the clause's result: `{ok: {title: t}}` binds
+binds what it matched in the clause's result: `(ok {title: t})` binds
 the title inside an `ok` variant. Each clause narrows what it tested inside its branch, the way
 a check narrows a value in TypeScript: matching `job` against
 `{state: :active}` makes its state `:active` in that branch. A narrowed field
@@ -450,7 +516,7 @@ clear-completed! : () => {}
                    each ! {model}
 ```
 
-A model `result` is a union of variants, `{ok: v}` or `{error: e}`, and
+A model `result` is a union of variants, `(ok v)` or `(error e)`, and
 `:ok` alone when it carries nothing. Its `model-error` and the `filter`
 enum are keywords, so a misspelled filter is a type error. An `option`
 argument is an attribute that may be left out: a WIT function with
@@ -472,17 +538,14 @@ polyfill with stack switching, JSPI, or nested turns.
 
 ## Next
 
-1. **Claims** (`notes/language.md`, step 2): record types with optional
-   attributes, constructors and patterns such as `(ok todo)`, type
-   variables, variants ranked where their records overlap, and checked
-   signatures.
-2. **Tasks** (step 3): calls are pure, a function with effects returns a
-   task, and `!` performs it, in an environment of capabilities.
-3. **Narrowing in later clauses**: a clause does not learn that the ones
+1. **Tasks** (`notes/language.md`, step 3): calls are pure, a function
+   with effects returns a task, and `!` performs it, in an environment
+   of capabilities.
+2. **Narrowing in later clauses**: a clause does not learn that the ones
    before it failed. That needs MLstruct's negation types.
-4. **The codebase in Dialog**: definitions as facts, names as assertions
+3. **The codebase in Dialog**: definitions as facts, names as assertions
    that point at hashes.
-5. **The compiler in the browser**: its dependencies are pure Rust, but
+4. **The compiler in the browser**: its dependencies are pure Rust, but
    building it for `wasm32` has not been tried yet. With it, the demo's
    page could compile conduct as it compiles Zena.
 

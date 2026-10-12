@@ -29,8 +29,8 @@
 
 (define (add-todo! request)
   (match (add! (json-str (json-get (parse-json (body request)) "title")))
-    {ok: todo} (json (todo-json todo) status: 201)
-    {error: why} (problem why)))
+    (ok todo) (json (todo-json todo) status: 201)
+    (error why) (problem why)))
 
 (define (complete-all! request)
   (let [completed (json-get (parse-json (body request)) "completed")]
@@ -39,6 +39,7 @@
       (= completed false) (do (toggle-all! false) (status 204))
       :else (status 400))))
 
+(claim (handle! request) with: {model} : response)
 (define (handle! request)
   (match (method request)
     "GET" (list! request)

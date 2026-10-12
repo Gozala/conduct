@@ -347,8 +347,15 @@ fn cover_type(patterns: &[&Pattern]) -> Option<Ty> {
         return None;
     }
     let Some(variants) = patterns.iter().map(|p| p.variant()).collect::<Option<Vec<_>>>() else {
-        // A record pattern of `_`s: the value must have its fields.
-        let Some(Pattern::Fields(fields)) = patterns.iter().find(|p| p.fields_only()) else { return None };
+        // A record pattern of `_`s: the value must have its fields. Of
+        // several, the one that asks least, which the others narrow.
+        let Some(Pattern::Fields(fields)) = patterns
+            .iter()
+            .filter(|p| p.fields_only())
+            .min_by_key(|p| if let Pattern::Fields(f) = p { f.len() } else { 0 })
+        else {
+            return None;
+        };
         return Some(Ty::record(fields.iter().map(|(k, _)| (k.clone(), Ty::Top))));
     };
     let payload = |k: &str| -> Option<Ty> {

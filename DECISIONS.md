@@ -3,6 +3,43 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Claims
+
+- **A claim with a `define` of the same name, in the same source, is a
+  signature; any other defines a type.** The note left this open; the
+  rule is the simplest that tells the two apart without a second form.
+  An attribute's claim of a defined name is an error, not a signature.
+- **Signatures are checked with rigid variables.** A claim's `?a` is a
+  `Ty::Rigid` while the definition is checked, a type that fits only
+  itself, so a body that assumes anything of it fails. Callers then see
+  the claim with its variables free. Simple-sub has no rigid variables
+  of its own; one new type that is a subtype only of itself (and `Any`)
+  was enough.
+- **Callers see the claim, and the claim is part of the hash.** Two
+  definitions with one term and different claims are different
+  definitions, since their callers see different types.
+- **Capabilities a signature leaves out are what the body uses:** the
+  capabilities the check found, and those of the function parameters,
+  which are the claim's own variables. Linking the claim to the whole
+  inferred type instead was sound but showed recursive types.
+- **A record type of one attribute is a variant,** as a record literal
+  of one attribute already was, and is shown as its constructor:
+  `(ok Int)`. `ok`, `error` and `result` are claimed in `core.cdt`; `ok`
+  is no longer an attribute, so `{ok: x}` is `(ok x)`.
+- **A match over a ranked variant's cases is sorted by rank** when it
+  is resolved. Once ranked the cases are disjoint, so sorting changes
+  no result, and first-match order then classifies by rank with no new
+  pattern form. Records of one attribute need no rank: their key tells
+  them apart.
+- **Ranking needs record types, and a variant's union is their join:**
+  attributes every case has are required, the others optional. That is
+  what a `job` parameter accepts.
+- **Recursive types are refused** for now: expanding a claim that
+  refers to itself stops at a depth and says so.
+- **A bare name in a pattern that names a record type tests for it;**
+  any other name binds. Types and definitions share one namespace, so
+  the reading is never ambiguous for a definition's name.
+
 ## Labels and attributes
 
 - **`define` replaces `def` and `defn`;** both say what to write

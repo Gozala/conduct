@@ -15,6 +15,7 @@
 //!    core Wasm module, and [`element`] and [`route`] wrap one as a
 //!    component of the TodoMVC demo's element or route world.
 
+pub mod claims;
 pub mod codebase;
 pub mod codegen;
 pub mod element;
