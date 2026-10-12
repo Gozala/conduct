@@ -3,6 +3,45 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Labels and attributes
+
+- **`define` replaces `def` and `defn`;** both say what to write
+  instead. A definition with no parameters is a value, so
+  `(define (f) ..)` is an error now, and the place tasks will use later.
+- **One unlabeled argument, the first.** Every other argument is passed
+  by its parameter's name, and the first may be too. Labels are resolved
+  to positions when the call is resolved: the first parameter, then the
+  rest sorted by label. So code generation is unchanged, and a labeled
+  call costs what a positional one does.
+- **Labels are part of a function's type and its hash.** A call through
+  a function value can only be checked against labels the type carries,
+  and a definition's labels, the first's included, are its interface:
+  renaming one breaks callers. Renaming a local (a `let`, or a label's
+  separate local name) still keeps the hash.
+- **Labels must match exactly** when a function value is called. Width
+  subtyping on labels would let a caller pass a label the function
+  ignores, and the positions would be wrong.
+- **Built-ins stay positional,** except `map` (`each:`) and `filter`
+  (`where:`), which the design's examples use. The others move into the
+  prelude as conduct definitions eventually, and take labels then.
+- **Records are keyed by global names.** A key must be a claimed
+  attribute, by its local name or its global one. The term holds the
+  global name, so the hash and the field id do not depend on what code
+  calls it, and types are shown with local names again.
+- **An attribute's claimed type checks what sets it,** in a record
+  literal or an `assoc`. Reads are not constrained by it: a read's type
+  comes from what was stored, which the claim already checked.
+- **A `?a` in an attribute's type asks nothing yet.** `ok` and `error`
+  are claimed `(conduct.result/ok ?value)` until claims with type
+  constructors arrive; then `(ok ?a)` ties the variable to its use.
+- **A name is one thing.** An attribute's local name cannot also name a
+  definition, so `(name person)` always reads an attribute. A local
+  shadows it, as locals shadow definitions.
+- **The platform claims its contract's attributes** in a prelude per
+  world (`element.cdt`, `route.cdt`), and every codebase starts with
+  `core.cdt`. The response status is claimed as `code`, since `status`
+  is the prelude's function that builds a response.
+
 ## No nil
 
 - **No `nil` in the language.** Roc's case against Maybe (it does not

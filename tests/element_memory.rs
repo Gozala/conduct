@@ -2,7 +2,7 @@
 //! module through the canonical ABI by hand, as a host would, and count
 //! the blocks it holds.
 
-use conduct::{Codebase, element};
+use conduct::element;
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
 
 struct Core {
@@ -14,7 +14,7 @@ struct Core {
 
 impl Core {
     fn new(source: &str) -> Core {
-        let mut cb = Codebase::new();
+        let mut cb = element::codebase();
         cb.add_source(source).unwrap_or_else(|e| panic!("{e}"));
         let wat = element::core_wat(&cb).unwrap();
         let engine = Engine::default();

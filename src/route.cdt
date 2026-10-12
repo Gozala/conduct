@@ -1,17 +1,36 @@
 ;; What every route starts with, as the demo's `authoring:route` gives
-;; its Zena routes: responses, and the response for a model error.
+;; its Zena routes: the attributes of requests, responses and the todo
+;; model, responses, and the response for a model error.
+
+;; A request, and a response.
+(claim method : (conduct.http/method text))
+(claim path : (conduct.http/path text))
+(claim params : (conduct.http/params (dict text)))
+(claim query : (conduct.http/query (dict text)))
+(claim headers : (conduct.http/headers (dict text)))
+(claim body : (conduct.http/body text))
+(claim code : (conduct.http/status integer))
+
+;; A todo, and what the model's `query!` answers.
+(claim id : (demo.todo/id text))
+(claim title : (demo.todo/title text))
+(claim completed : (demo.todo/completed boolean))
+(claim todos : (demo.todo/todos (list ?todo)))
+(claim counts : (demo.todo/counts ?counts))
+(claim active-count : (demo.counts/active integer))
+(claim completed-count : (demo.counts/completed integer))
 
 ;; A response with `value` as its JSON body.
-(defn json [value code]
-  {:status code :headers {"content-type" "application/json"} :body (to-json value)})
+(define (json value status)
+  {code: status, headers: {"content-type" "application/json"}, body: (to-json value)})
 
 ;; A response with no body.
-(defn status [code]
-  {:status code :headers {} :body ""})
+(define (status code)
+  {code: code, headers: {}, body: ""})
 
 ;; The response for a model error: 404 for an unknown todo, 422 for an
 ;; empty title.
-(defn problem [error]
+(define (problem error)
   (match error
     :not-found (status 404)
     _ (status 422)))

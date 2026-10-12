@@ -3,28 +3,28 @@
 //! to its own `fetch` effects, and the test checks the effects it asks
 //! for and the views it renders.
 
-use conduct::Codebase;
 use conduct::codegen::{self, Value, decode, name_fields};
+use conduct::element;
 use wasmtime::{Engine, Instance, Module, Store, Val};
 
 const TODO_APP: &str = include_str!("../examples/todo-app.cdt");
 
 /// The events the element hears, and a response with a JSON body.
 const DRIVER: &str = r#"
-(def attrs {"filter" ""})
-(defn ev [kind value] {:kind kind :value value})
-(defn resp [body] {:kind "response" :value body :status 200})
-(def list-body "{\"todos\":[{\"id\":\"a\",\"title\":\"Buy milk\",\"completed\":false},{\"id\":\"b\",\"title\":\"Walk\",\"completed\":true}],\"counts\":{\"active\":1,\"completed\":1}}")
+(define attrs {"filter" ""})
+(define (ev kind value) {kind: kind, value: value})
+(define (resp body) {kind: "response", value: body, status: 200})
+(define list-body "{\"todos\":[{\"id\":\"a\",\"title\":\"Buy milk\",\"completed\":false},{\"id\":\"b\",\"title\":\"Walk\",\"completed\":true}],\"counts\":{\"active\":1,\"completed\":1}}")
 
-(def connected (update (init attrs) "connected" {:kind "connected"} attrs))
-(def loaded (update (:model connected) "loaded" (resp list-body) attrs))
-(def ready (:model loaded))
+(define connected (update (init attrs) handler: "connected" event: {kind: "connected"} attrs: attrs))
+(define loaded (update (model connected) handler: "loaded" event: (resp list-body) attrs: attrs))
+(define ready (model loaded))
 "#;
 
 /// Compile the app plus the driver, evaluate `entry`, decode it, and
 /// check that nothing leaked.
 fn eval(extra: &str, entry: &str) -> Value {
-    let mut cb = Codebase::new();
+    let mut cb = element::codebase();
     cb.add_source(TODO_APP).unwrap_or_else(|e| panic!("{e}"));
     cb.add_source(DRIVER).unwrap_or_else(|e| panic!("{e}"));
     cb.add_source(extra).unwrap_or_else(|e| panic!("{e}"));
@@ -52,8 +52,8 @@ fn fetch(method: &str, url: &str, body: &str, handler: &str) -> Value {
 
 /// The effects of an `update` result.
 fn effects(result: Value) -> Vec<Value> {
-    let fields = name_fields(result, &["model", "effects"]);
-    match fields.into_iter().find(|(n, _)| n == "effects").unwrap().1 {
+    let fields = name_fields(result, &["conduct.element/model", "conduct.element/effects"]);
+    match fields.into_iter().find(|(n, _)| n == "conduct.element/effects").unwrap().1 {
         Value::List(items) => items,
         other => panic!("expected a list, found {other:?}"),
     }
@@ -89,16 +89,16 @@ fn html(v: &Value) -> String {
 #[test]
 fn connecting_loads_the_list() {
     assert_eq!(effects(eval("", "connected")), vec![fetch("GET", "/api/todos?filter=all", "", "loaded")]);
-    let with_filter = "(def filtered (update (init {}) \"attribute-changed\" (ev \"attribute-changed\" \"filter\") {\"filter\" \"active\"}))";
+    let with_filter = "(define filtered (update (init {}) handler: \"attribute-changed\" event: (ev \"attribute-changed\" value: \"filter\") attrs: {\"filter\" \"active\"}))";
     assert_eq!(effects(eval(with_filter, "filtered")), vec![fetch("GET", "/api/todos?filter=active", "", "loaded")]);
     // Another attribute changing loads nothing.
-    let other = "(def other (update (init {}) \"attribute-changed\" (ev \"attribute-changed\" \"lang\") {}))";
+    let other = "(define other (update (init {}) handler: \"attribute-changed\" event: (ev \"attribute-changed\" value: \"lang\") attrs: {}))";
     assert_eq!(effects(eval(other, "other")), vec![]);
 }
 
 #[test]
 fn a_loaded_list_renders_items_and_footer() {
-    let page = html(&eval("(def page (view ready attrs))", "page"));
+    let page = html(&eval("(define page (view ready attrs: attrs))", "page"));
     assert!(page.starts_with("<div class=\"frame\" data-phase=\"measuring\">"), "{page}");
     assert!(page.contains("<todo-input has-todos=\"true\" all-completed=\"false\""), "{page}");
     assert!(
@@ -113,52 +113,61 @@ fn a_loaded_list_renders_items_and_footer() {
 fn changes_go_out_and_reload() {
     let cases = [
         (
-            "(def x (update ready \"add\" (ev \"todo-add\" \"Read\") attrs))",
+            "(define x (update ready handler: \"add\" event: (ev \"todo-add\" value: \"Read\") attrs: attrs))",
             fetch("POST", "/api/todos", r#"{"title":"Read"}"#, "changed"),
         ),
         (
-            "(def x (update ready \"toggle\" (ev \"todo-toggle\" \"a\") attrs))",
+            "(define x (update ready handler: \"toggle\" event: (ev \"todo-toggle\" value: \"a\") attrs: attrs))",
             fetch("PATCH", "/api/todos/a", r#"{"completed":true}"#, "changed"),
         ),
         (
-            "(def x (update ready \"toggle\" (ev \"todo-toggle\" \"b\") attrs))",
+            "(define x (update ready handler: \"toggle\" event: (ev \"todo-toggle\" value: \"b\") attrs: attrs))",
             fetch("PATCH", "/api/todos/b", r#"{"completed":false}"#, "changed"),
         ),
         (
-            "(def x (update ready \"toggleAll\" (ev \"todo-toggle-all\" \"true\") attrs))",
+            "(define x (update ready handler: \"toggleAll\" event: (ev \"todo-toggle-all\" value: \"true\") attrs: attrs))",
             fetch("PATCH", "/api/todos", r#"{"completed":true}"#, "changed"),
         ),
         (
-            "(def x (update ready \"edit\" (ev \"todo-edit\" \"a\\nOat milk \") attrs))",
+            "(define x (update ready handler: \"edit\" event: (ev \"todo-edit\" value: \"a\\nOat milk \") attrs: attrs))",
             fetch("PATCH", "/api/todos/a", r#"{"title":"Oat milk"}"#, "changed"),
         ),
         (
-            "(def x (update ready \"edit\" (ev \"todo-edit\" \"a\\n   \") attrs))",
+            "(define x (update ready handler: \"edit\" event: (ev \"todo-edit\" value: \"a\\n   \") attrs: attrs))",
             fetch("DELETE", "/api/todos/a", "", "changed"),
         ),
         (
-            "(def x (update ready \"destroy\" (ev \"todo-destroy\" \"b\") attrs))",
+            "(define x (update ready handler: \"destroy\" event: (ev \"todo-destroy\" value: \"b\") attrs: attrs))",
             fetch("DELETE", "/api/todos/b", "", "changed"),
         ),
         (
-            "(def x (update ready \"clear\" (ev \"todo-clear\" \"\") attrs))",
+            "(define x (update ready handler: \"clear\" event: (ev \"todo-clear\" value: \"\") attrs: attrs))",
             fetch("DELETE", "/api/todos", "", "changed"),
         ),
-        ("(def x (update ready \"changed\" (resp \"\") attrs))", fetch("GET", "/api/todos?filter=all", "", "loaded")),
+        (
+            "(define x (update ready handler: \"changed\" event: (resp \"\") attrs: attrs))",
+            fetch("GET", "/api/todos?filter=all", "", "loaded"),
+        ),
     ];
     for (source, expected) in cases {
         assert_eq!(effects(eval(source, "x")), vec![expected], "{source}");
     }
     // Toggling a todo that is not in the list asks for nothing.
-    assert_eq!(effects(eval("(def x (update ready \"toggle\" (ev \"todo-toggle\" \"zz\") attrs))", "x")), vec![]);
+    assert_eq!(
+        effects(eval(
+            "(define x (update ready handler: \"toggle\" event: (ev \"todo-toggle\" value: \"zz\") attrs: attrs))",
+            "x"
+        )),
+        vec![]
+    );
 }
 
 #[test]
 fn the_reveal_moves_through_its_phases() {
-    let steps = "(def measured (:model (update ready \"measured\" (ev \"resize\" \"320\") attrs)))
-                 (def revealed (:model (update measured \"revealed\" {:kind \"transitionend\"} attrs)))
-                 (def revealing-page (view measured attrs))
-                 (def shown-page (view revealed attrs))";
+    let steps = "(define measured (model (update ready handler: \"measured\" event: (ev \"resize\" value: \"320\") attrs: attrs)))
+                 (define revealed (model (update measured handler: \"revealed\" event: {kind: \"transitionend\"} attrs: attrs)))
+                 (define revealing-page (view measured attrs: attrs))
+                 (define shown-page (view revealed attrs: attrs))";
     let revealing = html(&eval(steps, "revealing-page"));
     assert!(
         revealing.starts_with("<div class=\"frame\" data-phase=\"revealing\" style=\"height: 320px\">"),
@@ -171,6 +180,6 @@ fn the_reveal_moves_through_its_phases() {
     );
     assert!(!shown.contains("spinner"), "{shown}");
     // The about pill opens the words about the demo.
-    let about = "(def open (view (:model (update ready \"about\" {:kind \"click\"} attrs)) attrs))";
+    let about = "(define open (view (model (update ready handler: \"about\" event: {kind: \"click\"} attrs: attrs)) attrs: attrs))";
     assert!(html(&eval(about, "open")).contains("<div id=\"about\" class=\"about\">"));
 }

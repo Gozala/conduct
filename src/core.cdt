@@ -1,0 +1,5 @@
+;; What every codebase starts with: the attributes of the variants that
+;; say how something went.
+
+(claim ok : (conduct.result/ok ?value))
+(claim error : (conduct.result/error ?reason))

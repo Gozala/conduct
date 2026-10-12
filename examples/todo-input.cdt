@@ -7,9 +7,9 @@
 ;; it, and the next keystroke clears it, so a render in between leaves
 ;; the field empty and one after leaves it to the person typing.
 
-(def attributes ["has-todos" "all-completed"])
+(define attributes ["has-todos" "all-completed"])
 
-(def styles "
+(define styles "
       :host {
         display: block;
       }
@@ -49,34 +49,36 @@
       }
     ")
 
-(defn attr [attrs name] (get attrs name ""))
+(claim clear : (demo.todo-input/clear boolean))
 
-(defn init [attrs] {:clear false})
+(define (attr name of) (get of name ""))
 
-(defn update [model handler event attrs]
+(define (init attrs) {clear: false})
+
+(define (update model handler event attrs)
   (cond
-    (and (= handler "key") (= (:key event "") "Enter"))
-      (let [title (trim (:value event ""))]
+    (and (= handler "key") (= (key event "") "Enter"))
+      (let [title (trim (value event ""))]
         (if (= title "")
-          {:model model :effects []}
-          {:model (assoc model :clear true) :effects [(emit "todo-add" title)]}))
-    (= handler "key") {:model (assoc model :clear false) :effects []}
+          {model: model, effects: []}
+          {model: (assoc model clear: true), effects: [(emit "todo-add" title)]}))
+    (= handler "key") {model: (assoc model clear: false), effects: []}
     (= handler "toggleAll")
-      {:model model
-       :effects [(emit "todo-toggle-all" (if (:checked event false) "true" "false"))]}
-    :else {:model model :effects []}))
+      {model: model
+       effects: [(emit "todo-toggle-all" (if (checked event false) "true" "false"))]}
+    :else {model: model, effects: []}))
 
-(defn field [model]
+(define (field model)
   (let [base {"class" "new-todo" "placeholder" "What needs to be done?" "autofocus" ""}]
-    (if (:clear model) (assoc base "value" "") base)))
+    (if (clear model) (assoc base "value" "") base)))
 
-(defn view [model attrs]
+(define (view model attrs)
   (h "div" {"class" "row"}
-    [(if (= (attr attrs "has-todos") "true")
+    [(if (= (attr "has-todos" of: attrs) "true")
        (h "input" {"id" "toggle-all"
                    "class" "toggle-all"
                    "type" "checkbox"
-                   "checked" (attr attrs "all-completed")
+                   "checked" (attr "all-completed" of: attrs)
                    "aria-label" "Mark all as complete"}
           []
           {"change" "toggleAll"})

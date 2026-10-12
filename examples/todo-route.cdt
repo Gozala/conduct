@@ -4,34 +4,34 @@
 ;; {"title"?: string, "completed"?: bool}, and answers the todo. DELETE
 ;; removes the todo. An unknown id answers 404, and an empty title 422.
 
-(def pattern "/api/todos/:id")
+(define pattern "/api/todos/:id")
 
-(defn todo-json [todo]
-  {"id" (:id todo) "title" (:title todo) "completed" (:completed todo)})
+(define (todo-json todo)
+  {"id" (id todo) "title" (title todo) "completed" (completed todo)})
 
 ;; The change a PATCH asks for: the id, and the title and completion
 ;; where the body has them as a string and a boolean. An attribute the
 ;; body does not have is left out, and the model leaves it as it is.
-(defn patch [id body]
+(define (patch id body)
   (let [title (json-get body "title")
         completed (json-get body "completed")
-        change {:id id}
-        change (match (json-type title) "string" (assoc change :title (json-str title)) _ change)]
-    (match (json-type completed) "boolean" (assoc change :completed (json-bool completed)) _ change)))
+        change {id: id}
+        change (match (json-type title) "string" (assoc change title: (json-str title)) _ change)]
+    (match (json-type completed) "boolean" (assoc change completed: (json-bool completed)) _ change)))
 
-(defn change! [id request]
-  (match (update! (patch id (parse-json (:body request))))
-    {:ok todo} (json (todo-json todo) 200)
-    {:error why} (problem why)))
+(define (change! id request)
+  (match (update! (patch id body: (parse-json (body request))))
+    {ok: todo} (json (todo-json todo) status: 200)
+    {error: why} (problem why)))
 
-(defn delete! [id]
+(define (delete! id)
   (match (remove! id)
     :ok (status 204)
-    {:error why} (problem why)))
+    {error: why} (problem why)))
 
-(defn handle! [request]
-  (let [id (get (:params request) "id" "")]
-    (match (:method request)
-      "PATCH" (change! id request)
+(define (handle! request)
+  (let [id (get (params request) "id" "")]
+    (match (method request)
+      "PATCH" (change! id request: request)
       "DELETE" (delete! id)
       _ (status 405))))

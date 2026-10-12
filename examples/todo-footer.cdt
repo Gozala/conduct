@@ -5,9 +5,9 @@
 ;;
 ;; It keeps no state of its own, so it has no `init`: its model is `{}`.
 
-(def attributes ["active" "completed" "filter"])
+(define attributes ["active" "completed" "filter"])
 
-(def styles "
+(define styles "
       :host {
         display: block;
       }
@@ -55,26 +55,26 @@
       }
     ")
 
-(defn attr [attrs name] (get attrs name ""))
+(define (attr name of) (get of name ""))
 
-(defn update [model handler event attrs]
-  {:model model :effects (if (= handler "clear") [(emit "todo-clear" "")] [])})
+(define (update model handler event attrs)
+  {model: model, effects: (if (= handler "clear") [(emit "todo-clear" "")] [])})
 
-(defn link [attrs filter label href]
+(define (link filter label href attrs)
   (h "li" {}
-    [(h "a" {"href" href "class" (if (= (attr attrs "filter") filter) "selected" "")} [label])]))
+    [(h "a" {"href" href "class" (if (= (attr "filter" of: attrs) filter) "selected" "")} [label])]))
 
-(defn view [model attrs]
-  (let [active (attr attrs "active")
-        completed (attr attrs "completed")]
+(define (view model attrs)
+  (let [active (attr "active" of: attrs)
+        completed (attr "completed" of: attrs)]
     (h "footer" {"class" "footer"}
       [(h "span" {"class" "todo-count"}
          [(h "strong" {} [active])
           (if (= active "1") " item left" " items left")])
        (h "ul" {"class" "filters"}
-         [(link attrs "all" "All" "#/")
-          (link attrs "active" "Active" "#/active")
-          (link attrs "completed" "Completed" "#/completed")])
+         [(link "all" label: "All" href: "#/" attrs: attrs)
+          (link "active" label: "Active" href: "#/active" attrs: attrs)
+          (link "completed" label: "Completed" href: "#/completed" attrs: attrs)])
        (if (and (not= completed "0") (not= completed ""))
          (h "button" {"class" "clear-completed"} ["Clear completed"] {"click" "clear"})
          [])])))

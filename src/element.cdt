@@ -1,0 +1,12 @@
+;; What every element starts with: the attributes of the element
+;; contract. `update` answers a `model` and its `effects`, and hears
+;; events, each with its `kind` and whichever of the others apply.
+
+(claim model : (conduct.element/model ?model))
+(claim effects : (conduct.element/effects (list ?effect)))
+
+(claim kind : (conduct.event/kind text))
+(claim value : (conduct.event/value text))
+(claim checked : (conduct.event/checked boolean))
+(claim key : (conduct.event/key text))
+(claim status : (conduct.event/status integer))

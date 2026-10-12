@@ -49,8 +49,9 @@ pub enum Ty {
     Top,
     Bot,
     Prim(Prim),
-    /// Parameters, result, and effect: the capabilities a call may use.
-    Fn(Rc<Vec<Ty>>, Rc<Ty>, Rc<Ty>),
+    /// Parameters, result, effect (the capabilities a call may use), and
+    /// the labels of every parameter but the first, in order.
+    Fn(Rc<Vec<Ty>>, Rc<Ty>, Rc<Ty>, Rc<Vec<String>>),
     Record(Rc<BTreeMap<String, Ty>>),
     List(Rc<Ty>),
     Dict(Rc<Ty>),
@@ -90,12 +91,18 @@ impl Ty {
     pub fn str() -> Ty {
         Ty::Prim(Prim::Str)
     }
-    pub fn func(params: Vec<Ty>, ret: Ty) -> Ty {
-        Ty::Fn(Rc::new(params), Rc::new(ret), Rc::new(Ty::pure()))
+    /// A pure function whose parameters after the first have `labels`.
+    pub fn func(params: Vec<Ty>, ret: Ty, labels: &[&str]) -> Ty {
+        Ty::Fn(
+            Rc::new(params),
+            Rc::new(ret),
+            Rc::new(Ty::pure()),
+            Rc::new(labels.iter().map(|l| l.to_string()).collect()),
+        )
     }
     /// A function that may use the capabilities of `effect`.
-    pub fn func_eff(params: Vec<Ty>, ret: Ty, effect: Ty) -> Ty {
-        Ty::Fn(Rc::new(params), Rc::new(ret), Rc::new(effect))
+    pub fn func_eff(params: Vec<Ty>, ret: Ty, effect: Ty, labels: Vec<String>) -> Ty {
+        Ty::Fn(Rc::new(params), Rc::new(ret), Rc::new(effect), Rc::new(labels))
     }
     pub fn pure() -> Ty {
         Ty::Caps(Rc::new(BTreeSet::new()))
@@ -146,7 +153,7 @@ impl Ty {
     pub fn level(&self) -> u32 {
         match self {
             Ty::Var(v) => v.level,
-            Ty::Fn(params, ret, eff) => {
+            Ty::Fn(params, ret, eff, _) => {
                 params.iter().map(Ty::level).max().unwrap_or(0).max(ret.level()).max(eff.level())
             }
             Ty::Record(fields) => fields.values().map(Ty::level).max().unwrap_or(0),
@@ -168,7 +175,7 @@ impl Ty {
             Ty::View => (3, 0),
             Ty::Effect => (4, 0),
             Ty::Var(v) => (5, v.id as usize),
-            Ty::Fn(params, _, _) => (6, Rc::as_ptr(params) as *const u8 as usize),
+            Ty::Fn(params, _, _, _) => (6, Rc::as_ptr(params) as *const u8 as usize),
             Ty::Record(fields) => (7, Rc::as_ptr(fields) as *const u8 as usize),
             Ty::List(t) => (8, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Dict(t) => (9, Rc::as_ptr(t) as *const u8 as usize),
@@ -259,10 +266,10 @@ impl Solver {
                         (None, None) => {}
                         (Some(x), Some(y)) => self.go(x, y, cache)?,
                         (Some(_), None) => {
-                            return Err(TypeError(format!("the variant `{{:{k} ..}}` is not the keyword `:{k}`")));
+                            return Err(TypeError(format!("the variant `{{{k}: ..}}` is not the keyword `:{k}`")));
                         }
                         (None, Some(_)) => {
-                            return Err(TypeError(format!("the keyword `:{k}` is not the variant `{{:{k} ..}}`")));
+                            return Err(TypeError(format!("the keyword `:{k}` is not the variant `{{{k}: ..}}`")));
                         }
                     }
                 }
@@ -278,13 +285,17 @@ impl Solver {
                         if name == k {
                             self.go(payload, unopt(t), cache)?;
                         } else if !matches!(t, Ty::Opt(_)) {
-                            return Err(TypeError(format!("the variant `{{:{k} ..}}` has no field `:{name}`")));
+                            return Err(TypeError(format!("the variant `{{{k}: ..}}` has no attribute `{name}`")));
                         }
                     }
                 }
                 Ok(())
             }
-            (Ty::Fn(p0, r0, e0), Ty::Fn(p1, r1, e1)) => {
+            (Ty::Fn(p0, r0, e0, l0), Ty::Fn(p1, r1, e1, l1)) => {
+                if p0.len() == p1.len() && l0 != l1 {
+                    let text = |l: &[String]| l.iter().map(|l| format!("{l}:")).collect::<Vec<_>>().join(" ");
+                    return Err(TypeError(format!("a function labeled `{}` is called with `{}`", text(l0), text(l1))));
+                }
                 if p0.len() != p1.len() {
                     return Err(TypeError(format!(
                         "a function of {} argument(s) is called with {}",
@@ -316,7 +327,7 @@ impl Solver {
                         (Some(Ty::Opt(t0)), Ty::Opt(u)) => self.go(t0, u, cache)?,
                         (Some(Ty::Opt(_)), _) => {
                             return Err(TypeError(format!(
-                                "the record {} may not have `:{name}`: read it with a default, or `match` it",
+                                "the record {} may not have `{name}`: read it with a default, or `match` it",
                                 Shallow(lhs)
                             )));
                         }
@@ -324,7 +335,7 @@ impl Solver {
                         // A field asked for only if it is there.
                         (None, Ty::Opt(_)) => {}
                         (None, _) => {
-                            return Err(TypeError(format!("the record {} has no field `:{name}`", Shallow(lhs))));
+                            return Err(TypeError(format!("the record {} has no attribute `{name}`", Shallow(lhs))));
                         }
                     }
                 }
@@ -405,10 +416,11 @@ impl Solver {
             return ty.clone();
         }
         match ty {
-            Ty::Fn(params, ret, eff) => Ty::func_eff(
+            Ty::Fn(params, ret, eff, labels) => Ty::func_eff(
                 params.iter().map(|p| self.extrude(p, !pol, level, cache)).collect(),
                 self.extrude(ret, pol, level, cache),
                 self.extrude(eff, pol, level, cache),
+                (**labels).clone(),
             ),
             Ty::Record(fields) => {
                 Ty::record(fields.iter().map(|(k, t)| (k.clone(), self.extrude(t, pol, level, cache))))
@@ -471,10 +483,11 @@ impl Solver {
                 *nv.upper.borrow_mut() = u;
                 Ty::Var(nv)
             }
-            Ty::Fn(params, ret, eff) => Ty::func_eff(
+            Ty::Fn(params, ret, eff, labels) => Ty::func_eff(
                 params.iter().map(|p| self.freshen(p, limit, level, map)).collect(),
                 self.freshen(ret, limit, level, map),
                 self.freshen(eff, limit, level, map),
+                (**labels).clone(),
             ),
             Ty::Record(fields) => {
                 Ty::record(fields.iter().map(|(k, t)| (k.clone(), self.freshen(t, limit, level, map))))
@@ -506,7 +519,7 @@ impl fmt::Display for Shallow<'_> {
             Ty::View => write!(f, "View"),
             Ty::Effect => write!(f, "Effect"),
             Ty::Var(_) => write!(f, "a value whose type is still being inferred"),
-            Ty::Fn(params, _, _) => write!(f, "a function of {} argument(s)", params.len()),
+            Ty::Fn(params, _, _, _) => write!(f, "a function of {} argument(s)", params.len()),
             Ty::Caps(c) => write!(f, "{}", caps_text(c)),
             Ty::Record(fields) => {
                 write!(f, "{{")?;
@@ -514,14 +527,14 @@ impl fmt::Display for Shallow<'_> {
                     if i > 0 {
                         write!(f, " ")?;
                     }
-                    write!(f, ":{name}")?;
+                    write!(f, "{name}:")?;
                 }
                 write!(f, "}}")
             }
             Ty::List(_) => write!(f, "List"),
             Ty::Dict(_) => write!(f, "Dict"),
             Ty::Opt(t) => write!(f, "{} if present", Shallow(t)),
-            Ty::Update(r, k, _) => write!(f, "{} with `:{k}` set", Shallow(r)),
+            Ty::Update(r, k, _) => write!(f, "{} with `{k}` set", Shallow(r)),
             Ty::Tags(k) => write!(f, "{}", tags_text(k)),
             Ty::IfHas(k, _) => write!(f, "{{{k}?: ..}}"),
         }
@@ -550,7 +563,7 @@ pub enum Type {
     View,
     Effect,
     Var(u32),
-    Fn(Vec<Type>, Box<Type>, Box<Type>),
+    Fn(Vec<Type>, Box<Type>, Box<Type>, Vec<String>),
     Record(BTreeMap<String, Type>),
     List(Box<Type>),
     Dict(Box<Type>),
@@ -597,10 +610,11 @@ fn coalesce_go(
             t => Type::Record([(k.clone(), Type::Opt(Box::new(t)))].into_iter().collect()),
         },
         Ty::Caps(c) => Type::Caps((**c).clone()),
-        Ty::Fn(params, ret, eff) => Type::Fn(
+        Ty::Fn(params, ret, eff, labels) => Type::Fn(
             params.iter().map(|p| coalesce_go(p, !pol, in_process, recursive, next)).collect(),
             Box::new(coalesce_go(ret, pol, in_process, recursive, next)),
             Box::new(coalesce_go(eff, pol, in_process, recursive, next)),
+            (**labels).clone(),
         ),
         Ty::Record(fields) => Type::Record(
             fields.iter().map(|(k, t)| (k.clone(), coalesce_go(t, pol, in_process, recursive, next))).collect(),
@@ -673,10 +687,11 @@ fn vacuous(ty: Type, pol: bool) -> Type {
         {
             Type::Top
         }
-        Type::Fn(params, ret, eff) => Type::Fn(
+        Type::Fn(params, ret, eff, labels) => Type::Fn(
             params.into_iter().map(|p| vacuous(p, !pol)).collect(),
             Box::new(vacuous(*ret, pol)),
             Box::new(vacuous(*eff, pol)),
+            labels,
         ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, vacuous(t, pol))).collect()),
         Type::List(t) => Type::List(Box::new(vacuous(*t, pol))),
@@ -719,7 +734,7 @@ fn cooccurrence(ty: Type) -> Type {
             }
         }
         match ty {
-            Type::Fn(params, ret, eff) => {
+            Type::Fn(params, ret, eff, _) => {
                 params.iter().for_each(|p| visit(p, !pol, co, bound));
                 visit(ret, pol, co, bound);
                 visit(eff, pol, co, bound);
@@ -783,10 +798,11 @@ fn drop_var(ty: Type, v: u32, pol: bool) -> Type {
                 Type::Top
             }
         }
-        Type::Fn(params, ret, eff) => Type::Fn(
+        Type::Fn(params, ret, eff, labels) => Type::Fn(
             params.into_iter().map(|p| drop_var(p, v, !pol)).collect(),
             Box::new(drop_var(*ret, v, pol)),
             Box::new(drop_var(*eff, v, pol)),
+            labels,
         ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, drop_var(t, v, pol))).collect()),
         Type::List(t) => Type::List(Box::new(drop_var(*t, v, pol))),
@@ -801,15 +817,40 @@ fn drop_var(ty: Type, v: u32, pol: bool) -> Type {
     }
 }
 
+impl Type {
+    /// The type with every attribute's key renamed by `f`: global names
+    /// shown by the local names a codebase claims them under.
+    pub fn rename_keys(self, f: &dyn Fn(&str) -> String) -> Type {
+        let go = |t: Type| t.rename_keys(f);
+        let boxed = |t: Box<Type>| Box::new(t.rename_keys(f));
+        match self {
+            Type::Fn(params, ret, eff, labels) => {
+                Type::Fn(params.into_iter().map(go).collect(), boxed(ret), boxed(eff), labels)
+            }
+            Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (f(&k), go(t))).collect()),
+            Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, t)| (f(&k), t.map(go))).collect()),
+            Type::List(t) => Type::List(boxed(t)),
+            Type::Dict(t) => Type::Dict(boxed(t)),
+            Type::Opt(t) => Type::Opt(boxed(t)),
+            Type::Rec(v, t) => Type::Rec(v, boxed(t)),
+            Type::Update(r, k, v) => Type::Update(boxed(r), f(&k), boxed(v)),
+            Type::Union(ts) => Type::Union(ts.into_iter().map(go).collect()),
+            Type::Inter(ts) => Type::Inter(ts.into_iter().map(go).collect()),
+            other => other,
+        }
+    }
+}
+
 fn map_type(ty: Type, f: &dyn Fn(&Type) -> Option<Type>) -> Type {
     if let Some(t) = f(&ty) {
         return t;
     }
     match ty {
-        Type::Fn(params, ret, eff) => Type::Fn(
+        Type::Fn(params, ret, eff, labels) => Type::Fn(
             params.into_iter().map(|p| map_type(p, f)).collect(),
             Box::new(map_type(*ret, f)),
             Box::new(map_type(*eff, f)),
+            labels,
         ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, map_type(t, f))).collect()),
         Type::List(t) => Type::List(Box::new(map_type(*t, f))),
@@ -833,7 +874,7 @@ fn occurrences(ty: &Type, pol: bool, pos: &mut HashSet<u32>, neg: &mut HashSet<u
                 neg.insert(*v);
             }
         }
-        Type::Fn(params, ret, eff) => {
+        Type::Fn(params, ret, eff, _) => {
             params.iter().for_each(|p| occurrences(p, !pol, pos, neg));
             occurrences(ret, pol, pos, neg);
             occurrences(eff, pol, pos, neg);
@@ -865,10 +906,11 @@ fn prune(ty: Type, pol: bool, keep: &HashSet<u32>) -> Type {
                 Type::Top
             }
         }
-        Type::Fn(params, ret, eff) => Type::Fn(
+        Type::Fn(params, ret, eff, labels) => Type::Fn(
             params.into_iter().map(|p| prune(p, !pol, keep)).collect(),
             Box::new(prune(*ret, pol, keep)),
             Box::new(prune(*eff, pol, keep)),
+            labels,
         ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, prune(t, pol, keep))).collect()),
         Type::List(t) => Type::List(Box::new(prune(*t, pol, keep))),
@@ -885,9 +927,12 @@ fn prune(ty: Type, pol: bool, keep: &HashSet<u32>) -> Type {
 
 fn normalize(ty: Type) -> Type {
     match ty {
-        Type::Fn(params, ret, eff) => {
-            Type::Fn(params.into_iter().map(normalize).collect(), Box::new(normalize(*ret)), Box::new(normalize(*eff)))
-        }
+        Type::Fn(params, ret, eff, labels) => Type::Fn(
+            params.into_iter().map(normalize).collect(),
+            Box::new(normalize(*ret)),
+            Box::new(normalize(*eff)),
+            labels,
+        ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, normalize(t))).collect()),
         Type::List(t) => Type::List(Box::new(normalize(*t))),
         Type::Dict(t) => Type::Dict(Box::new(normalize(*t))),
@@ -1166,7 +1211,7 @@ fn update(record: Type, field: String, value: Type) -> Type {
 fn mentions(ty: &Type, v: u32) -> bool {
     match ty {
         Type::Var(x) => *x == v,
-        Type::Fn(params, ret, eff) => params.iter().any(|p| mentions(p, v)) || mentions(ret, v) || mentions(eff, v),
+        Type::Fn(params, ret, eff, _) => params.iter().any(|p| mentions(p, v)) || mentions(ret, v) || mentions(eff, v),
         Type::Record(fields) => fields.values().any(|t| mentions(t, v)),
         Type::List(t) | Type::Dict(t) | Type::Opt(t) | Type::Rec(_, t) => mentions(t, v),
         Type::Tags(tags) => tags.values().flatten().any(|t| mentions(t, v)),
@@ -1188,10 +1233,10 @@ fn rename(ty: Type) -> Type {
                 let v = name(v, map);
                 Type::Rec(v, Box::new(go(*body, map)))
             }
-            Type::Fn(params, ret, eff) => {
+            Type::Fn(params, ret, eff, labels) => {
                 let params = params.into_iter().map(|p| go(p, map)).collect();
                 let ret = go(*ret, map);
-                Type::Fn(params, Box::new(ret), Box::new(go(*eff, map)))
+                Type::Fn(params, Box::new(ret), Box::new(go(*eff, map)), labels)
             }
             Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, go(t, map))).collect()),
             Type::List(t) => Type::List(Box::new(go(*t, map))),
@@ -1242,7 +1287,7 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
             Ok(())
         }
         Type::Var(v) => write!(f, "{}", var(*v)),
-        Type::Fn(params, ret, eff) => {
+        Type::Fn(params, ret, eff, labels) => {
             if prec > 0 {
                 write!(f, "(")?;
             }
@@ -1250,6 +1295,11 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
             for (i, p) in params.iter().enumerate() {
                 if i > 0 {
                     write!(f, ", ")?;
+                }
+                if i > 0
+                    && let Some(label) = labels.get(i - 1)
+                {
+                    write!(f, "{label}: ")?;
                 }
                 write_type(p, f, 0)?;
             }

@@ -9,7 +9,7 @@
 
 use crate::infer::{Binding, Globals, Infer};
 use crate::reader;
-use crate::syntax::{self, Def, Expr};
+use crate::syntax::{self, Arg, Attribute, Def, Expr, Item, Param, Pattern, TypeExpr};
 use crate::term::{Hash, Op, Term};
 use crate::types::{Scheme, Solver, Ty, Type, TypeError, coalesce};
 use std::collections::{BTreeMap, HashMap};
@@ -25,17 +25,25 @@ pub struct Definition {
 }
 
 impl Definition {
-    /// The definition's type as shown to a person.
+    /// The definition's type, with attributes by their global names.
     pub fn type_string(&self) -> String {
         coalesce(&self.scheme.body).to_string()
     }
 }
+
+/// What every codebase starts with: the attributes the language's own
+/// variants use.
+pub const CORE: &str = include_str!("core.cdt");
 
 #[derive(Default)]
 pub struct Codebase {
     pub solver: Solver,
     pub defs: HashMap<Hash, Definition>,
     pub names: BTreeMap<String, Hash>,
+    /// Claimed attributes: local name to global name.
+    pub attributes: BTreeMap<String, String>,
+    /// Each global name's claimed value type, as written and as a type.
+    pub attribute_types: BTreeMap<String, (String, Ty)>,
 }
 
 /// What adding a definition did.
@@ -70,15 +78,31 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-impl Globals for HashMap<Hash, Definition> {
-    fn scheme(&self, hash: &Hash) -> Option<Scheme> {
-        self.get(hash).map(|d| d.scheme.clone())
-    }
-}
-
 impl Codebase {
+    /// A codebase holding the core attributes.
     pub fn new() -> Self {
-        Self::default()
+        let mut cb = Self::default();
+        cb.add_source(CORE).expect("the core prelude is valid");
+        cb
+    }
+
+    /// A definition's type as shown to a person: attributes by the local
+    /// names this codebase claims them under.
+    pub fn type_of(&self, name: &str) -> Option<String> {
+        self.lookup(name).map(|d| self.show(&d.scheme.body))
+    }
+
+    /// A type as shown to a person, with attributes by local name.
+    pub fn show(&self, ty: &Ty) -> String {
+        coalesce(ty)
+            .rename_keys(&|k| self.local_attribute(k).map(str::to_string).unwrap_or_else(|| k.to_string()))
+            .to_string()
+    }
+
+    /// The local name an attribute's global name is claimed under, if
+    /// any.
+    pub fn local_attribute(&self, global: &str) -> Option<&str> {
+        self.attributes.iter().find(|(_, g)| *g == global).map(|(l, _)| l.as_str())
     }
 
     /// Declare a function the host provides, under `name`, which must end
@@ -88,8 +112,12 @@ impl Codebase {
     pub fn add_host(&mut self, name: &str, capability: &str, params: Vec<Ty>, ret: Ty) -> Result<Hash, Error> {
         let arity = params.len() as u32;
         let args = (0..arity).rev().map(Term::Local).collect();
-        let term = Term::Fn(arity, Box::new(Term::Host(name.to_string(), args)));
-        let ty = Ty::func_eff(params, ret, Ty::caps([capability.to_string()]));
+        // A host function takes at most one argument, by position; the
+        // labels are only there to make the term well formed.
+        let labels: Vec<String> =
+            (0..arity).map(|i| if i == 0 { "value".to_string() } else { format!("arg{i}") }).collect();
+        let term = Term::Fn(labels.clone(), Box::new(Term::Host(name.to_string(), args)));
+        let ty = Ty::func_eff(params, ret, Ty::caps([capability.to_string()]), labels[1.min(labels.len())..].to_vec());
         let mut bytes = Vec::new();
         term.encode(&mut bytes, &|i| i);
         bytes.extend_from_slice(coalesce(&ty).to_string().as_bytes());
@@ -109,11 +137,64 @@ impl Codebase {
     /// names at the resulting hashes. Nothing changes on an error.
     pub fn add_source(&mut self, source: &str) -> Result<Vec<Added>, Error> {
         let forms = reader::read(source).map_err(Error::Read)?;
-        let defs = syntax::defs(&forms).map_err(Error::Syntax)?;
-        self.add_defs(defs)
+        let items = syntax::items(&forms).map_err(Error::Syntax)?;
+        let mut defs = Vec::new();
+        let mut attributes = Vec::new();
+        for item in items {
+            match item {
+                Item::Def(d) => defs.push(d),
+                Item::Attribute(a) => attributes.push(a),
+            }
+        }
+        // Claims come first: they declare what definitions use, and
+        // nothing about them depends on order.
+        let saved = (self.attributes.clone(), self.attribute_types.clone());
+        let out = self.claim_attributes(&attributes, &defs).and_then(|()| self.add_defs(defs));
+        if out.is_err() {
+            (self.attributes, self.attribute_types) = saved;
+        }
+        out
+    }
+
+    /// Record attribute claims, after checking each agrees with what is
+    /// already claimed.
+    fn claim_attributes(&mut self, claims: &[Attribute], defs: &[Def]) -> Result<(), Error> {
+        for a in claims {
+            let error = |message: String| Err(Error::Resolve { def: a.name.clone(), message });
+            let Some((domain, last)) = a.global.rsplit_once('/') else { unreachable!() };
+            if domain.is_empty() || last.is_empty() {
+                return error(format!("`{}` is not a global name: write `domain/name`", a.global));
+            }
+            if self.names.contains_key(&a.name) || defs.iter().any(|d| d.name == a.name) {
+                return error(format!("`{}` names a definition, so it cannot also name an attribute", a.name));
+            }
+            if let Some(global) = self.attributes.get(&a.name)
+                && *global != a.global
+            {
+                return error(format!("`{}` is already claimed as the attribute `{global}`", a.name));
+            }
+            let written = a.ty.to_string();
+            let ty = attribute_type(&a.ty).map_err(|message| Error::Resolve { def: a.name.clone(), message })?;
+            if let Some((before, _)) = self.attribute_types.get(&a.global)
+                && *before != written
+            {
+                return error(format!("`{}` is already claimed with values `{before}`, not `{written}`", a.global));
+            }
+            self.attributes.insert(a.name.clone(), a.global.clone());
+            self.attribute_types.insert(a.global.clone(), (written, ty));
+        }
+        Ok(())
     }
 
     pub fn add_defs(&mut self, defs: Vec<Def>) -> Result<Vec<Added>, Error> {
+        for d in &defs {
+            if self.attributes.contains_key(&d.name) {
+                return Err(Error::Resolve {
+                    def: d.name.clone(),
+                    message: format!("`{}` is claimed as an attribute, so it cannot also name a definition", d.name),
+                });
+            }
+        }
         // A later definition of a name in the same source replaces an
         // earlier one.
         let mut batch: Vec<Def> = Vec::new();
@@ -152,14 +233,26 @@ impl Codebase {
                     if let Some(i) = names_in_cycle.iter().position(|n| *n == name)
                         && recursive
                     {
-                        return Some(Target::Cycle(i as u32));
+                        let labels = match &members[i].body {
+                            Expr::Fn(params, _) => Some(canonical(params).into_iter().map(|p| p.label).collect()),
+                            _ => None,
+                        };
+                        return Some(Target::Cycle(i as u32, labels));
                     }
-                    if let Some(h) = resolved.get(name) {
-                        return Some(Target::Hash(*h));
-                    }
-                    self.names.get(name).map(|h| Target::Hash(*h))
+                    let h = resolved.get(name).or_else(|| self.names.get(name))?;
+                    let term = staged
+                        .iter()
+                        .find(|s| s.hash == *h)
+                        .map(|s| &s.term)
+                        .or_else(|| self.defs.get(h).map(|d| &d.term));
+                    let labels = match term {
+                        Some(Term::Fn(labels, _)) => Some(labels.clone()),
+                        _ => None,
+                    };
+                    Some(Target::Hash(*h, labels))
                 };
-                let term = resolve(&d.body, &mut Vec::new(), &lookup).map_err(|e| match e {
+                let names = Names { lookup: &lookup, attributes: &self.attributes, globals: &self.attribute_types };
+                let term = resolve(&d.body, &mut Vec::new(), &names).map_err(|e| match e {
                     ResolveError::Unbound(name) => Error::Unbound { name, def: d.name.clone() },
                     ResolveError::Invalid(message) => Error::Resolve { def: d.name.clone(), message },
                 })?;
@@ -252,13 +345,17 @@ impl Codebase {
         struct Layered<'a> {
             defs: &'a HashMap<Hash, Definition>,
             staged: &'a [Definition],
+            attributes: &'a BTreeMap<String, (String, Ty)>,
         }
         impl Globals for Layered<'_> {
             fn scheme(&self, hash: &Hash) -> Option<Scheme> {
                 self.defs.get(hash).or_else(|| self.staged.iter().find(|d| d.hash == *hash)).map(|d| d.scheme.clone())
             }
+            fn attribute(&self, global: &str) -> Option<Ty> {
+                self.attributes.get(global).map(|(_, t)| t.clone())
+            }
         }
-        let globals = Layered { defs: &self.defs, staged };
+        let globals = Layered { defs: &self.defs, staged, attributes: &self.attribute_types };
         let s = &self.solver;
         // Cycle members are known to each other monomorphically while
         // their bodies are checked, by their canonical index.
@@ -293,7 +390,7 @@ impl Codebase {
 fn check_name(name: &str, scheme: &Scheme) -> Result<(), Error> {
     let marked = name.ends_with('!');
     let effect = match coalesce(&scheme.body) {
-        Type::Fn(_, _, effect) => *effect,
+        Type::Fn(_, _, effect, _) => *effect,
         _ => Type::Caps(Default::default()),
     };
     let mut caps = std::collections::BTreeSet::new();
@@ -323,19 +420,121 @@ enum ResolveError {
     Invalid(String),
 }
 
+/// What a name refers to outside the definition: a definition by hash,
+/// or a member of the cycle being resolved, with its parameters' labels
+/// when it is a function.
 enum Target {
-    Hash(Hash),
-    Cycle(u32),
+    Hash(Hash, Option<Vec<String>>),
+    Cycle(u32, Option<Vec<String>>),
 }
 
-/// Replace names with de Bruijn indices and hashes. Returns the first
-/// name that resolves to nothing.
-fn resolve(
-    expr: &Expr,
-    scope: &mut Vec<String>,
-    lookup: &dyn Fn(&str) -> Option<Target>,
-) -> Result<Term, ResolveError> {
-    let b = |e: &Expr, scope: &mut Vec<String>| resolve(e, scope, lookup).map(Box::new);
+/// Everything resolution looks names up in.
+struct Names<'a> {
+    lookup: &'a dyn Fn(&str) -> Option<Target>,
+    attributes: &'a BTreeMap<String, String>,
+    globals: &'a BTreeMap<String, (String, Ty)>,
+}
+
+impl Names<'_> {
+    /// The global name of an attribute, written by its local name or its
+    /// global one.
+    fn attribute(&self, name: &str) -> Option<String> {
+        if let Some(global) = self.attributes.get(name) {
+            return Some(global.clone());
+        }
+        self.globals.contains_key(name).then(|| name.to_string())
+    }
+
+    fn key(&self, name: &str) -> Result<String, ResolveError> {
+        self.attribute(name).ok_or_else(|| {
+            ResolveError::Invalid(if name.contains('/') {
+                format!("no claim declares the attribute `{name}`")
+            } else {
+                format!("`{name}:` is not a claimed attribute: claim it, `(claim {name} : (domain/{name} type))`")
+            })
+        })
+    }
+
+    /// A pattern with its record keys resolved to global names.
+    fn pattern(&self, p: &Pattern) -> Result<Pattern, ResolveError> {
+        Ok(match p {
+            Pattern::Fields(fields) => {
+                let mut out: Vec<(String, Pattern)> = Vec::new();
+                for (k, p) in fields {
+                    let global = self.key(k)?;
+                    if out.iter().any(|(g, _)| *g == global) {
+                        return Err(ResolveError::Invalid(format!("the attribute `{global}` appears twice")));
+                    }
+                    out.push((global, self.pattern(p)?));
+                }
+                out.sort_by(|a, b| a.0.cmp(&b.0));
+                Pattern::Fields(out)
+            }
+            other => other.clone(),
+        })
+    }
+}
+
+/// Parameters in the order they are passed: the first, then the others
+/// by label.
+fn canonical(params: &[Param]) -> Vec<Param> {
+    let mut rest = params[1..].to_vec();
+    rest.sort_by(|a, b| a.label.cmp(&b.label));
+    std::iter::once(params[0].clone()).chain(rest).collect()
+}
+
+/// Built-ins that take labels: their labels after the first argument,
+/// and the order the built-in itself takes all of them in, by the
+/// position of each in `[first, labels..]`.
+fn builtin_labels(op: Op) -> Option<(&'static [&'static str], &'static [usize])> {
+    match op {
+        Op::Map => Some((&["each"], &[1, 0])),
+        Op::Filter => Some((&["where"], &[1, 0])),
+        _ => None,
+    }
+}
+
+fn text(labels: &[String]) -> String {
+    labels.iter().map(|l| format!("{l}:")).collect::<Vec<_>>().join(" ")
+}
+
+/// A call's arguments in the order `labels` gives, the first of which
+/// may also come without its label.
+fn arrange(callee: &str, labels: &[String], args: Vec<(Option<String>, Term)>) -> Result<Vec<Term>, ResolveError> {
+    let mut slots: Vec<Option<Term>> = labels.iter().map(|_| None).collect();
+    for (i, (label, value)) in args.into_iter().enumerate() {
+        let at = match &label {
+            None if i == 0 => 0,
+            None => {
+                return Err(ResolveError::Invalid(format!(
+                    "only the first argument goes without a label: `{callee}` takes {}",
+                    text(&labels[1..])
+                )));
+            }
+            Some(l) => labels.iter().position(|x| x == l).ok_or_else(|| {
+                ResolveError::Invalid(format!(
+                    "`{callee}` has no parameter labeled `{l}:`{}",
+                    if labels.len() > 1 { format!("; it takes {}", text(&labels[1..])) } else { String::new() }
+                ))
+            })?,
+        };
+        if slots[at].is_some() {
+            return Err(ResolveError::Invalid(format!("`{callee}` is given `{}:` twice", labels[at])));
+        }
+        slots[at] = Some(value);
+    }
+    let missing: Vec<String> = labels.iter().zip(&slots).filter(|(_, s)| s.is_none()).map(|(l, _)| l.clone()).collect();
+    if !missing.is_empty() {
+        return Err(ResolveError::Invalid(format!("`{callee}` needs {}", text(&missing))));
+    }
+    Ok(slots.into_iter().map(Option::unwrap).collect())
+}
+
+/// Replace names with de Bruijn indices and hashes, labels with
+/// parameter positions, and attributes' local names with global ones.
+fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, ResolveError> {
+    let b = |e: &Expr, scope: &mut Vec<String>| resolve(e, scope, names).map(Box::new);
+    let lookup = names.lookup;
     Ok(match expr {
         Expr::Int(n) => Term::Int(*n),
         Expr::Str(s) => Term::Str(s.clone()),
@@ -345,11 +544,16 @@ fn resolve(
                 Term::Local((scope.len() - 1 - pos) as u32)
             } else {
                 match lookup(name) {
-                    Some(Target::Hash(h)) => Term::Ref(h),
-                    Some(Target::Cycle(i)) => Term::CycleRef(i),
+                    Some(Target::Hash(h, _)) => Term::Ref(h),
+                    Some(Target::Cycle(i, _)) => Term::CycleRef(i),
                     None if Op::from_name(name).is_some() => {
                         return Err(ResolveError::Invalid(format!(
                             "the built-in `{name}` is not a value yet; call it, or wrap it in `fn`"
+                        )));
+                    }
+                    None if names.attribute(name).is_some() => {
+                        return Err(ResolveError::Invalid(format!(
+                            "the attribute `{name}` is read by calling it, `({name} record)`"
                         )));
                     }
                     None => return Err(ResolveError::Unbound(name.clone())),
@@ -357,75 +561,186 @@ fn resolve(
             }
         }
         Expr::Fn(params, body) => {
-            scope.extend(params.iter().cloned());
-            let body = resolve(body, scope, lookup);
+            let params = canonical(params);
+            scope.extend(params.iter().map(|p| p.local.clone()));
+            let body = resolve(body, scope, names);
             scope.truncate(scope.len() - params.len());
-            Term::Fn(params.len() as u32, Box::new(body?))
+            Term::Fn(params.into_iter().map(|p| p.label).collect(), Box::new(body?))
         }
-        Expr::App(callee, args, _) => {
-            let args: Vec<Term> = args.iter().map(|a| resolve(a, scope, lookup)).collect::<Result<_, _>>()?;
-            // A name no local or definition binds may name a built-in:
-            // locals and definitions shadow built-ins.
-            if let Expr::Var(name, _) = &**callee
-                && !scope.contains(name)
-                && lookup(name).is_none()
-                && let Some(op) = Op::from_name(name)
-            {
-                return builtin(op, args);
-            }
-            Term::App(b(callee, scope)?, args)
-        }
+        Expr::App(callee, args, _) => app(callee, args, scope, names)?,
         Expr::Let(name, value, body) => {
             let value = b(value, scope)?;
             scope.push(name.clone());
-            let body = resolve(body, scope, lookup);
+            let body = resolve(body, scope, names);
             scope.pop();
             Term::Let(value, Box::new(body?))
         }
         Expr::If(c, t, e) => Term::If(b(c, scope)?, b(t, scope)?, b(e, scope)?),
         Expr::And(x, y) => Term::And(b(x, scope)?, b(y, scope)?),
         Expr::Or(x, y) => Term::Or(b(x, scope)?, b(y, scope)?),
-        Expr::Record(fields) => {
-            let mut out: Vec<(String, Term)> = fields
-                .iter()
-                .map(|(k, v)| Ok((k.clone(), resolve(v, scope, lookup)?)))
-                .collect::<Result<_, ResolveError>>()?;
+        Expr::Record(fields, _) => {
+            let mut out: Vec<(String, Term)> = Vec::new();
+            for (k, v) in fields {
+                let global = names.key(k)?;
+                if out.iter().any(|(g, _)| *g == global) {
+                    return Err(ResolveError::Invalid(format!("the attribute `{global}` appears twice")));
+                }
+                out.push((global, resolve(v, scope, names)?));
+            }
             out.sort_by(|a, b| a.0.cmp(&b.0));
             Term::Record(out)
         }
-        Expr::Field(name, record) => Term::Field(name.clone(), b(record, scope)?),
-        Expr::Update(record, name, value) => Term::Update(b(record, scope)?, name.clone(), b(value, scope)?),
+        Expr::Update(record, fields, _) => {
+            let mut out = resolve(record, scope, names)?;
+            for (k, v) in fields {
+                out = Term::Update(Box::new(out), names.key(k)?, b(v, scope)?);
+            }
+            out
+        }
         Expr::Keyword(k) => Term::Keyword(k.clone()),
-        Expr::Match(scrutinee, clauses, default) => Term::Match(
-            b(scrutinee, scope)?,
-            clauses
-                .iter()
-                .map(|(p, r)| {
-                    let names = p.binders();
-                    scope.extend(names.iter().cloned());
-                    let r = resolve(r, scope, lookup);
-                    scope.truncate(scope.len() - names.len());
-                    Ok((p.clone(), r?))
-                })
-                .collect::<Result<_, ResolveError>>()?,
-            match default {
-                Some(d) => Some(b(d, scope)?),
-                None => None,
-            },
-        ),
+        Expr::Match(scrutinee, clauses, default, _) => {
+            let mut arms: Vec<(Pattern, Term)> = Vec::new();
+            for (p, r) in clauses {
+                let p = names.pattern(p)?;
+                if arms.iter().any(|(q, _)| *q == p) {
+                    return Err(ResolveError::Invalid("a `match` has the same pattern twice".into()));
+                }
+                let bound = p.binders();
+                scope.extend(bound.iter().cloned());
+                let r = resolve(r, scope, names);
+                scope.truncate(scope.len() - bound.len());
+                arms.push((p, r?));
+            }
+            // Keywords are a closed set the type checker can see the
+            // whole of; strings and integers never are, so leaving them
+            // out must be said.
+            if default.is_none() && !Pattern::cover(&arms.iter().map(|(p, _)| p).collect::<Vec<_>>()) {
+                return Err(ResolveError::Invalid(
+                    "this `match` cannot cover every value without a `_` clause: only variants (keywords and \
+                     one-attribute records) whose payloads are covered, or a record of `_`s, can"
+                        .into(),
+                ));
+            }
+            Term::Match(
+                b(scrutinee, scope)?,
+                arms,
+                match default {
+                    Some(d) => Some(b(d, scope)?),
+                    None => None,
+                },
+            )
+        }
         Expr::Dict(entries) => Term::Dict(
             entries
                 .iter()
-                .map(|(k, v)| Ok((k.clone(), resolve(v, scope, lookup)?)))
+                .map(|(k, v)| Ok((k.clone(), resolve(v, scope, names)?)))
                 .collect::<Result<_, ResolveError>>()?,
         ),
-        Expr::List(items) => Term::List(items.iter().map(|i| resolve(i, scope, lookup)).collect::<Result<_, _>>()?),
+        Expr::List(items) => Term::List(items.iter().map(|i| resolve(i, scope, names)).collect::<Result<_, _>>()?),
     })
+}
+
+/// A call: of a definition, whose labels are known; of an attribute, a
+/// read; of a built-in; or of a function value, whose first argument is
+/// passed without its label and whose others go in label order.
+fn app(callee: &Expr, args: &[Arg], scope: &mut Vec<String>, names: &Names) -> Result<Term, ResolveError> {
+    let resolved: Vec<(Option<String>, Term)> = args
+        .iter()
+        .map(|a| Ok((a.label.clone(), resolve(&a.value, scope, names)?)))
+        .collect::<Result<_, ResolveError>>()?;
+    let global = match callee {
+        Expr::Var(name, _) if !scope.contains(name) => Some(name.as_str()),
+        _ => None,
+    };
+    if let Some(name) = global {
+        match (names.lookup)(name) {
+            Some(target) => {
+                let (callee, labels) = match target {
+                    Target::Hash(h, labels) => (Term::Ref(h), labels),
+                    Target::Cycle(i, labels) => (Term::CycleRef(i), labels),
+                };
+                if let Some(labels) = labels {
+                    let args = arrange(name, &labels, resolved)?;
+                    return Ok(Term::App(Box::new(callee), args, labels[1.min(labels.len())..].to_vec()));
+                }
+                return value_call(callee, resolved);
+            }
+            None => {
+                if let Some(attribute) = names.attribute(name) {
+                    return read(name, attribute, resolved);
+                }
+                if let Some(op) = Op::from_name(name) {
+                    return builtin(op, resolved);
+                }
+                return Err(ResolveError::Unbound(name.to_string()));
+            }
+        }
+    }
+    value_call(resolve(callee, scope, names)?, resolved)
+}
+
+/// A call through a function value: the first argument without its
+/// label, the others in label order.
+fn value_call(callee: Term, mut args: Vec<(Option<String>, Term)>) -> Result<Term, ResolveError> {
+    if args.iter().skip(1).any(|(l, _)| l.is_none()) {
+        return Err(ResolveError::Invalid("only the first argument goes without a label".into()));
+    }
+    if let Some((Some(l), _)) = args.first() {
+        return Err(ResolveError::Invalid(format!(
+            "a function value takes its first argument without a label, not `{l}:`"
+        )));
+    }
+    let mut rest = args.split_off(args.len().min(1));
+    rest.sort_by(|a, b| a.0.cmp(&b.0));
+    let labels = rest.iter().map(|(l, _)| l.clone().unwrap()).collect();
+    let terms = args.into_iter().chain(rest).map(|(_, t)| t).collect();
+    Ok(Term::App(Box::new(callee), terms, labels))
+}
+
+/// `(name record)` reads an attribute; `(name record default)` reads it
+/// where the record has it.
+fn read(name: &str, attribute: String, args: Vec<(Option<String>, Term)>) -> Result<Term, ResolveError> {
+    if args.iter().any(|(l, _)| l.is_some()) {
+        return Err(ResolveError::Invalid(format!("`({name} record)` takes no labels")));
+    }
+    let mut args = args.into_iter().map(|(_, t)| t);
+    match (args.next(), args.next(), args.next()) {
+        (Some(record), None, None) => Ok(Term::Field(attribute, Box::new(record))),
+        (Some(record), Some(default), None) => Ok(Term::Match(
+            Box::new(record),
+            vec![(Pattern::Fields(vec![(attribute, Pattern::Bind(name.to_string()))]), Term::Local(0))],
+            Some(Box::new(shift_up(default))),
+        )),
+        _ => Err(ResolveError::Invalid(format!("`({name} record)` takes a record, and maybe a default"))),
+    }
+}
+
+/// `t` under no new binder: a `match`'s default clause binds nothing, so
+/// a resolved term moves into it unchanged.
+fn shift_up(t: Term) -> Term {
+    t
 }
 
 /// A built-in applied to arguments, after checking how many it takes.
 /// `h` fills in its optional attributes, children, and events.
-fn builtin(op: Op, mut args: Vec<Term>) -> Result<Term, ResolveError> {
+fn builtin(op: Op, args: Vec<(Option<String>, Term)>) -> Result<Term, ResolveError> {
+    let mut args: Vec<Term> = match builtin_labels(op) {
+        Some((labels, order)) => {
+            let all: Vec<String> =
+                std::iter::once("of".to_string()).chain(labels.iter().map(|l| l.to_string())).collect();
+            let mut given = arrange(op.name(), &all, args)?.into_iter().map(Some).collect::<Vec<_>>();
+            order.iter().map(|&i| given[i].take().unwrap()).collect()
+        }
+        None => {
+            if let Some((Some(l), _)) = args.iter().find(|(l, _)| l.is_some()) {
+                return Err(ResolveError::Invalid(format!(
+                    "the built-in `{}` takes no labels, given `{l}:`",
+                    op.name()
+                )));
+            }
+            args.into_iter().map(|(_, t)| t).collect()
+        }
+    };
     if op == Op::H {
         if args.is_empty() || args.len() > 4 {
             return Err(ResolveError::Invalid(
@@ -450,6 +765,29 @@ fn builtin(op: Op, mut args: Vec<Term>) -> Result<Term, ResolveError> {
     Ok(Term::Prim(op, args))
 }
 
+/// The value type an attribute claims.
+fn attribute_type(t: &TypeExpr) -> Result<Ty, String> {
+    Ok(match t {
+        TypeExpr::Name(name, _) => match name.as_str() {
+            "text" => Ty::str(),
+            "integer" => Ty::int(),
+            "boolean" => Ty::bool(),
+            "json" => Ty::Prim(crate::types::Prim::Json),
+            other => return Err(format!("`{other}` is not a type an attribute takes yet")),
+        },
+        // A variable an attribute does not tie to anything else asks
+        // nothing of its values.
+        TypeExpr::Var(_) => Ty::Top,
+        TypeExpr::App(head, args, _) => match (head.as_str(), args.as_slice()) {
+            ("list", [t]) => Ty::list(attribute_type(t)?),
+            ("dict", [t]) => Ty::dict(attribute_type(t)?),
+            _ => return Err(format!("`({head} ..)` is not a type an attribute takes yet")),
+        },
+        TypeExpr::Keywords(ks) => Ty::keys(ks.iter().cloned()),
+        TypeExpr::Empty => Ty::record([]),
+    })
+}
+
 /// The names an expression mentions that no binder inside it binds.
 fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
     match expr {
@@ -459,13 +797,13 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
             }
         }
         Expr::Fn(params, body) => {
-            scope.extend(params.iter().cloned());
+            scope.extend(params.iter().map(|p| p.local.clone()));
             free_names(body, scope, out);
             scope.truncate(scope.len() - params.len());
         }
         Expr::App(c, args, _) => {
             free_names(c, scope, out);
-            args.iter().for_each(|a| free_names(a, scope, out));
+            args.iter().for_each(|a| free_names(&a.value, scope, out));
         }
         Expr::Let(name, value, body) => {
             free_names(value, scope, out);
@@ -482,14 +820,13 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
             free_names(a, scope, out);
             free_names(b, scope, out);
         }
-        Expr::Record(fields) | Expr::Dict(fields) => fields.iter().for_each(|(_, e)| free_names(e, scope, out)),
-        Expr::Field(_, e) => free_names(e, scope, out),
-        Expr::Update(r, _, v) => {
+        Expr::Record(fields, _) | Expr::Dict(fields) => fields.iter().for_each(|(_, e)| free_names(e, scope, out)),
+        Expr::Update(r, fields, _) => {
             free_names(r, scope, out);
-            free_names(v, scope, out);
+            fields.iter().for_each(|(_, e)| free_names(e, scope, out));
         }
         Expr::List(items) => items.iter().for_each(|e| free_names(e, scope, out)),
-        Expr::Match(scrutinee, clauses, default) => {
+        Expr::Match(scrutinee, clauses, default, _) => {
             free_names(scrutinee, scope, out);
             for (p, r) in clauses {
                 let names = p.binders();
@@ -509,7 +846,7 @@ fn renumber_cycle(term: &mut Term, canonical: &dyn Fn(u32) -> u32) {
     match term {
         Term::CycleRef(i) => *i = canonical(*i),
         Term::Fn(_, b) | Term::Field(_, b) => renumber_cycle(b, canonical),
-        Term::App(c, args) => {
+        Term::App(c, args, _) => {
             renumber_cycle(c, canonical);
             args.iter_mut().for_each(|a| renumber_cycle(a, canonical));
         }

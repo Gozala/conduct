@@ -11,43 +11,52 @@ fn hash(src: &str, name: &str) -> Hash {
 
 #[test]
 fn renaming_locals_and_definitions_keeps_the_hash() {
-    let a = hash("(defn inc [x] (let [one 1] (+ x one)))", "inc");
-    let b = hash("(defn succ [n] (let [k 1] (+ n k)))", "succ");
+    // Parameters' labels are what callers pass arguments by, so they stay;
+    // the names the body knows things by may change.
+    let a = hash("(define (inc x) (let [one 1] (+ x one)))", "inc");
+    let b = hash("(define (succ x) (let [k 1] (+ x k)))", "succ");
+    assert_eq!(a, b);
+    let a = hash("(define (add x y) (+ x y))", "add");
+    let b = hash("(define (plus x y: n) (+ x n))", "plus");
     assert_eq!(a, b);
 }
 
 #[test]
 fn changing_behaviour_changes_the_hash() {
-    let a = hash("(defn f [x] (+ x 1))", "f");
-    let b = hash("(defn f [x] (+ x 2))", "f");
-    let c = hash("(defn f [x y] (+ x y))", "f");
-    let d = hash("(defn f [x y] (+ y x))", "f");
+    let a = hash("(define (f x) (+ x 1))", "f");
+    let b = hash("(define (f x) (+ x 2))", "f");
+    let c = hash("(define (f x y) (+ x y))", "f");
+    let d = hash("(define (f x y) (+ y x))", "f");
     assert_ne!(a, b);
     assert_ne!(c, d);
 }
 
 #[test]
 fn record_field_order_does_not_matter() {
-    assert_eq!(hash("(def r {:a 1 :b 2})", "r"), hash("(def r {:b 2 :a 1})", "r"));
+    let claims = "(claim a : (t/a ?a)) (claim b : (t/b ?b))";
+    assert_eq!(
+        hash(&format!("{claims} (define r {{a: 1, b: 2}})"), "r"),
+        hash(&format!("{claims} (define r {{b: 2, a: 1}})"), "r")
+    );
 }
 
 #[test]
 fn dependencies_are_referenced_by_hash() {
     // Renaming a dependency leaves its dependents' hashes alone.
-    let a = hash("(defn dbl [x] (* x 2)) (defn quad [x] (dbl (dbl x)))", "quad");
-    let b = hash("(defn twice [x] (* x 2)) (defn quad [x] (twice (twice x)))", "quad");
+    let a = hash("(define (dbl x) (* x 2)) (define (quad x) (dbl (dbl x)))", "quad");
+    let b = hash("(define (twice x) (* x 2)) (define (quad x) (twice (twice x)))", "quad");
     assert_eq!(a, b);
     // Changing a dependency changes its dependents.
-    let c = hash("(defn dbl [x] (+ x x)) (defn quad [x] (dbl (dbl x)))", "quad");
+    let c = hash("(define (dbl x) (+ x x)) (define (quad x) (dbl (dbl x)))", "quad");
     assert_ne!(a, c);
 }
 
 #[test]
 fn cycles_hash_independently_of_names_and_order() {
-    let a = "(defn even? [n] (if (= n 0) true (odd? (- n 1))))
-             (defn odd? [n] (if (= n 0) false (even? (- n 1))))";
-    let b = "(defn is-odd [k] (if (= k 0) false (is-even (- k 1))))
-             (defn is-even [k] (if (= k 0) true (is-odd (- k 1))))";
+    let a = "(define (even? n) (if (= n 0) true (odd? (- n 1))))
+             (define (odd? n) (if (= n 0) false (even? (- n 1))))";
+    let b = "(define (is-odd n) (if (= n 0) false (is-even (- n 1))))
+             (define (is-even n) (if (= n 0) true (is-odd (- n 1))))";
     assert_eq!(hash(a, "even?"), hash(b, "is-even"));
     assert_eq!(hash(a, "odd?"), hash(b, "is-odd"));
     assert_ne!(hash(a, "even?"), hash(a, "odd?"));
@@ -56,9 +65,9 @@ fn cycles_hash_independently_of_names_and_order() {
 #[test]
 fn adding_known_code_is_not_checked_again() {
     let mut cb = Codebase::new();
-    let first = cb.add_source("(defn inc [x] (+ x 1))").unwrap();
+    let first = cb.add_source("(define (inc x) (+ x 1))").unwrap();
     assert!(first[0].new);
-    let again = cb.add_source("(defn plus-one [y] (+ y 1))").unwrap();
+    let again = cb.add_source("(define (plus-one x) (+ x 1))").unwrap();
     assert!(!again[0].new);
     assert_eq!(first[0].hash, again[0].hash);
     // Both names point at the one definition.
@@ -69,8 +78,8 @@ fn adding_known_code_is_not_checked_again() {
 #[test]
 fn later_sources_build_on_earlier_ones() {
     let mut cb = Codebase::new();
-    cb.add_source("(defn inc [x] (+ x 1))").unwrap();
-    let added = cb.add_source("(def two (inc 1))").unwrap();
+    cb.add_source("(define (inc x) (+ x 1))").unwrap();
+    let added = cb.add_source("(define two (inc 1))").unwrap();
     assert_eq!(cb.defs[&added[0].hash].type_string(), "Int");
-    assert!(cb.add_source("(def oops (missing 1))").is_err());
+    assert!(cb.add_source("(define oops (missing 1))").is_err());
 }

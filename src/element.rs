@@ -7,13 +7,15 @@
 //! attributes : List[String]          the attributes it observes
 //! styles     : String                the CSS of its shadow root
 //! init       : (Dict[String]) -> m   its first model, from its attributes
-//! update     : (m, String, Event, Dict[String]) -> {model: m, effects: List[Effect]}
-//! view       : (m, Dict[String]) -> View
+//! update     : (m, attrs: Dict[String], event: Event, handler: String)
+//!                -> {model: m, effects: List[Effect]}
+//! view       : (m, attrs: Dict[String]) -> View
 //! ```
 //!
 //! where `Event` is `{kind: String, value?: String, checked?: Bool,
 //! key?: String, status?: Int}`: an event has only the attributes that
-//! apply to it, read with a default, `(:value event "")`.
+//! apply to it, read with a default, `(value event "")`. The element
+//! prelude ([`PRELUDE`]) claims these attributes.
 //!
 //! `update` hears everything that happens to the element, by handler
 //! name: the handlers the view's events name, `"connected"` when the
@@ -44,6 +46,17 @@ use crate::term::{Hash, Op, Term};
 use crate::types::{Ty, TypeError};
 use std::collections::HashSet;
 use std::fmt::Write as _;
+
+/// The attributes every element's code can use.
+pub const PRELUDE: &str = include_str!("element.cdt");
+
+/// A codebase for an element: the core attributes and the element
+/// prelude's.
+pub fn codebase() -> Codebase {
+    let mut cb = Codebase::new();
+    cb.add_source(PRELUDE).expect("the element prelude is valid");
+    cb
+}
 
 /// The element world, as the demo defines it, without its WASI imports.
 pub const ELEMENT_WIT: &str = include_str!("../wit/element.wit");
@@ -124,15 +137,25 @@ pub struct ElementDefs {
     pub view: Hash,
 }
 
+/// The global names of the contract's attributes, as the prelude claims
+/// them.
+const MODEL: &str = "conduct.element/model";
+const EFFECTS: &str = "conduct.element/effects";
+const KIND: &str = "conduct.event/kind";
+const VALUE: &str = "conduct.event/value";
+const CHECKED: &str = "conduct.event/checked";
+const KEY: &str = "conduct.event/key";
+const STATUS: &str = "conduct.event/status";
+
 /// The record a handler receives: its kind, and whichever of the
 /// others the event has.
 pub fn event_type() -> Ty {
     Ty::record([
-        ("kind".to_string(), Ty::str()),
-        ("value".to_string(), Ty::opt(Ty::str())),
-        ("checked".to_string(), Ty::opt(Ty::bool())),
-        ("key".to_string(), Ty::opt(Ty::str())),
-        ("status".to_string(), Ty::opt(Ty::int())),
+        (KIND.to_string(), Ty::str()),
+        (VALUE.to_string(), Ty::opt(Ty::str())),
+        (CHECKED.to_string(), Ty::opt(Ty::bool())),
+        (KEY.to_string(), Ty::opt(Ty::str())),
+        (STATUS.to_string(), Ty::opt(Ty::int())),
     ])
 }
 
@@ -163,7 +186,7 @@ pub fn check(cb: &Codebase) -> Result<ElementDefs, ElementError> {
     fits("attributes", defs.attributes, Ty::list(Ty::str()))?;
     fits("styles", defs.styles, Ty::str())?;
     match defs.init {
-        Some(_) => fits("init", defs.init, Ty::func(vec![attrs()], model.clone()))?,
+        Some(_) => fits("init", defs.init, Ty::func(vec![attrs()], model.clone(), &[]))?,
         // With no `init`, the model is an empty record.
         None => s.constrain(&Ty::record([]), &model).map_err(|error| ElementError::Contract { name: "init", error })?,
     }
@@ -171,11 +194,12 @@ pub fn check(cb: &Codebase) -> Result<ElementDefs, ElementError> {
         "update",
         defs.update,
         Ty::func(
-            vec![model.clone(), Ty::str(), event_type(), attrs()],
-            Ty::record([("model".to_string(), model.clone()), ("effects".to_string(), Ty::list(Ty::Effect))]),
+            vec![model.clone(), attrs(), event_type(), Ty::str()],
+            Ty::record([(MODEL.to_string(), model.clone()), (EFFECTS.to_string(), Ty::list(Ty::Effect))]),
+            &["attrs", "event", "handler"],
         ),
     )?;
-    fits("view", Some(defs.view), Ty::func(vec![model, attrs()], Ty::View))?;
+    fits("view", Some(defs.view), Ty::func(vec![model, attrs()], Ty::View, &["attrs"]))?;
     Ok(defs)
 }
 
@@ -233,9 +257,9 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
             h,
             &[
                 "(local.get $model)".into(),
-                "(local.get $handler)".into(),
-                "(local.get $event)".into(),
                 "(call $dup (i64.load offset=8 (call $slot (local.get $id))))".into(),
+                "(local.get $event)".into(),
+                "(local.get $handler)".into(),
             ],
         )?,
         None => String::new(),
@@ -540,11 +564,11 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     // argument is consumed. An attribute the event does not have comes
     // as the glue's internal "absent" (2), and the record leaves it out.
     let mut fields = [
-        (field_id("kind"), "kind"),
-        (field_id("value"), "value"),
-        (field_id("checked"), "checked"),
-        (field_id("key"), "key"),
-        (field_id("status"), "status"),
+        (field_id(KIND), "kind"),
+        (field_id(VALUE), "value"),
+        (field_id(CHECKED), "checked"),
+        (field_id(KEY), "key"),
+        (field_id(STATUS), "status"),
     ];
     fields.sort_by_key(|f| f.0);
     let mut count = String::new();
@@ -599,8 +623,8 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $next)))
     (call $drop (local.get $effects))"#,
-            model = field_id("model"),
-            effects = field_id("effects"),
+            model = field_id(MODEL),
+            effects = field_id(EFFECTS),
             start_fetch = if fetching {
                 "      (if (i32.eq (i32.load (local.get $e)) (i32.const 8))\n        (then (call $fetch_start (local.get $id) (local.get $e) (call $task_set))))"
             } else {

@@ -6,30 +6,49 @@ use crate::reader::{Sexp, Span};
 pub use crate::term::Pattern;
 use std::fmt;
 
+/// A parameter: the label a caller passes it by, and the name the body
+/// knows it by. `(define (greet who greeting: g) ..)` has the parameters
+/// `who` (label and local alike) and `greeting` (local `g`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Param {
+    pub label: String,
+    pub local: String,
+}
+
+/// An argument of a call: the first may come without a label.
+#[derive(Clone, Debug)]
+pub struct Arg {
+    pub label: Option<String>,
+    pub value: Expr,
+}
+
 #[derive(Clone, Debug)]
 pub enum Expr {
     Int(i64),
     Str(String),
     Bool(bool),
     Var(String, Span),
-    Fn(Vec<String>, Box<Expr>),
-    App(Box<Expr>, Vec<Expr>, Span),
+    Fn(Vec<Param>, Box<Expr>),
+    App(Box<Expr>, Vec<Arg>, Span),
     Let(String, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
-    Record(Vec<(String, Expr)>),
-    Field(String, Box<Expr>),
-    /// `(assoc record :field value)`: a copy of a record with one field set.
-    Update(Box<Expr>, String, Box<Expr>),
+    /// `{name: "Ada"}`: keys as written, a claimed attribute's local name
+    /// or a global one.
+    Record(Vec<(String, Expr)>, Span),
+    /// `(assoc record name: value ..)`: a copy of a record with
+    /// attributes set.
+    Update(Box<Expr>, Vec<(String, Expr)>, Span),
     Dict(Vec<(String, Expr)>),
     List(Vec<Expr>),
     /// `:active`: a keyword, a value whose type is that keyword alone.
     Keyword(String),
     /// `(match e p1 r1 p2 r2 ... _ r)`: the result of the first pattern
     /// `e` matches; `_` matches anything. Without `_`, the patterns must
-    /// be able to cover every value (see [`Pattern::cover`]).
-    Match(Box<Expr>, Vec<(Pattern, Expr)>, Option<Box<Expr>>),
+    /// be able to cover every value (see [`Pattern::cover`]). Record
+    /// patterns' keys are as written, resolved with the expression.
+    Match(Box<Expr>, Vec<(Pattern, Expr)>, Option<Box<Expr>>, Span),
 }
 
 /// A top-level definition, before resolution.
@@ -38,6 +57,57 @@ pub struct Def {
     pub name: String,
     pub body: Expr,
     pub span: Span,
+}
+
+/// A type, as a claim writes it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypeExpr {
+    /// `text`, `integer`, a claimed name.
+    Name(String, Span),
+    /// `?a`.
+    Var(String),
+    /// `(list text)`.
+    App(String, Vec<TypeExpr>, Span),
+    /// `[:active :completed]`.
+    Keywords(Vec<String>),
+    /// `{}`.
+    Empty,
+}
+
+impl fmt::Display for TypeExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TypeExpr::Name(n, _) => write!(f, "{n}"),
+            TypeExpr::Var(v) => write!(f, "?{v}"),
+            TypeExpr::App(head, args, _) => {
+                write!(f, "({head}")?;
+                args.iter().try_for_each(|a| write!(f, " {a}"))?;
+                write!(f, ")")
+            }
+            TypeExpr::Keywords(ks) => {
+                write!(f, "[{}]", ks.iter().map(|k| format!(":{k}")).collect::<Vec<_>>().join(" "))
+            }
+            TypeExpr::Empty => write!(f, "{{}}"),
+        }
+    }
+}
+
+/// `(claim name : (io.gozala.person/name text))`: the attribute
+/// `io.gozala.person/name`, known locally as `name`, whose values are
+/// `text`.
+#[derive(Clone, Debug)]
+pub struct Attribute {
+    pub name: String,
+    pub global: String,
+    pub ty: TypeExpr,
+    pub span: Span,
+}
+
+/// A top-level form.
+#[derive(Clone, Debug)]
+pub enum Item {
+    Def(Def),
+    Attribute(Attribute),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,47 +131,142 @@ fn err<T>(message: impl Into<String>, span: Span) -> Result<T> {
 }
 
 /// Words that cannot name a definition or a local.
-const RESERVED: &[&str] = &["def", "defn", "fn", "let", "if", "and", "or", "cond", "match", "nil", "true", "false"];
+const RESERVED: &[&str] =
+    &["define", "claim", "fn", "let", "do", "if", "and", "or", "cond", "match", "nil", "true", "false"];
 
 /// What to write instead of the forms conduct no longer has.
 fn retired(name: &str) -> Option<&'static str> {
     Some(match name {
         "nil" => {
             "conduct has no `nil`: leave an attribute out of a record, return a variant such as \
-             `{:error :not-found}`, or use `[]` for no children"
+             `{error: :not-found}`, or use `[]` for no children"
         }
-        "??" => "conduct has no `??`: read a field with a default, `(:title todo \"\")`, or `(get d k default)`",
-        "if-some" => "conduct has no `if-some`: `match` the value, `(match r {:title t} .. _ ..)`",
-        "nil?" | "some?" => "conduct has no `nil`: `match` on whether an attribute is there, `{:title t}`",
+        "??" => "conduct has no `??`: read an attribute with a default, `(title todo \"\")`, or `(get d k default)`",
+        "if-some" => "conduct has no `if-some`: `match` the value, `(match r {title: t} .. _ ..)`",
+        "nil?" | "some?" => "conduct has no `nil`: `match` on whether an attribute is there, `{title: t}`",
+        "def" => "`def` is now `define`: `(define name value)`",
+        "defn" => "`defn` is now `define`: `(define (name first second) body)`, called `(name 1 second: 2)`",
         _ => return None,
     })
 }
 
-/// Parse top-level forms into definitions.
-pub fn defs(forms: &[Sexp]) -> Result<Vec<Def>> {
-    forms.iter().map(def).collect()
+/// Parse top-level forms.
+pub fn items(forms: &[Sexp]) -> Result<Vec<Item>> {
+    forms.iter().map(item).collect()
 }
 
-fn def(form: &Sexp) -> Result<Def> {
+const TOP: &str = "a top-level form is `(define name value)`, `(define (name params ..) body)`, or a `claim`";
+
+fn item(form: &Sexp) -> Result<Item> {
     let Sexp::List(items, span) = form else {
-        return err("a top-level form must be `(def name expr)` or `(defn name [params] body)`", form.span());
+        return err(TOP, form.span());
     };
     match items.first().and_then(Sexp::as_symbol) {
-        Some("def") => {
-            let [_, name, body] = items.as_slice() else {
-                return err("`def` takes a name and one expression", *span);
-            };
-            Ok(Def { name: binder(name)?, body: expr(body)?, span: *span })
-        }
-        Some("defn") => {
-            let [_, name, params, body] = items.as_slice() else {
-                return err("`defn` takes a name, a parameter vector, and one body expression", *span);
-            };
-            let params = param_vector(params)?;
-            Ok(Def { name: binder(name)?, body: Expr::Fn(params, Box::new(expr(body)?)), span: *span })
-        }
-        _ => err("a top-level form must be `(def name expr)` or `(defn name [params] body)`", *span),
+        Some("define") => define(&items[1..], *span).map(Item::Def),
+        Some("claim") => claim(&items[1..], *span),
+        Some(name) if retired(name).is_some() => err(retired(name).unwrap(), *span),
+        _ => err(TOP, *span),
     }
+}
+
+fn define(args: &[Sexp], span: Span) -> Result<Def> {
+    match args {
+        [Sexp::Symbol(..), value] => Ok(Def { name: binder(&args[0])?, body: expr(value)?, span }),
+        [Sexp::Symbol(..), ..] => err("`(define name value)` takes one value", span),
+        [Sexp::List(head, hspan), body @ ..] => {
+            let Some((name, params)) = head.split_first() else {
+                return err("`(define (name params ..) body)` needs a name", *hspan);
+            };
+            let name = binder(name)?;
+            if params.is_empty() {
+                return err(format!("`{name}` takes no parameters, so it is a value: `(define {name} value)`"), *hspan);
+            }
+            let params = parameters(params, *hspan)?;
+            Ok(Def { name, body: Expr::Fn(params, Box::new(sequence(body, span)?)), span })
+        }
+        _ => err("`define` takes a name and a value, or `(name params ..)` and a body", span),
+    }
+}
+
+/// `first second label: local ..`: the first parameter, then the
+/// others, each a name or a label and the name the body uses.
+fn parameters(items: &[Sexp], span: Span) -> Result<Vec<Param>> {
+    let mut params: Vec<Param> = Vec::new();
+    let mut rest = items.iter();
+    while let Some(item) = rest.next() {
+        let param = match item {
+            Sexp::Symbol(..) => {
+                let name = binder(item)?;
+                Param { label: name.clone(), local: name }
+            }
+            Sexp::Label(label, lspan) if !params.is_empty() => {
+                let Some(local) = rest.next() else {
+                    return err(format!("the label `{label}:` needs the name its parameter is known by"), *lspan);
+                };
+                Param { label: label.clone(), local: binder(local)? }
+            }
+            Sexp::Label(_, lspan) => {
+                return err("the first parameter is passed without a label, so it is a name alone", *lspan);
+            }
+            other => return err(format!("expected a parameter, found `{other}`"), other.span()),
+        };
+        if params.iter().any(|p| p.label == param.label) {
+            return err(format!("the label `{}:` appears twice", param.label), span);
+        }
+        if params.iter().any(|p| p.local == param.local) {
+            return err(format!("parameter `{}` appears twice", param.local), span);
+        }
+        params.push(param);
+    }
+    Ok(params)
+}
+
+fn claim(args: &[Sexp], span: Span) -> Result<Item> {
+    let [Sexp::Symbol(..), Sexp::Label(colon, _), ty] = args else {
+        return err("a claim is `(claim name : type)`", span);
+    };
+    if !colon.is_empty() {
+        return err("a claim is `(claim name : type)`, with `:` before the type", span);
+    }
+    let name = binder(&args[0])?;
+    match ty {
+        Sexp::List(items, tspan) => match items.as_slice() {
+            [Sexp::Symbol(global, _), value] if global.contains('/') => {
+                Ok(Item::Attribute(Attribute { name, global: global.clone(), ty: type_expr(value)?, span: *tspan }))
+            }
+            _ => err("this claim is an attribute, `(domain/name type)`; claims of other types come later", *tspan),
+        },
+        other => err("an attribute is claimed as `(domain/name type)`", other.span()),
+    }
+}
+
+fn type_expr(form: &Sexp) -> Result<TypeExpr> {
+    Ok(match form {
+        Sexp::Symbol(name, _) if name.starts_with('?') && name.len() > 1 => TypeExpr::Var(name[1..].to_string()),
+        Sexp::Symbol(name, _) if name == "?" => {
+            return err("a type variable has a name, `?a`, so that its uses can be tied together", form.span());
+        }
+        Sexp::Symbol(name, span) => TypeExpr::Name(name.clone(), *span),
+        Sexp::List(items, span) => match items.split_first() {
+            Some((Sexp::Symbol(head, _), args)) if !args.is_empty() => {
+                TypeExpr::App(head.clone(), args.iter().map(type_expr).collect::<Result<_>>()?, *span)
+            }
+            _ => return err(format!("expected a type, found `{form}`"), *span),
+        },
+        Sexp::Vector(items, _) => TypeExpr::Keywords(
+            items
+                .iter()
+                .map(|k| match k {
+                    Sexp::Keyword(k, _) => Ok(k.clone()),
+                    other => {
+                        err("a list of keywords, `[:a :b]`, is the only union an attribute takes yet", other.span())
+                    }
+                })
+                .collect::<Result<_>>()?,
+        ),
+        Sexp::Map(items, _) if items.is_empty() => TypeExpr::Empty,
+        other => return err(format!("expected a type, found `{other}`"), other.span()),
+    })
 }
 
 fn binder(form: &Sexp) -> Result<String> {
@@ -116,21 +281,20 @@ fn binder(form: &Sexp) -> Result<String> {
     }
 }
 
-fn param_vector(form: &Sexp) -> Result<Vec<String>> {
-    let Sexp::Vector(items, _) = form else {
-        return err(format!("expected a parameter vector, found `{form}`"), form.span());
-    };
-    let params: Vec<String> = items.iter().map(binder).collect::<Result<_>>()?;
-    for (i, p) in params.iter().enumerate() {
-        if params[..i].contains(p) {
-            return err(format!("parameter `{p}` appears twice"), form.span());
-        }
-    }
-    Ok(params)
-}
-
 fn boxed(form: &Sexp) -> Result<Box<Expr>> {
     expr(form).map(Box::new)
+}
+
+/// Forms evaluated in order: the value of the last.
+fn sequence(forms: &[Sexp], span: Span) -> Result<Expr> {
+    let Some((last, before)) = forms.split_last() else {
+        return err("expected a body", span);
+    };
+    let mut out = expr(last)?;
+    for form in before.iter().rev() {
+        out = Expr::Let(" ".into(), boxed(form)?, Box::new(out));
+    }
+    Ok(out)
 }
 
 pub fn expr(form: &Sexp) -> Result<Expr> {
@@ -144,6 +308,9 @@ pub fn expr(form: &Sexp) -> Result<Expr> {
             _ => Expr::Var(name.clone(), *span),
         }),
         Sexp::Keyword(k, _) => Ok(Expr::Keyword(k.clone())),
+        Sexp::Label(l, span) => {
+            err(format!("the label `{l}:` names an argument or attribute; a value follows it"), *span)
+        }
         Sexp::Vector(items, _) => Ok(Expr::List(items.iter().map(expr).collect::<Result<_>>()?)),
         Sexp::Map(items, span) => map_literal(items, *span),
         Sexp::List(items, span) => list_form(items, *span),
@@ -173,15 +340,58 @@ fn map_literal(items: &[Sexp], span: Span) -> Result<Expr> {
     }
     let mut fields: Vec<(String, Expr)> = Vec::new();
     for (k, v) in pairs {
-        let Sexp::Keyword(name, kspan) = k else {
-            return err("a record's keys must all be keywords", k.span());
+        let name = match k {
+            Sexp::Label(name, _) if !name.is_empty() => name,
+            Sexp::Keyword(name, kspan) => {
+                return err(format!("a record's keys are attributes: write `{name}:`, not `:{name}`"), *kspan);
+            }
+            other => return err("a record's keys are attributes, `name:`", other.span()),
         };
         if fields.iter().any(|(n, _)| n == name) {
-            return err(format!("field `:{name}` appears twice"), *kspan);
+            return err(format!("the attribute `{name}:` appears twice"), k.span());
         }
         fields.push((name.clone(), expr(v)?));
     }
-    Ok(Expr::Record(fields))
+    Ok(Expr::Record(fields, span))
+}
+
+/// `label: value ..` pairs, as `assoc` takes them.
+fn labeled(args: &[Sexp], span: Span) -> Result<Vec<(String, Expr)>> {
+    if !args.len().is_multiple_of(2) {
+        return err("expected `label: value` pairs", span);
+    }
+    let mut out: Vec<(String, Expr)> = Vec::new();
+    for pair in args.chunks(2) {
+        let Sexp::Label(name, lspan) = &pair[0] else {
+            return err(format!("expected a label, found `{}`", pair[0]), pair[0].span());
+        };
+        if out.iter().any(|(n, _)| n == name) {
+            return err(format!("the label `{name}:` appears twice"), *lspan);
+        }
+        out.push((name.clone(), expr(&pair[1])?));
+    }
+    Ok(out)
+}
+
+/// A call's arguments: values, each after its label if it has one.
+fn arguments(args: &[Sexp]) -> Result<Vec<Arg>> {
+    let mut out: Vec<Arg> = Vec::new();
+    let mut rest = args.iter();
+    while let Some(item) = rest.next() {
+        match item {
+            Sexp::Label(label, lspan) => {
+                let Some(value) = rest.next() else {
+                    return err(format!("the label `{label}:` needs a value"), *lspan);
+                };
+                if out.iter().any(|a| a.label.as_deref() == Some(label)) {
+                    return err(format!("the label `{label}:` appears twice"), *lspan);
+                }
+                out.push(Arg { label: Some(label.clone()), value: expr(value)? });
+            }
+            value => out.push(Arg { label: None, value: expr(value)? }),
+        }
+    }
+    Ok(out)
 }
 
 fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
@@ -190,30 +400,25 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
     };
     let args = &items[1..];
     if let Sexp::Keyword(field, _) = head {
-        return match args {
-            [record] => Ok(Expr::Field(field.clone(), boxed(record)?)),
-            // `(:title todo "untitled")`: the attribute where the record
-            // has it, else the default.
-            [record, default] => {
-                let name = " attribute".to_string();
-                let read =
-                    vec![(Pattern::Fields(vec![(field.clone(), Pattern::Bind(name.clone()))]), Expr::Var(name, span))];
-                Ok(Expr::Match(boxed(record)?, read, Some(boxed(default)?)))
-            }
-            _ => err(format!("`(:{field} record)` takes a record, and maybe a default"), span),
-        };
+        return err(format!("read an attribute by calling it: `({field} record)`, not `(:{field} record)`"), span);
     }
     if let Some(name) = head.as_symbol() {
         match name {
+            n if retired(n).is_some() => return err(retired(n).unwrap(), span),
+            "define" | "claim" => return err(format!("`{name}` is only allowed at the top level"), span),
             "fn" => {
-                let [params, body] = args else {
-                    return err("`fn` takes a parameter vector and one body expression", span);
+                let [Sexp::Vector(params, pspan), body @ ..] = args else {
+                    return err("`fn` takes a parameter vector and a body", span);
                 };
-                return Ok(Expr::Fn(param_vector(params)?, boxed(body)?));
+                if params.is_empty() {
+                    return err("a function takes at least one parameter", *pspan);
+                }
+                return Ok(Expr::Fn(parameters(params, *pspan)?, Box::new(sequence(body, span)?)));
             }
+            "do" => return sequence(args, span),
             "let" => {
-                let [bindings, body] = args else {
-                    return err("`let` takes a binding vector and one body expression", span);
+                let [bindings, body @ ..] = args else {
+                    return err("`let` takes a binding vector and a body", span);
                 };
                 let Sexp::Vector(bs, bspan) = bindings else {
                     return err("`let` bindings go in a vector", bindings.span());
@@ -221,7 +426,7 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
                 if bs.len() % 2 != 0 {
                     return err("`let` bindings come in pairs", *bspan);
                 }
-                let mut out = expr(body)?;
+                let mut out = sequence(body, span)?;
                 for pair in bs.chunks(2).rev() {
                     out = Expr::Let(binder(&pair[0])?, boxed(&pair[1])?, Box::new(out));
                 }
@@ -267,14 +472,13 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
             _ => {}
         }
         if name == "assoc"
-            && let [record, Sexp::Keyword(field, _), value] = args
+            && let [record, Sexp::Label(..), ..] = args
         {
-            return Ok(Expr::Update(boxed(record)?, field.clone(), boxed(value)?));
+            return Ok(Expr::Update(boxed(record)?, labeled(&args[1..], span)?, span));
         }
     }
     let callee = expr(head)?;
-    let args = args.iter().map(expr).collect::<Result<Vec<_>>>()?;
-    Ok(Expr::App(Box::new(callee), args, span))
+    Ok(Expr::App(Box::new(callee), arguments(args)?, span))
 }
 
 fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
@@ -303,24 +507,12 @@ fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
         if let Some(w) = names.windows(2).find(|w| w[0] == w[1]) {
             return err(format!("the pattern binds `{}` twice", w[0]), pair[0].span());
         }
-        if arms.iter().any(|(p, _)| *p == pattern) {
-            return err(format!("the pattern `{}` appears twice", pair[0]), pair[0].span());
-        }
         arms.push((pattern, expr(&pair[1])?));
     }
     if arms.is_empty() {
         return err("a `match` needs a pattern besides `_`", span);
     }
-    // Keywords are a closed set the type checker can see the whole of;
-    // strings and integers never are, so leaving them out must be said.
-    if default.is_none() && !Pattern::cover(&arms.iter().map(|(p, _)| p).collect::<Vec<_>>()) {
-        return err(
-            "this `match` cannot cover every value without a `_` clause: only variants (keywords and \
-             one-field records) whose payloads are covered, or a record of `_`s, can",
-            span,
-        );
-    }
-    Ok(Expr::Match(boxed(scrutinee)?, arms, default))
+    Ok(Expr::Match(boxed(scrutinee)?, arms, default, span))
 }
 
 fn pattern(form: &Sexp) -> Result<Pattern> {
@@ -338,19 +530,21 @@ fn pattern(form: &Sexp) -> Result<Pattern> {
             }
             Pattern::Bind(s.clone())
         }
-        Sexp::Map(items, mspan) if !items.is_empty() && items.len().is_multiple_of(2) => {
+        Sexp::Map(items, _) if !items.is_empty() && items.len().is_multiple_of(2) => {
             let mut fields: Vec<(String, Pattern)> = Vec::new();
             for pair in items.chunks(2) {
-                let Sexp::Keyword(name, kspan) = &pair[0] else {
-                    return err("a record pattern's keys are keywords", pair[0].span());
+                let name = match &pair[0] {
+                    Sexp::Label(name, _) if !name.is_empty() => name,
+                    Sexp::Keyword(name, kspan) => {
+                        return err(format!("a record pattern's keys are attributes: write `{name}:`"), *kspan);
+                    }
+                    other => return err("a record pattern's keys are attributes, `name:`", other.span()),
                 };
                 if fields.iter().any(|(n, _)| n == name) {
-                    return err(format!("field `:{name}` appears twice"), *kspan);
+                    return err(format!("the attribute `{name}:` appears twice"), pair[0].span());
                 }
                 fields.push((name.clone(), pattern(&pair[1])?));
             }
-            let _ = mspan;
-            fields.sort_by(|a, b| a.0.cmp(&b.0));
             Pattern::Fields(fields)
         }
         other => {
