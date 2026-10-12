@@ -17,9 +17,9 @@
 ;; to: a change goes out under "changed", and "changed" asks for the
 ;; list again under "loaded".
 
-(def attributes ["filter"])
+(define attributes ["filter"])
 
-(def styles "
+(define styles "
       :host {
         display: block;
         max-width: 560px;
@@ -143,143 +143,159 @@
       }
     ")
 
-(defn attr [attrs name] (get attrs name ""))
+(claim todos : (demo.app/todos (list ?todo)))
+(claim active-count : (demo.app/active integer))
+(claim completed-count : (demo.app/completed integer))
+(claim phase : (demo.app/phase text))
+(claim height : (demo.app/height text))
+(claim about-open : (demo.app/about boolean))
 
-(defn filter-of [attrs]
-  (let [f (attr attrs "filter")] (if (= f "") "all" f)))
+(claim id : (demo.todo/id text))
+(claim title : (demo.todo/title text))
+(claim completed : (demo.todo/completed boolean))
 
-(defn init [attrs]
-  {:todos [] :active 0 :completed 0 :phase "measuring" :height "" :about false})
+(define (attr name of) (get of name ""))
+
+(define (filter-of attrs)
+  (let [f (attr "filter" of: attrs)] (if (= f "") "all" f)))
+
+(define (init attrs)
+  {todos: [], active-count: 0, completed-count: 0, phase: "measuring", height: "", about-open: false})
 
 ;; Requests
 
-(defn load [attrs]
+(define (load attrs)
   (fetch "GET" (str "/api/todos?filter=" (filter-of attrs)) "" "loaded"))
 
-(defn change [method path body]
+(define (change method path body)
   (fetch method path body "changed"))
 
-(defn todo-of [j]
-  {:id (json-str (json-get j "id"))
-   :title (json-str (json-get j "title"))
-   :completed (json-bool (json-get j "completed"))})
+(define (todo-of j)
+  {id: (json-str (json-get j "id"))
+   title: (json-str (json-get j "title"))
+   completed: (json-bool (json-get j "completed"))})
 
-(defn loaded [model body]
+(define (loaded model body)
   (let [doc (parse-json body)
         counts (json-get doc "counts")]
-    (assoc (assoc (assoc model :todos (map todo-of (json-items (json-get doc "todos"))))
-                  :active (json-int (json-get counts "active")))
-           :completed (json-int (json-get counts "completed")))))
+    (assoc model
+      todos: (map (json-items (json-get doc "todos")) each: todo-of)
+      active-count: (json-int (json-get counts "active"))
+      completed-count: (json-int (json-get counts "completed")))))
 
-(defn edit [value]
+(define (edit value)
   ;; The detail is the id, a newline, and the new title. An edit to an
   ;; empty title deletes the todo.
   (let [parts (split value "\n")
         id (first parts "")
         title (trim (first (rest parts) ""))]
     (if (= title "")
-      (change "DELETE" (str "/api/todos/" id) "")
-      (change "PATCH" (str "/api/todos/" id) (to-json {"title" title})))))
+      (change "DELETE" path: (str "/api/todos/" id) body: "")
+      (change "PATCH" path: (str "/api/todos/" id) body: (to-json {"title" title})))))
 
-(defn with [model effects] {:model model :effects effects})
+(define (next model effects) {model: model, effects: effects})
 
-(defn update [model handler event attrs]
-  (let [value (:value event "")]
+(define (update model handler event attrs)
+  (let [value (value event "")]
     (match handler
       ;; Loading the list.
-      "connected" (with model [(load attrs)])
-      "attribute-changed" (with model (if (= value "filter") [(load attrs)] []))
-      "loaded" (with (loaded model value) [])
-      "changed" (with model [(load attrs)])
+      "connected" (next model effects: [(load attrs)])
+      "attribute-changed" (next model effects: (if (= value "filter") [(load attrs)] []))
+      "loaded" (next (loaded model body: value) effects: [])
+      "changed" (next model effects: [(load attrs)])
       ;; The steps of the reveal, which call no route.
       "measured"
-        (with (assoc (assoc model :height value)
-                     :phase (if (= (:phase model) "measuring") "revealing" (:phase model)))
-              [])
-      "revealed" (with (assoc model :phase (if (= (:phase model) "revealing") "shown" (:phase model))) [])
-      "about" (with (assoc model :about (not (:about model))) [])
+        (next (assoc model
+                height: value
+                phase: (if (= (phase model) "measuring") "revealing" (phase model)))
+              effects: [])
+      "revealed"
+        (next (assoc model phase: (if (= (phase model) "revealing") "shown" (phase model))) effects: [])
+      "about" (next (assoc model about-open: (not (about-open model))) effects: [])
       ;; What a person did.
-      "add" (with model [(change "POST" "/api/todos" (to-json {"title" value}))])
-      "toggleAll" (with model [(change "PATCH" "/api/todos" (to-json {"completed" (= value "true")}))])
+      "add" (next model effects: [(change "POST" path: "/api/todos" body: (to-json {"title" value}))])
+      "toggleAll"
+        (next model effects: [(change "PATCH" path: "/api/todos" body: (to-json {"completed" (= value "true")}))])
       ;; The todo with that id, if there is one, flips.
       "toggle"
-        (with model
-          (map (fn [todo] (change "PATCH" (str "/api/todos/" (:id todo))
-                                  (to-json {"completed" (not (:completed todo))})))
-               (filter (fn [todo] (= (:id todo) value)) (:todos model))))
-      "destroy" (with model [(change "DELETE" (str "/api/todos/" value) "")])
-      "edit" (with model [(edit value)])
-      "clear" (with model [(change "DELETE" "/api/todos" "")])
+        (next model
+          effects: (map (filter (todos model) where: (fn [todo] (= (id todo) value)))
+                        each: (fn [todo] (change "PATCH"
+                                                 path: (str "/api/todos/" (id todo))
+                                                 body: (to-json {"completed" (not (completed todo))})))))
+      "destroy" (next model effects: [(change "DELETE" path: (str "/api/todos/" value) body: "")])
+      "edit" (next model effects: [(edit value)])
+      "clear" (next model effects: [(change "DELETE" path: "/api/todos" body: "")])
       ;; A handler the element does not know changes nothing.
-      _ (with model []))))
+      _ (next model effects: []))))
 
 ;; The view
 
-(defn link [href label]
+(define (link href label)
   (h "a" {"href" href "target" "_blank" "rel" "noopener"} [label]))
 
-(defn paragraph [words] (h "p" {} words))
+(define (paragraph words) (h "p" {} words))
 
-(def about
+(define about
   [(paragraph
      ["This app demonstrates some of the potential of the "
-      (link "https://component-model.bytecodealliance.org/" "Wasm Component Model")
+      (link "https://component-model.bytecodealliance.org/" label: "Wasm Component Model")
       ". It has not shipped in web browsers, but you can use it today via the "
-      (link "https://github.com/dialog-db/wasm-component-model-polyfill" "Wasm Component Model Polyfill")
+      (link "https://github.com/dialog-db/wasm-component-model-polyfill" label: "Wasm Component Model Polyfill")
       "."])
    (paragraph
      ["The site consists of a Rust app shell and a Rust service worker, shipped as two Wasm core modules with a "
-      (link "https://wasm-bindgen.github.io/wasm-bindgen/" "wasm-bindgen")
+      (link "https://wasm-bindgen.github.io/wasm-bindgen/" label: "wasm-bindgen")
       " JS shim. The shell defines a closed set of custom elements and the service worker a closed set of routes. Each element is implemented in a "
-      (link "https://github.com/Gozala/conduct" "conduct")
+      (link "https://github.com/Gozala/conduct" label: "conduct")
       " source file."])
    (paragraph
      ["conduct compiles each element to a Wasm component: pure definitions, stored by hash, with every type inferred."])])
 
-(defn info [model]
+(define (info model)
   (h "div" {"class" "info"}
     [(h "button" {"type" "button"
                   "class" "about-toggle"
-                  "aria-expanded" (if (:about model) "true" "false")
+                  "aria-expanded" (if (about-open model) "true" "false")
                   "aria-controls" "about"}
         [(h "span" {"class" "icon" "aria-hidden" "true"} ["i"]) "About this demo"]
         {"click" "about"})
-     (if (:about model) (h "div" {"id" "about" "class" "about"} about) [])]))
+     (if (about-open model) (h "div" {"id" "about" "class" "about"} about) [])]))
 
-(defn item [todo]
-  (h "todo-item" {"key" (:id todo)
-                  "todo-id" (:id todo)
-                  "title" (:title todo)
-                  "completed" (if (:completed todo) "true" "false")}
+(define (item todo)
+  (h "todo-item" {"key" (id todo)
+                  "todo-id" (id todo)
+                  "title" (title todo)
+                  "completed" (if (completed todo) "true" "false")}
      []
      {"todo-toggle" "toggle" "todo-destroy" "destroy" "todo-edit" "edit"}))
 
-(defn frame-attrs [model]
-  (let [base {"class" "frame" "data-phase" (:phase model)}]
-    (if (= (:phase model) "revealing")
-      (assoc base "style" (str "height: " (:height model) "px"))
+(define (frame-attrs model)
+  (let [base {"class" "frame" "data-phase" (phase model)}]
+    (if (= (phase model) "revealing")
+      (assoc base "style" (str "height: " (height model) "px"))
       base)))
 
-(defn view [model attrs]
-  (let [total (+ (:active model) (:completed model))
+(define (view model attrs)
+  (let [total (+ (active-count model) (completed-count model))
         header (h "header" {"class" "header"}
                  [(h "h1" {} ["todos"])
                   (h "todo-input" {"has-todos" (if (> total 0) "true" "false")
-                                   "all-completed" (if (and (> total 0) (= (:active model) 0)) "true" "false")}
+                                   "all-completed" (if (and (> total 0) (= (active-count model) 0)) "true" "false")}
                      []
                      {"todo-add" "add" "todo-toggle-all" "toggleAll"})])
         main (if (> total 0)
-               [(h "section" {"class" "main"} [(h "ul" {"class" "todo-list"} (map item (:todos model)))])
-                (h "todo-footer" {"active" (str (:active model))
-                                  "completed" (str (:completed model))
+               [(h "section" {"class" "main"} [(h "ul" {"class" "todo-list"} (map (todos model) each: item))])
+                (h "todo-footer" {"active" (str (active-count model))
+                                  "completed" (str (completed-count model))
                                   "filter" (filter-of attrs)}
                    []
                    {"todo-clear" "clear"})]
                [])
         list (h "section" {"class" "todoapp"} [header main])
         content [list (info model)]]
-    (if (= (:phase model) "shown")
-      (h "div" {"class" "frame" "data-phase" (:phase model)}
+    (if (= (phase model) "shown")
+      (h "div" {"class" "frame" "data-phase" (phase model)}
         [(h "div" {"class" "content" "key" "content"} content)])
       ;; The spinner is the page's, which the slot shows.
       (h "div" (frame-attrs model)

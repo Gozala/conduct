@@ -12,6 +12,8 @@ pub enum Binding {
 pub trait Globals {
     /// The type scheme of another definition.
     fn scheme(&self, hash: &Hash) -> Option<Scheme>;
+    /// The value type claimed for an attribute, by its global name.
+    fn attribute(&self, global: &str) -> Option<Ty>;
 }
 
 pub struct Infer<'a> {
@@ -45,23 +47,24 @@ impl Infer<'_> {
                 s.instantiate(&scheme, level)
             }
             Term::CycleRef(i) => self.cycle[*i as usize].clone(),
-            Term::Fn(arity, body) => {
-                let params: Vec<Ty> = (0..*arity).map(|_| s.fresh_ty(level)).collect();
+            Term::Fn(labels, body) => {
+                let arity = labels.len();
+                let params: Vec<Ty> = (0..arity).map(|_| s.fresh_ty(level)).collect();
                 env.extend(params.iter().cloned().map(Binding::Mono));
                 // The body's effect is the function's, not its creator's.
                 let effect = s.fresh_ty(level);
                 self.effects.borrow_mut().push(effect.clone());
                 let ret = self.term(body, env, level);
                 self.effects.borrow_mut().pop();
-                env.truncate(env.len() - *arity as usize);
-                Ty::func_eff(params, ret?, effect)
+                env.truncate(env.len() - arity);
+                Ty::func_eff(params, ret?, effect, labels[1.min(arity)..].to_vec())
             }
-            Term::App(callee, args) => {
+            Term::App(callee, args, labels) => {
                 let f = self.term(callee, env, level)?;
                 let args = args.iter().map(|a| self.term(a, env, level)).collect::<Result<Vec<_>>>()?;
                 let ret = s.fresh_ty(level);
                 let effect = s.fresh_ty(level);
-                s.constrain(&f, &Ty::func_eff(args, ret.clone(), effect.clone()))?;
+                s.constrain(&f, &Ty::func_eff(args, ret.clone(), effect.clone(), labels.clone()))?;
                 self.perform(effect)?;
                 ret
             }
@@ -88,10 +91,13 @@ impl Infer<'_> {
             // A record of one field is a variant, which reads as a record
             // but joins with other variants without losing its field.
             Term::Record(fields) if fields.len() == 1 => {
-                Ty::variant(fields[0].0.clone(), self.term(&fields[0].1, env, level)?)
+                Ty::variant(fields[0].0.clone(), self.attribute(&fields[0].0, &fields[0].1, env, level)?)
             }
             Term::Record(fields) => Ty::record(
-                fields.iter().map(|(k, t)| Ok((k.clone(), self.term(t, env, level)?))).collect::<Result<Vec<_>>>()?,
+                fields
+                    .iter()
+                    .map(|(k, t)| Ok((k.clone(), self.attribute(k, t, env, level)?)))
+                    .collect::<Result<Vec<_>>>()?,
             ),
             Term::Field(name, record) => {
                 let r = self.term(record, env, level)?;
@@ -101,7 +107,7 @@ impl Infer<'_> {
             }
             Term::Update(record, name, value) => {
                 let r = self.term(record, env, level)?;
-                let v = self.term(value, env, level)?;
+                let v = self.attribute(name, value, env, level)?;
                 Ty::update(r, name.clone(), v)
             }
             Term::Dict(entries) => {
@@ -216,6 +222,18 @@ impl Infer<'_> {
         })
     }
 
+    /// The type of `value`, set as the attribute `global`: it must fit
+    /// the attribute's claimed type.
+    fn attribute(&self, global: &str, value: &Term, env: &mut Vec<Binding>, level: u32) -> Result<Ty> {
+        let t = self.term(value, env, level)?;
+        if let Some(claimed) = self.globals.attribute(global) {
+            self.solver
+                .constrain(&t, &claimed)
+                .map_err(|e| TypeError(format!("the attribute `{global}` holds what its claim says: {e}")))?;
+        }
+        Ok(t)
+    }
+
     /// The innermost function body may use what `effect` uses.
     fn perform(&self, effect: Ty) -> Result<()> {
         let current = self.effects.borrow().last().cloned();
@@ -244,7 +262,7 @@ pub fn signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty, T
         let (a, b, e) = (var(), var(), var());
         let f_ret = if op == Op::Map { b.clone() } else { Ty::bool() };
         let out = if op == Op::Map { Ty::list(b) } else { Ty::list(a.clone()) };
-        return (vec![Ty::func_eff(vec![a.clone()], f_ret, e.clone()), Ty::list(a)], out, e);
+        return (vec![Ty::func_eff(vec![a.clone()], f_ret, e.clone(), vec![]), Ty::list(a)], out, e);
     }
     let (params, ret) = pure_signature(s, op, argc, level);
     (params, ret, Ty::pure())
@@ -279,11 +297,11 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         }
         Op::Map => {
             let (a, b) = (var(), var());
-            (vec![Ty::func(vec![a.clone()], b.clone()), Ty::list(a)], Ty::list(b))
+            (vec![Ty::func(vec![a.clone()], b.clone(), &[]), Ty::list(a)], Ty::list(b))
         }
         Op::Filter => {
             let a = var();
-            (vec![Ty::func(vec![a.clone()], Ty::bool()), Ty::list(a.clone())], Ty::list(a))
+            (vec![Ty::func(vec![a.clone()], Ty::bool(), &[]), Ty::list(a.clone())], Ty::list(a))
         }
         // The default comes back for a missing key.
         Op::Get => {

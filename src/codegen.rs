@@ -320,7 +320,8 @@ impl<'a> Builder<'a> {
             .get(&hash)
             .ok_or_else(|| CodegenError(format!("the codebase has no definition {}", hash.short())))?;
         let addr = match &def.term {
-            Term::Fn(arity, _) => {
+            Term::Fn(labels, _) => {
+                let arity = &(labels.len() as u32);
                 let index = self.table.len() as u32;
                 self.table.push(Self::def_name(&hash));
                 self.max_arity = self.max_arity.max(*arity as usize);
@@ -351,7 +352,7 @@ impl<'a> Builder<'a> {
     /// caller keeps.
     pub fn call(&mut self, hash: Hash, args: &[String]) -> Result<String> {
         let arity = match &self.cb.defs[&hash].term {
-            Term::Fn(arity, _) => Some(*arity as usize),
+            Term::Fn(labels, _) => Some(labels.len()),
             _ => None,
         };
         if arity == Some(args.len()) {
@@ -370,7 +371,8 @@ impl<'a> Builder<'a> {
             let cycle = def.cycle.clone();
             let name = Self::def_name(&hash);
             let text = match &term {
-                Term::Fn(arity, body) => {
+                Term::Fn(labels, body) => {
+                    let arity = &(labels.len() as u32);
                     let env: Vec<Slot> = (0..*arity).map(|i| Slot::Local(format!("$p{i}"))).collect();
                     let (body, frame) = self.function_body(body, env, &cycle)?;
                     let params: String = (0..*arity).map(|i| format!(" (param $p{i} i64)")).collect();
@@ -561,8 +563,8 @@ impl<'a> Builder<'a> {
             },
             Term::Ref(h) => self.value_of(*h)?,
             Term::CycleRef(i) => self.value_of(cycle[*i as usize])?,
-            Term::Fn(arity, body) => self.lambda(*arity, body, env, frame, cycle, live)?,
-            Term::App(callee, args) => {
+            Term::Fn(labels, body) => self.lambda(labels.len() as u32, body, env, frame, cycle, live)?,
+            Term::App(callee, args, _) => {
                 let direct = match &**callee {
                     Term::Ref(h) => Some(*h),
                     Term::CycleRef(i) => Some(cycle[*i as usize]),
@@ -910,12 +912,12 @@ fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
                 out.insert(*i - binders);
             }
         }
-        Term::Fn(arity, body) => free_locals(body, binders + arity, out),
+        Term::Fn(labels, body) => free_locals(body, binders + labels.len() as u32, out),
         Term::Let(v, body) => {
             free_locals(v, binders, out);
             free_locals(body, binders + 1, out);
         }
-        Term::App(c, args) => {
+        Term::App(c, args, _) => {
             free_locals(c, binders, out);
             args.iter().for_each(|a| free_locals(a, binders, out));
         }
@@ -985,8 +987,8 @@ fn shift(term: &Term, by: u32, cutoff: u32) -> Term {
     let entries = |fs: &[(String, Term)]| fs.iter().map(|(k, t)| (k.clone(), shift(t, by, cutoff))).collect::<Vec<_>>();
     match term {
         Term::Local(i) if *i >= cutoff => Term::Local(i + by),
-        Term::Fn(arity, body) => Term::Fn(*arity, Box::new(shift(body, by, cutoff + arity))),
-        Term::App(c, args) => Term::App(s(c), all(args)),
+        Term::Fn(labels, body) => Term::Fn(labels.clone(), Box::new(shift(body, by, cutoff + labels.len() as u32))),
+        Term::App(c, args, labels) => Term::App(s(c), all(args), labels.clone()),
         Term::Let(v, body) => Term::Let(s(v), Box::new(shift(body, by, cutoff + 1))),
         Term::If(a, b, c) => Term::If(s(a), s(b), s(c)),
         Term::And(a, b) => Term::And(s(a), s(b)),
@@ -1027,7 +1029,8 @@ pub fn compile_exports(cb: &Codebase, exports: &[(&str, Hash)]) -> Result<String
         b.require(*hash)?;
         let def_name = Builder::def_name(hash);
         match &cb.defs[hash].term {
-            Term::Fn(arity, _) => {
+            Term::Fn(labels, _) => {
+                let arity = &(labels.len() as u32);
                 let params: String = (0..*arity).map(|i| format!(" (param $a{i} i64)")).collect();
                 let args: String = (0..*arity).map(|i| format!(" (local.get $a{i})")).collect();
                 b.add_func(format!(

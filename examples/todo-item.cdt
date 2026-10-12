@@ -7,9 +7,9 @@
 ; definitions: `update` returns the events to send instead of sending
 ; them.
 
-(def attributes ["todo-id" "title" "completed"])
+(define attributes ["todo-id" "title" "completed"])
 
-(def styles "
+(define styles "
   :host {
     display: block;
   }
@@ -72,29 +72,31 @@
   }
 ")
 
-(defn attr [attrs name] (get attrs name ""))
+(claim editing : (demo.todo-item/editing boolean))
 
-(defn init [attrs] {:editing false})
+(define (attr name of) (get of name ""))
 
-(defn stay [model] {:model model :effects []})
+(define (init attrs) {editing: false})
 
-(defn update [model handler event attrs]
-  (let [id (attr attrs "todo-id")]
+(define (stay model) {model: model, effects: []})
+
+(define (update model handler event attrs)
+  (let [id (attr "todo-id" of: attrs)]
     (cond
-      (= handler "toggle") {:model model :effects [(emit "todo-toggle" id)]}
-      (= handler "destroy") {:model model :effects [(emit "todo-destroy" id)]}
-      (= handler "edit") (stay {:editing true})
-      (and (= handler "key") (= (:key event "") "Escape")) (stay {:editing false})
-      (and (:editing model)
-           (or (and (= handler "key") (= (:key event "") "Enter")) (= handler "save")))
-        {:model {:editing false}
-         :effects [(emit "todo-edit" (str id "\n" (:value event "")))]}
+      (= handler "toggle") {model: model, effects: [(emit "todo-toggle" id)]}
+      (= handler "destroy") {model: model, effects: [(emit "todo-destroy" id)]}
+      (= handler "edit") (stay {editing: true})
+      (and (= handler "key") (= (key event "") "Escape")) (stay {editing: false})
+      (and (editing model)
+           (or (and (= handler "key") (= (key event "") "Enter")) (= handler "save")))
+        {model: {editing: false}
+         effects: [(emit "todo-edit" (str id "\n" (value event "")))]}
       :else (stay model))))
 
-(defn view [model attrs]
-  (let [done (= (attr attrs "completed") "true")
-        title (attr attrs "title")]
-    (if (:editing model)
+(define (view model attrs)
+  (let [done (= (attr "completed" of: attrs) "true")
+        title (attr "title" of: attrs)]
+    (if (editing model)
       (h "li" {"class" "editing"}
         [(h "input" {"key" "edit"
                      "class" "edit"

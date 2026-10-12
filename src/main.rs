@@ -13,7 +13,7 @@
 //! todo model's functions and the route prelude.
 
 use anyhow::{Context, Result, bail};
-use conduct::{Codebase, element, route};
+use conduct::{element, route};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -31,7 +31,7 @@ fn main() -> Result<()> {
         }
     }
     let routing = command == "route" || command == "check-route";
-    let mut cb = if routing { route::codebase().map_err(|e| anyhow::anyhow!("{e}"))? } else { Codebase::new() };
+    let mut cb = if routing { route::codebase().map_err(|e| anyhow::anyhow!("{e}"))? } else { element::codebase() };
     let mut added = Vec::new();
     for file in &files {
         let source = std::fs::read_to_string(file).with_context(|| format!("reading {file}"))?;
@@ -40,7 +40,7 @@ fn main() -> Result<()> {
     match command.as_str() {
         "check" | "check-route" => {
             for a in &added {
-                println!("{} {} : {}", a.hash.short(), a.name, cb.defs[&a.hash].type_string());
+                println!("{} {} : {}", a.hash.short(), a.name, cb.show(&cb.defs[&a.hash].scheme.body));
             }
         }
         "element" => {

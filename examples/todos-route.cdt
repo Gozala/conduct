@@ -9,40 +9,40 @@
 ;; it uses the `model` capability, and the route contract allows no
 ;; other.
 
-(def pattern "/api/todos")
+(define pattern "/api/todos")
 
-(defn todo-json [todo]
-  {"id" (:id todo) "title" (:title todo) "completed" (:completed todo)})
+(define (todo-json todo)
+  {"id" (id todo) "title" (title todo) "completed" (completed todo)})
 
-(defn filter-of [request]
-  (match (get (:query request) "filter" "all")
+(define (filter-of request)
+  (match (get (query request) "filter" "all")
     "active" :active
     "completed" :completed
     _ :all))
 
-(defn list! [request]
+(define (list! request)
   (let [found (query! (filter-of request))
-        counts (:counts found)]
-    (json {"todos" (map todo-json (:todos found))
-           "counts" {"active" (:active counts) "completed" (:completed counts)}}
-          200)))
+        counts (counts found)]
+    (json {"todos" (map (todos found) each: todo-json)
+           "counts" {"active" (active-count counts) "completed" (completed-count counts)}}
+          status: 200)))
 
-(defn add-todo! [request]
-  (match (add! (json-str (json-get (parse-json (:body request)) "title")))
-    {:ok todo} (json (todo-json todo) 201)
-    {:error why} (problem why)))
+(define (add-todo! request)
+  (match (add! (json-str (json-get (parse-json (body request)) "title")))
+    {ok: todo} (json (todo-json todo) status: 201)
+    {error: why} (problem why)))
 
-(defn complete-all! [request]
-  (let [completed (json-get (parse-json (:body request)) "completed")]
+(define (complete-all! request)
+  (let [completed (json-get (parse-json (body request)) "completed")]
     (cond
-      (= completed true) (let [_ (toggle-all! true)] (status 204))
-      (= completed false) (let [_ (toggle-all! false)] (status 204))
+      (= completed true) (do (toggle-all! true) (status 204))
+      (= completed false) (do (toggle-all! false) (status 204))
       :else (status 400))))
 
-(defn handle! [request]
-  (match (:method request)
+(define (handle! request)
+  (match (method request)
     "GET" (list! request)
     "POST" (add-todo! request)
     "PATCH" (complete-all! request)
-    "DELETE" (let [_ (clear-completed!)] (status 204))
+    "DELETE" (do (clear-completed!) (status 204))
     _ (status 405)))

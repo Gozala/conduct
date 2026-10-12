@@ -79,31 +79,56 @@ impl From<CodegenError> for RouteError {
     }
 }
 
+/// The global names of the attributes the contract and the model use,
+/// as the prelude claims them.
+mod key {
+    pub const METHOD: &str = "conduct.http/method";
+    pub const PATH: &str = "conduct.http/path";
+    pub const PARAMS: &str = "conduct.http/params";
+    pub const QUERY: &str = "conduct.http/query";
+    pub const HEADERS: &str = "conduct.http/headers";
+    pub const BODY: &str = "conduct.http/body";
+    pub const STATUS: &str = "conduct.http/status";
+    pub const ID: &str = "demo.todo/id";
+    pub const TITLE: &str = "demo.todo/title";
+    pub const COMPLETED: &str = "demo.todo/completed";
+    pub const TODOS: &str = "demo.todo/todos";
+    pub const COUNTS: &str = "demo.todo/counts";
+    pub const ACTIVE_COUNT: &str = "demo.counts/active";
+    pub const COMPLETED_COUNT: &str = "demo.counts/completed";
+    pub const OK: &str = "conduct.result/ok";
+    pub const ERROR: &str = "conduct.result/error";
+}
+
+fn field(name: &str, t: Ty) -> (String, Ty) {
+    (name.to_string(), t)
+}
+
 /// A todo, as the model gives it.
 pub fn todo_type() -> Ty {
-    Ty::record([("id".to_string(), Ty::str()), ("title".to_string(), Ty::str()), ("completed".to_string(), Ty::bool())])
+    Ty::record([field(key::ID, Ty::str()), field(key::TITLE, Ty::str()), field(key::COMPLETED, Ty::bool())])
 }
 
 fn model_error() -> Ty {
     Ty::keys(["not-found".to_string(), "empty-title".to_string()])
 }
 
-/// What `add!` and `update!` answer: `{:ok todo}`, or `{:error why}`.
+/// What `add!` and `update!` answer: `{ok: todo}`, or `{error: why}`.
 fn todo_result() -> Ty {
-    Ty::tags([("ok".to_string(), Some(todo_type())), ("error".to_string(), Some(model_error()))])
+    Ty::tags([(key::OK.to_string(), Some(todo_type())), (key::ERROR.to_string(), Some(model_error()))])
 }
 
 /// The model's functions, as host functions: each name, the WIT
 /// function it calls, its parameters, and its result.
 fn model_functions() -> Vec<(&'static str, &'static str, Vec<Ty>, Ty)> {
     let filter = Ty::keys(["all".to_string(), "active".to_string(), "completed".to_string()]);
-    let counts = Ty::record([("active".to_string(), Ty::int()), ("completed".to_string(), Ty::int())]);
+    let counts = Ty::record([field(key::ACTIVE_COUNT, Ty::int()), field(key::COMPLETED_COUNT, Ty::int())]);
     vec![
         (
             "query!",
             "query",
             vec![filter],
-            Ty::record([("todos".to_string(), Ty::list(todo_type())), ("counts".to_string(), counts)]),
+            Ty::record([field(key::TODOS, Ty::list(todo_type())), field(key::COUNTS, counts)]),
         ),
         ("add!", "add", vec![Ty::str()], todo_result()),
         // A WIT function with `option` parameters takes one record of its
@@ -112,9 +137,9 @@ fn model_functions() -> Vec<(&'static str, &'static str, Vec<Ty>, Ty)> {
             "update!",
             "update",
             vec![Ty::record([
-                ("id".to_string(), Ty::str()),
-                ("title".to_string(), Ty::opt(Ty::str())),
-                ("completed".to_string(), Ty::opt(Ty::bool())),
+                field(key::ID, Ty::str()),
+                field(key::TITLE, Ty::opt(Ty::str())),
+                field(key::COMPLETED, Ty::opt(Ty::bool())),
             ])],
             todo_result(),
         ),
@@ -122,7 +147,7 @@ fn model_functions() -> Vec<(&'static str, &'static str, Vec<Ty>, Ty)> {
             "remove!",
             "remove",
             vec![Ty::str()],
-            Ty::tags([("ok".to_string(), None), ("error".to_string(), Some(model_error()))]),
+            Ty::tags([("ok".to_string(), None), (key::ERROR.to_string(), Some(model_error()))]),
         ),
         ("toggle-all!", "toggle-all", vec![Ty::bool()], Ty::record([])),
         ("clear-completed!", "clear-completed", vec![], Ty::record([])),
@@ -142,21 +167,21 @@ pub fn codebase() -> Result<Codebase, Error> {
 /// The record `handle!` receives.
 pub fn request_type() -> Ty {
     Ty::record([
-        ("method".to_string(), Ty::str()),
-        ("path".to_string(), Ty::str()),
-        ("params".to_string(), Ty::dict(Ty::str())),
-        ("query".to_string(), Ty::dict(Ty::str())),
-        ("headers".to_string(), Ty::dict(Ty::str())),
-        ("body".to_string(), Ty::str()),
+        field(key::METHOD, Ty::str()),
+        field(key::PATH, Ty::str()),
+        field(key::PARAMS, Ty::dict(Ty::str())),
+        field(key::QUERY, Ty::dict(Ty::str())),
+        field(key::HEADERS, Ty::dict(Ty::str())),
+        field(key::BODY, Ty::str()),
     ])
 }
 
 /// The record `handle!` answers.
 pub fn response_type() -> Ty {
     Ty::record([
-        ("status".to_string(), Ty::int()),
-        ("headers".to_string(), Ty::dict(Ty::str())),
-        ("body".to_string(), Ty::str()),
+        field(key::STATUS, Ty::int()),
+        field(key::HEADERS, Ty::dict(Ty::str())),
+        field(key::BODY, Ty::str()),
     ])
 }
 
@@ -171,7 +196,7 @@ pub fn check(cb: &Codebase) -> Result<RouteDefs, RouteError> {
     let handle = *cb.names.get("handle!").ok_or(RouteError::Missing("handle!"))?;
     let s = &cb.solver;
     let ty = s.instantiate(&cb.defs[&handle].scheme, 1);
-    let expected = Ty::func_eff(vec![request_type()], response_type(), Ty::caps([MODEL.to_string()]));
+    let expected = Ty::func_eff(vec![request_type()], response_type(), Ty::caps([MODEL.to_string()]), vec![]);
     s.constrain(&ty, &expected).map_err(|error| RouteError::Contract { name: "handle!", error })?;
     let pattern = match cb.names.get("pattern") {
         None => None,
@@ -194,11 +219,13 @@ fn hosts(cb: &Codebase, root: Hash) -> BTreeSet<String> {
     out
 }
 
-/// A function that builds a record from its fields, given as
-/// parameters in `fields`' order. Each argument is consumed.
+/// A function that builds a record from its fields, by global name,
+/// given as parameters in `fields`' order, each named after its global
+/// name's last part. Each argument is consumed.
 fn record_func(func: &str, fields: &[&str]) -> String {
-    let params: String = fields.iter().map(|f| format!(" (param ${} i64)", f.replace('-', "_"))).collect();
-    let mut sorted: Vec<(i64, &str)> = fields.iter().map(|f| (field_id(f), *f)).collect();
+    let local = |f: &str| f.rsplit('/').next().unwrap().replace('-', "_");
+    let params: String = fields.iter().map(|f| format!(" (param ${} i64)", local(f))).collect();
+    let mut sorted: Vec<(i64, String)> = fields.iter().map(|f| (field_id(f), local(f))).collect();
     sorted.sort_by_key(|f| f.0);
     let mut stores = String::new();
     for (i, (id, name)) in sorted.iter().enumerate() {
@@ -207,7 +234,7 @@ fn record_func(func: &str, fields: &[&str]) -> String {
             "\n    (i64.store offset={} (local.get $w) (i64.const {id})) (i64.store offset={} (local.get $w) (local.get ${}))",
             8 + 16 * i,
             16 + 16 * i,
-            name.replace('-', "_")
+            name
         );
     }
     format!(
@@ -229,11 +256,11 @@ fn model_glue(b: &mut Builder, used: &BTreeSet<String>) -> String {
     let nothing = b.static_empty_record();
     let model = "demo:todo/model";
     let mut out = String::new();
-    out.push_str(&record_func("$todo_new", &["id", "title", "completed"]));
-    out.push_str(&record_func("$counts_new", &["active", "completed"]));
-    out.push_str(&record_func("$query_new", &["todos", "counts"]));
-    out.push_str(&record_func("$ok_new", &["ok"]));
-    out.push_str(&record_func("$error_new", &["error"]));
+    out.push_str(&record_func("$todo_new", &[key::ID, key::TITLE, key::COMPLETED]));
+    out.push_str(&record_func("$counts_new", &[key::ACTIVE_COUNT, key::COMPLETED_COUNT]));
+    out.push_str(&record_func("$query_new", &[key::TODOS, key::COUNTS]));
+    out.push_str(&record_func("$ok_new", &[key::OK]));
+    out.push_str(&record_func("$error_new", &[key::ERROR]));
     let _ = write!(
         out,
         r#"  (func $int_of (param $n i32) (result i64)
@@ -333,9 +360,9 @@ fn model_glue(b: &mut Builder, used: &BTreeSet<String>) -> String {
     (local.get $v)"#,
                     TRUE = crate::codegen::TRUE,
                     ABSENT = NIL,
-                    id = field_id("id"),
-                    title = field_id("title"),
-                    completed = field_id("completed"),
+                    id = field_id(key::ID),
+                    title = field_id(key::TITLE),
+                    completed = field_id(key::COMPLETED),
                 ),
             ),
             "remove" => (
@@ -466,7 +493,10 @@ pub fn core_wat(cb: &Codebase) -> Result<String, RouteError> {
 
     let handle = b.call(defs.handle, &["(local.get $request)".into()])?;
     let mut x = String::new();
-    x.push_str(&record_func("$request_new", &["method", "path", "params", "query", "headers", "body"]));
+    x.push_str(&record_func(
+        "$request_new",
+        &[key::METHOD, key::PATH, key::PARAMS, key::QUERY, key::HEADERS, key::BODY],
+    ));
     let _ = write!(
         x,
         r#"  (global $assoc_out (mut i64) (i64.const 0))
@@ -696,9 +726,9 @@ pub fn core_wat(cb: &Codebase) -> Result<String, RouteError> {
     unreachable)
   (func (export "conduct_live") (export "conduct:debug/memory#live") (result i32) (global.get $live))
 "#,
-        status_id = field_id("status"),
-        headers_id = field_id("headers"),
-        body_id = field_id("body"),
+        status_id = field_id(key::STATUS),
+        headers_id = field_id(key::HEADERS),
+        body_id = field_id(key::BODY),
     );
     b.add_func(x);
     Ok(b.finish()?)

@@ -1,8 +1,9 @@
 //! The reader turns source text into s-expressions.
 //!
 //! The syntax is a small Clojure-like dialect: lists `( )`, vectors
-//! `[ ]`, maps `{ }`, strings, integers, keywords (`:name`), and
-//! symbols. A `;` starts a comment that runs to the end of the line.
+//! `[ ]`, maps `{ }`, strings, integers, keywords (`:name`), labels
+//! (`name:`, and `:` alone), and symbols. A `;` starts a comment that
+//! runs to the end of the line.
 
 use std::fmt;
 
@@ -19,6 +20,9 @@ pub enum Sexp {
     Str(String, Span),
     Symbol(String, Span),
     Keyword(String, Span),
+    /// `name:`: a parameter's label or a record's attribute. `:` alone is
+    /// the label with no name, which a claim puts before its result.
+    Label(String, Span),
     List(Vec<Sexp>, Span),
     Vector(Vec<Sexp>, Span),
     Map(Vec<Sexp>, Span),
@@ -31,6 +35,7 @@ impl Sexp {
             | Sexp::Str(_, s)
             | Sexp::Symbol(_, s)
             | Sexp::Keyword(_, s)
+            | Sexp::Label(_, s)
             | Sexp::List(_, s)
             | Sexp::Vector(_, s)
             | Sexp::Map(_, s) => *s,
@@ -62,6 +67,7 @@ impl fmt::Display for Sexp {
             Sexp::Str(s, _) => write!(f, "{s:?}"),
             Sexp::Symbol(s, _) => write!(f, "{s}"),
             Sexp::Keyword(s, _) => write!(f, ":{s}"),
+            Sexp::Label(s, _) => write!(f, "{s}:"),
             Sexp::List(items, _) => seq(f, "(", items, ")"),
             Sexp::Vector(items, _) => seq(f, "[", items, "]"),
             Sexp::Map(items, _) => seq(f, "{", items, "}"),
@@ -199,6 +205,15 @@ impl Reader<'_> {
         }
         let text = &self.text[start..self.pos];
         let span = Span { start, end: self.pos };
+        if text == ":" {
+            return Ok(Sexp::Label(String::new(), span));
+        }
+        if let Some(name) = text.strip_suffix(':') {
+            if name.starts_with(':') {
+                return self.error(format!("`{text}` is neither a keyword nor a label"), start);
+            }
+            return Ok(Sexp::Label(name.to_string(), span));
+        }
         if let Some(name) = text.strip_prefix(':') {
             if name.is_empty() {
                 return self.error("empty keyword", start);
@@ -226,6 +241,14 @@ mod tests {
         assert_eq!(forms.len(), 2);
         assert_eq!(forms[0].to_string(), "(defn f [x] {:a x \"k\" [1 -2]})");
         assert_eq!(forms[1].to_string(), ":kw");
+    }
+
+    #[test]
+    fn reads_labels() {
+        let forms = read("(sum 1 with: 2) {io.gozala.person/name: \"Ada\"} :").unwrap();
+        assert!(matches!(&forms[0], Sexp::List(items, _) if items[2] == Sexp::Label("with".into(), items[2].span())));
+        assert!(matches!(&forms[1], Sexp::Map(items, _) if matches!(&items[0], Sexp::Label(n, _) if n == "io.gozala.person/name")));
+        assert!(matches!(&forms[2], Sexp::Label(n, _) if n.is_empty()));
     }
 
     #[test]

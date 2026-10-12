@@ -206,10 +206,14 @@ pub enum Term {
     /// A member of the definition's own cycle of mutually recursive
     /// definitions, by its index in the cycle.
     CycleRef(u32),
-    /// A function of `arity` parameters. The last parameter is local 0
-    /// in the body.
-    Fn(u32, Box<Term>),
-    App(Box<Term>, Vec<Term>),
+    /// A function of one parameter per label: the first is the first
+    /// parameter's, the others' follow in order. Parameters are passed
+    /// in that order; the last is local 0 in the body.
+    Fn(Vec<String>, Box<Term>),
+    /// A call: the arguments in the callee's parameter order, and the
+    /// labels of all but the first, which a call through a function
+    /// value passes without its label.
+    App(Box<Term>, Vec<Term>, Vec<String>),
     /// Binds local 0 in the body.
     Let(Box<Term>, Box<Term>),
     If(Box<Term>, Box<Term>, Box<Term>),
@@ -403,7 +407,7 @@ impl Term {
                 }
             }
             Term::Fn(_, b) | Term::Field(_, b) => b.walk(f),
-            Term::App(callee, args) => {
+            Term::App(callee, args, _) => {
                 callee.walk(f);
                 args.iter().for_each(|a| a.walk(f));
             }
@@ -486,15 +490,18 @@ impl Term {
                 out.push(0x08);
                 uint(out, cycle_index(*i) as u64);
             }
-            Term::Fn(n, body) => {
+            Term::Fn(labels, body) => {
                 out.push(0x09);
-                uint(out, *n as u64);
+                uint(out, labels.len() as u64);
+                labels.iter().for_each(|l| text(out, l));
                 body.encode(out, cycle_index);
             }
-            Term::App(callee, args) => {
+            Term::App(callee, args, labels) => {
                 out.push(0x0a);
                 callee.encode(out, cycle_index);
                 many(out, args, cycle_index);
+                uint(out, labels.len() as u64);
+                labels.iter().for_each(|l| text(out, l));
             }
             Term::Let(v, b) => {
                 out.push(0x0b);
