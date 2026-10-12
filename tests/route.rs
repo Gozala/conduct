@@ -246,7 +246,10 @@ fn routes_fit_the_contract() {
     let todos = load(TODOS);
     assert_eq!(
         todos.type_of("handle!").unwrap(),
-        "({body: String, method: Any, query: Dict[Any]}) => {body: String, code: Int, headers: Dict[String]} ! {model}"
+        // The claim, `(handle! request) with: {model} : response`, is what
+        // callers see.
+        "({body: String, headers: Dict[String], method: String, params: Dict[String], path: String, query: Dict[String]}) \
+         => {body: String, code: Int, headers: Dict[String]} ! {model}"
     );
     route::component(&todos).unwrap_or_else(|e| panic!("{e}"));
     let todo = load(TODO);

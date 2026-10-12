@@ -231,24 +231,24 @@ fn underscore_matches_anything() {
 fn variants_grow_through_inference() {
     // A record of one attribute is a variant: unions of them keep every
     // variant, and grow as more branches return more of them.
-    let src = "(define (check t) (if (= t \"\") {error: :empty-title} {ok: t}))
-               (define (find id) (if (= id \"\") {error: :not-found} (check id)))";
-    assert_eq!(ty(src, "check"), "(a) -> {error: :empty-title} | {ok: a}");
-    assert_eq!(ty(src, "find"), "(a) -> {error: :empty-title | :not-found} | {ok: a}");
+    let src = "(define (check t) (if (= t \"\") (error :empty-title) (ok t)))
+               (define (find id) (if (= id \"\") (error :not-found) (check id)))";
+    assert_eq!(ty(src, "check"), "(a) -> (error :empty-title) | (ok a)");
+    assert_eq!(ty(src, "find"), "(a) -> (error (:empty-title | :not-found)) | (ok a)");
     // Keywords are the variants that carry nothing.
-    assert_eq!(ty("(define (done x) (if x :ok {error: \"bad\"}))", "done"), "(Bool) -> {error: String} | :ok");
+    assert_eq!(ty("(define (done x) (if x :ok (error \"bad\")))", "done"), "(Bool) -> (error String) | :ok");
     // A variant still reads as the record it is, and setting its own
     // attribute keeps it that variant.
     assert_eq!(ty("(claim n : (t/n ?n)) (define v (n {n: 1}))", "v"), "Int");
-    let src = "(define (retry r) (match r {ok: n} (+ n 1) {error: _} 0))
-               (define again (retry (assoc {ok: 1} ok: 2)))";
+    let src = "(define (retry r) (match r (ok n) (+ n 1) (error _) 0))
+               (define again (retry (assoc (ok 1) conduct.result/ok: 2)))";
     assert_eq!(ty(src, "again"), "Int");
     let mut cb = Codebase::new();
     let err = cb
         .add_source(
             "(claim more : (t/more ?more))
-             (define (retry r) (match r {ok: n} (+ n 1) {error: _} 0))
-             (define bad (retry (assoc {ok: 1} more: 2)))",
+             (define (retry r) (match r (ok n) (+ n 1) (error _) 0))
+             (define bad (retry (assoc (ok 1) more: 2)))",
         )
         .unwrap_err()
         .to_string();
@@ -257,24 +257,24 @@ fn variants_grow_through_inference() {
 
 #[test]
 fn patterns_bind_and_cover_variants() {
-    let src = "(define (show r) (match r {ok: t} (+ t 1) {error: :not-found} 0 {error: e} -1))";
-    assert_eq!(ty(src, "show"), "({error: Any} | {ok: Int}) -> Int");
+    let src = "(define (show r) (match r (ok t) (+ t 1) (error :not-found) 0 (error e) -1))";
+    assert_eq!(ty(src, "show"), "((error Any) | (ok Int)) -> Int");
     let mut cb = Codebase::new();
     cb.add_source(src).unwrap();
-    cb.add_source("(define a (show {ok: 1})) (define b (show {error: :gone}))").unwrap();
+    cb.add_source("(define a (show (ok 1))) (define b (show (error :gone)))").unwrap();
     // Each variant is checked against its own clause.
-    let err = cb.add_source("(define c (show {ok: \"one\"}))").unwrap_err().to_string();
+    let err = cb.add_source("(define c (show (ok \"one\")))").unwrap_err().to_string();
     assert!(err.contains("String is not a Int"), "{err}");
     // Without `_`, a variant no clause names is a type error where it
     // flows in, as a keyword no clause names is.
     let err = cb.add_source("(claim other : (t/other ?other)) (define d (show {other: 1}))").unwrap_err().to_string();
     assert!(err.contains("{t/other: ..} is not one of {conduct.result/error: ..} | {conduct.result/ok: ..}"), "{err}");
-    // The keyword `:ok` is not the variant `{ok: ..}`.
+    // The keyword `:ok` is not the variant `(ok ..)`.
     let err = cb.add_source("(define e (show :ok))").unwrap_err().to_string();
     assert!(err.contains(":ok is not one of {conduct.result/error: ..} | {conduct.result/ok: ..}"), "{err}");
     // A name binds a payload however deep, and `_` ends an open match.
     let src = "(claim todo : (t/todo ?todo)) (claim title : (t/title ?title))
-               (define (title-of r) (match r {ok: {todo: t}} (title t) _ \"none\"))";
+               (define (title-of r) (match r (ok {todo: t}) (title t) _ \"none\"))";
     assert_eq!(ty(src, "title-of"), "({ok?: {todo?: {title: a}}}) -> a | String");
     // A pattern may not bind a name twice.
     let err = Codebase::new()

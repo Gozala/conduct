@@ -21,14 +21,15 @@
 
 (define (change! id request)
   (match (update! (patch id body: (parse-json (body request))))
-    {ok: todo} (json (todo-json todo) status: 200)
-    {error: why} (problem why)))
+    (ok todo) (json (todo-json todo) status: 200)
+    (error why) (problem why)))
 
 (define (delete! id)
   (match (remove! id)
     :ok (status 204)
-    {error: why} (problem why)))
+    (error why) (problem why)))
 
+(claim (handle! request) with: {model} : response)
 (define (handle! request)
   (let [id (get (params request) "id" "")]
     (match (method request)

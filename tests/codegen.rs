@@ -342,17 +342,17 @@ fn variants_match_and_bind() {
     let src = r#"
 (claim title : (t/title ?title))
 (claim n : (t/n ?n))
-(define (check t) (if (= t "") {error: :empty-title} {ok: {title: t, n: (count (split t " "))}}))
-(define (find id) (if (= id "x") {error: :not-found} (check id)))
+(define (check t) (if (= t "") (error :empty-title) (ok {title: t, n: (count (split t " "))})))
+(define (find id) (if (= id "x") (error :not-found) (check id)))
 (define (show r)
   (match r
-    {ok: {title: t, n: n}} (str t " (" n ")")
-    {error: :not-found} "missing"
-    {error: e} (str "bad " e)))
-(define (done x) (if x :ok {error: "late"}))
-(define (status r) (match r :ok "fine" {error: why} why))
+    (ok {title: t, n: n}) (str t " (" n ")")
+    (error :not-found) "missing"
+    (error e) (str "bad " e)))
+(define (done x) (if x :ok (error "late")))
+(define (status r) (match r :ok "fine" (error why) why))
 (define a [(show (find "buy milk")) (show (find "x")) (show (find "")) (status (done true)) (status (done false))])
-(define b (map [(find "a") (find "") :other {n: 1}] each: (fn [r] (match r {ok: {title: t}} t _ "?"))))
+(define b (map [(find "a") (find "") :other {n: 1}] each: (fn [r] (match r (ok {title: t}) t _ "?"))))
 "#;
     let strs = |v: &[&str]| Value::List(v.iter().map(|s| Value::Str(s.to_string())).collect());
     assert_eq!(run(src, "a", &[]), strs(&["buy milk (2)", "missing", "bad :empty-title", "fine", "late"]));

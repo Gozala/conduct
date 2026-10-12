@@ -79,6 +79,10 @@ pub enum Ty {
     /// The type of a record field that may be absent: `{k?: t}`. It only
     /// appears as a field's type.
     Opt(Rc<Ty>),
+    /// A claim's type variable, `?a`, while a definition is checked
+    /// against the claim: any type the caller chooses, so the definition
+    /// can assume nothing of it.
+    Rigid(Rc<str>),
 }
 
 impl Ty {
@@ -184,6 +188,7 @@ impl Ty {
             Ty::IfHas(_, t) => (15, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Caps(c) => (13, Rc::as_ptr(c) as *const u8 as usize),
             Ty::Opt(t) => (14, Rc::as_ptr(t) as *const u8 as usize),
+            Ty::Rigid(name) => (16, Rc::as_ptr(name) as *const u8 as usize),
         }
     }
 }
@@ -252,6 +257,7 @@ impl Solver {
             (Ty::Bot, _) | (_, Ty::Top) => Ok(()),
             (Ty::Prim(a), Ty::Prim(b)) if a == b => Ok(()),
             (Ty::View, Ty::View) | (Ty::Effect, Ty::Effect) => Ok(()),
+            (Ty::Rigid(a), Ty::Rigid(b)) if a == b => Ok(()),
             (Ty::Tags(a), Ty::Tags(b)) => {
                 let missing: Vec<&String> = a.keys().filter(|k| !b.contains_key(*k)).collect();
                 if !missing.is_empty() {
@@ -517,6 +523,7 @@ impl fmt::Display for Shallow<'_> {
             Ty::Bot => write!(f, "Nothing"),
             Ty::Prim(p) => write!(f, "{}", p.name()),
             Ty::View => write!(f, "View"),
+            Ty::Rigid(name) => write!(f, "?{name}, any type the caller chooses"),
             Ty::Effect => write!(f, "Effect"),
             Ty::Var(_) => write!(f, "a value whose type is still being inferred"),
             Ty::Fn(params, _, _, _) => write!(f, "a function of {} argument(s)", params.len()),
@@ -575,6 +582,8 @@ pub enum Type {
     Update(Box<Type>, String, Box<Type>),
     Tags(BTreeMap<String, Option<Type>>),
     Caps(BTreeSet<String>),
+    /// A claim's type variable, shown as written.
+    Named(String),
 }
 
 /// Turn an inferred type into a displayable one and simplify it.
@@ -597,6 +606,7 @@ fn coalesce_go(
         Ty::Bot => Type::Bot,
         Ty::Prim(p) => Type::Prim(*p),
         Ty::View => Type::View,
+        Ty::Rigid(name) => Type::Named(name.to_string()),
         Ty::Effect => Type::Effect,
         Ty::Tags(tags) => Type::Tags(
             tags.iter()
@@ -827,13 +837,17 @@ impl Type {
             Type::Fn(params, ret, eff, labels) => {
                 Type::Fn(params.into_iter().map(go).collect(), boxed(ret), boxed(eff), labels)
             }
-            Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (f(&k), go(t))).collect()),
+            Type::Record(fields) => Type::Record(
+                fields.into_iter().map(|(k, t)| (f(&k).trim_start_matches(CONSTRUCTOR).to_string(), go(t))).collect(),
+            ),
             Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, t)| (f(&k), t.map(go))).collect()),
             Type::List(t) => Type::List(boxed(t)),
             Type::Dict(t) => Type::Dict(boxed(t)),
             Type::Opt(t) => Type::Opt(boxed(t)),
             Type::Rec(v, t) => Type::Rec(v, boxed(t)),
-            Type::Update(r, k, v) => Type::Update(boxed(r), f(&k), boxed(v)),
+            Type::Update(r, k, v) => {
+                Type::Update(boxed(r), f(&k).trim_start_matches(CONSTRUCTOR).to_string(), boxed(v))
+            }
             Type::Union(ts) => Type::Union(ts.into_iter().map(go).collect()),
             Type::Inter(ts) => Type::Inter(ts.into_iter().map(go).collect()),
             other => other,
@@ -1287,6 +1301,7 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
             Ok(())
         }
         Type::Var(v) => write!(f, "{}", var(*v)),
+        Type::Named(name) => write!(f, "?{name}"),
         Type::Fn(params, ret, eff, labels) => {
             if prec > 0 {
                 write!(f, "(")?;
@@ -1388,14 +1403,24 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
 
 /// Variants as a union: a keyword as itself, a variant as the record of
 /// one field it is.
+/// A variant's key that starts with this is shown as its constructor:
+/// `(ok Int)`, not `{ok: Int}`. A codebase renames the keys of record
+/// types it claims with one attribute so (see [`Type::rename_keys`]).
+pub const CONSTRUCTOR: char = '\u{1}';
+
 fn write_tags(tags: &BTreeMap<String, Option<Type>>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     for (i, (k, p)) in tags.iter().enumerate() {
         if i > 0 {
             write!(f, " | ")?;
         }
-        match p {
-            None => write!(f, ":{k}")?,
-            Some(p) => {
+        match (p, k.strip_prefix(CONSTRUCTOR)) {
+            (None, _) => write!(f, ":{}", k.trim_start_matches(CONSTRUCTOR))?,
+            (Some(p), Some(name)) => {
+                write!(f, "({name} ")?;
+                write_type(p, f, 3)?;
+                write!(f, ")")?;
+            }
+            (Some(p), None) => {
                 write!(f, "{{{k}: ")?;
                 write_type(p, f, 0)?;
                 write!(f, "}}")?;

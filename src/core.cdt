@@ -1,5 +1,6 @@
-;; What every codebase starts with: the attributes of the variants that
-;; say how something went.
+;; What every codebase starts with: the types that say how something
+;; went. `(ok todo)` and `(error :not-found)` build them and match them.
 
-(claim ok : (conduct.result/ok ?value))
-(claim error : (conduct.result/error ?reason))
+(claim (ok ?value) : {(conduct.result/ok ?value)})
+(claim (error ?reason) : {(conduct.result/error ?reason)})
+(claim (result ?value error: ?reason) : [(ok ?value) (error ?reason)])

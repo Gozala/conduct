@@ -3,7 +3,6 @@
 //! name-free terms that can be hashed.
 
 use crate::reader::{Sexp, Span};
-pub use crate::term::Pattern;
 use std::fmt;
 
 /// A parameter: the label a caller passes it by, and the name the body
@@ -48,7 +47,43 @@ pub enum Expr {
     /// `e` matches; `_` matches anything. Without `_`, the patterns must
     /// be able to cover every value (see [`Pattern::cover`]). Record
     /// patterns' keys are as written, resolved with the expression.
-    Match(Box<Expr>, Vec<(Pattern, Expr)>, Option<Box<Expr>>, Span),
+    Match(Box<Expr>, Vec<(Pat, Expr)>, Option<Box<Expr>>, Span),
+}
+
+/// A pattern as written. Record keys and constructors are resolved
+/// with the expression.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pat {
+    Keyword(String),
+    Str(String),
+    Int(i64),
+    /// `_`.
+    Any,
+    /// A name: it binds the value, unless it names a record type, which
+    /// it then tests for.
+    Name(String),
+    /// `{title: t}`.
+    Record(Vec<(String, Pat)>),
+    /// `(ok value)`, `(done description: d)`: a record type, and patterns
+    /// for its attributes, the first unlabeled.
+    Ctor(String, Vec<(Option<String>, Pat)>),
+}
+
+impl Pat {
+    /// The names the pattern may bind (a name may turn out to be a type).
+    pub fn binders(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        fn go(p: &Pat, out: &mut Vec<String>) {
+            match p {
+                Pat::Name(n) => out.push(n.clone()),
+                Pat::Record(fields) => fields.iter().for_each(|(_, p)| go(p, out)),
+                Pat::Ctor(_, args) => args.iter().for_each(|(_, p)| go(p, out)),
+                _ => {}
+            }
+        }
+        go(self, &mut out);
+        out
+    }
 }
 
 /// A top-level definition, before resolution.
@@ -66,12 +101,49 @@ pub enum TypeExpr {
     Name(String, Span),
     /// `?a`.
     Var(String),
-    /// `(list text)`.
-    App(String, Vec<TypeExpr>, Span),
-    /// `[:active :completed]`.
-    Keywords(Vec<String>),
-    /// `{}`.
-    Empty,
+    /// `(list text)`, `(result text error: text)`: a type constructor
+    /// applied to its arguments, the first unlabeled.
+    App(String, Vec<(Option<String>, TypeExpr)>, Span),
+    /// `(io.gozala.person/name text)`: an attribute, by its global name,
+    /// and the type of its values.
+    Attribute(String, Box<TypeExpr>, Span),
+    /// `{name age ? phone}`: attributes, required and then optional.
+    Record(Vec<Member>, usize),
+    /// `[:active :done]`, `[(ok ?a) (error ?e)]`: cases, in rank order.
+    Union(Vec<TypeExpr>),
+    /// `:active` as one case of a union.
+    Keyword(String),
+    /// `((\ ?a each: ?b) with: {print} : ?c)`: a function's parameters,
+    /// the first unlabeled, its capabilities, and its result.
+    Fn(Vec<(Option<String>, TypeExpr)>, Option<Box<TypeExpr>>, Box<TypeExpr>),
+    /// `{print model}` after `with:`: capabilities.
+    Caps(Vec<String>),
+}
+
+/// A member of a record type: an attribute by its local name, or one
+/// written in place.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Member {
+    Name(String, Span),
+    Inline(String, TypeExpr),
+}
+
+impl fmt::Display for Member {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Member::Name(n, _) => write!(f, "{n}"),
+            Member::Inline(g, t) => write!(f, "({g} {t})"),
+        }
+    }
+}
+
+fn args_text(args: &[(Option<String>, TypeExpr)]) -> String {
+    args.iter()
+        .map(|(l, t)| match l {
+            Some(l) => format!(" {l}: {t}"),
+            None => format!(" {t}"),
+        })
+        .collect()
 }
 
 impl fmt::Display for TypeExpr {
@@ -79,35 +151,67 @@ impl fmt::Display for TypeExpr {
         match self {
             TypeExpr::Name(n, _) => write!(f, "{n}"),
             TypeExpr::Var(v) => write!(f, "?{v}"),
-            TypeExpr::App(head, args, _) => {
-                write!(f, "({head}")?;
-                args.iter().try_for_each(|a| write!(f, " {a}"))?;
-                write!(f, ")")
+            TypeExpr::App(head, args, _) => write!(f, "({head}{})", args_text(args)),
+            TypeExpr::Attribute(g, t, _) => write!(f, "({g} {t})"),
+            TypeExpr::Record(members, optional) => {
+                let mut parts: Vec<String> = members[..*optional].iter().map(|m| m.to_string()).collect();
+                if *optional < members.len() {
+                    parts.push("?".into());
+                    parts.extend(members[*optional..].iter().map(|m| m.to_string()));
+                }
+                write!(f, "{{{}}}", parts.join(" "))
             }
-            TypeExpr::Keywords(ks) => {
-                write!(f, "[{}]", ks.iter().map(|k| format!(":{k}")).collect::<Vec<_>>().join(" "))
+            TypeExpr::Union(cases) => {
+                write!(f, "[{}]", cases.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(" "))
             }
-            TypeExpr::Empty => write!(f, "{{}}"),
+            TypeExpr::Keyword(k) => write!(f, ":{k}"),
+            TypeExpr::Fn(params, with, ret) => {
+                write!(f, "((\\{})", args_text(params))?;
+                if let Some(w) = with {
+                    write!(f, " with: {w}")?;
+                }
+                write!(f, " : {ret})")
+            }
+            TypeExpr::Caps(caps) => write!(f, "{{{}}}", caps.join(" ")),
         }
     }
 }
 
-/// `(claim name : (io.gozala.person/name text))`: the attribute
-/// `io.gozala.person/name`, known locally as `name`, whose values are
-/// `text`.
+/// `(claim name : type)` or `(claim (name params ..) with: caps : type)`.
+/// With a `define` of the same name it is a signature; without one it
+/// defines a type: an attribute, a record, a variant, or a constructor
+/// of one of those.
 #[derive(Clone, Debug)]
-pub struct Attribute {
+pub struct Claim {
     pub name: String,
-    pub global: String,
+    /// The parameters, when the claim is written `(name params ..)`.
+    pub params: Option<Vec<(Option<String>, TypeExpr)>>,
+    pub with: Option<TypeExpr>,
     pub ty: TypeExpr,
     pub span: Span,
+}
+
+impl Claim {
+    /// The claim as written, without its name: what a signature adds to
+    /// its definition's hash.
+    pub fn text(&self) -> String {
+        let mut out = String::new();
+        if let Some(params) = &self.params {
+            out.push_str(&format!("({}{})", self.name, args_text(params)));
+        }
+        if let Some(w) = &self.with {
+            out.push_str(&format!(" with: {w}"));
+        }
+        out.push_str(&format!(" : {}", self.ty));
+        out
+    }
 }
 
 /// A top-level form.
 #[derive(Clone, Debug)]
 pub enum Item {
     Def(Def),
-    Attribute(Attribute),
+    Claim(Claim),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -222,21 +326,70 @@ fn parameters(items: &[Sexp], span: Span) -> Result<Vec<Param>> {
 }
 
 fn claim(args: &[Sexp], span: Span) -> Result<Item> {
-    let [Sexp::Symbol(..), Sexp::Label(colon, _), ty] = args else {
-        return err("a claim is `(claim name : type)`", span);
+    const FORM: &str = "a claim is `(claim name : type)` or `(claim (name params ..) with: capabilities : type)`";
+    let Some((head, rest)) = args.split_first() else {
+        return err(FORM, span);
+    };
+    let (name, params) = match head {
+        Sexp::Symbol(..) => (binder(head)?, None),
+        Sexp::List(items, hspan) => {
+            let Some((name, params)) = items.split_first() else {
+                return err(FORM, *hspan);
+            };
+            (binder(name)?, Some(type_args(params, *hspan)?))
+        }
+        other => return err(FORM, other.span()),
+    };
+    let (with, rest) = match rest {
+        [Sexp::Label(l, _), caps, rest @ ..] if l == "with" => (Some(capabilities(caps)?), rest),
+        _ => (None, rest),
+    };
+    let [Sexp::Label(colon, _), ty] = rest else {
+        return err(FORM, span);
     };
     if !colon.is_empty() {
-        return err("a claim is `(claim name : type)`, with `:` before the type", span);
+        return err(format!("{FORM}, with `:` before the type"), span);
     }
-    let name = binder(&args[0])?;
-    match ty {
-        Sexp::List(items, tspan) => match items.as_slice() {
-            [Sexp::Symbol(global, _), value] if global.contains('/') => {
-                Ok(Item::Attribute(Attribute { name, global: global.clone(), ty: type_expr(value)?, span: *tspan }))
+    Ok(Item::Claim(Claim { name, params, with, ty: type_expr(ty)?, span }))
+}
+
+/// `?a error: ?e`: types, each but the first after its label.
+fn type_args(items: &[Sexp], span: Span) -> Result<Vec<(Option<String>, TypeExpr)>> {
+    let mut out: Vec<(Option<String>, TypeExpr)> = Vec::new();
+    let mut rest = items.iter();
+    while let Some(item) = rest.next() {
+        match item {
+            Sexp::Label(label, lspan) => {
+                let Some(t) = rest.next() else {
+                    return err(format!("the label `{label}:` needs a type"), *lspan);
+                };
+                if out.iter().any(|(l, _)| l.as_deref() == Some(label)) {
+                    return err(format!("the label `{label}:` appears twice"), *lspan);
+                }
+                out.push((Some(label.clone()), type_expr(t)?));
             }
-            _ => err("this claim is an attribute, `(domain/name type)`; claims of other types come later", *tspan),
-        },
-        other => err("an attribute is claimed as `(domain/name type)`", other.span()),
+            t if out.is_empty() => out.push((None, type_expr(t)?)),
+            t => return err(format!("only the first parameter goes without a label, not `{t}`"), span),
+        }
+    }
+    Ok(out)
+}
+
+/// What follows `with:`: a set of capabilities, `{print model}`, or a
+/// variable, `?fx`.
+fn capabilities(form: &Sexp) -> Result<TypeExpr> {
+    match form {
+        Sexp::Map(items, _) => Ok(TypeExpr::Caps(
+            items
+                .iter()
+                .map(|c| match c {
+                    Sexp::Symbol(c, _) => Ok(c.clone()),
+                    other => err("capabilities are names, `{print model}`", other.span()),
+                })
+                .collect::<Result<_>>()?,
+        )),
+        Sexp::Symbol(v, _) if v.starts_with('?') && v.len() > 1 => Ok(TypeExpr::Var(v[1..].to_string())),
+        other => err("`with:` takes capabilities, `{print model}`, or a variable, `?fx`", other.span()),
     }
 }
 
@@ -247,24 +400,59 @@ fn type_expr(form: &Sexp) -> Result<TypeExpr> {
             return err("a type variable has a name, `?a`, so that its uses can be tied together", form.span());
         }
         Sexp::Symbol(name, span) => TypeExpr::Name(name.clone(), *span),
-        Sexp::List(items, span) => match items.split_first() {
-            Some((Sexp::Symbol(head, _), args)) if !args.is_empty() => {
-                TypeExpr::App(head.clone(), args.iter().map(type_expr).collect::<Result<_>>()?, *span)
+        Sexp::Keyword(k, _) => TypeExpr::Keyword(k.clone()),
+        Sexp::List(items, span) => match items.as_slice() {
+            // `((\ params ..) with: caps : result)`
+            [Sexp::List(lambda, lspan), rest @ ..] if matches!(lambda.first(), Some(Sexp::Symbol(s, _)) if s == "\\") =>
+            {
+                let params = type_args(&lambda[1..], *lspan)?;
+                let (with, rest) = match rest {
+                    [Sexp::Label(l, _), caps, rest @ ..] if l == "with" => (Some(Box::new(capabilities(caps)?)), rest),
+                    _ => (None, rest),
+                };
+                let [Sexp::Label(colon, _), ret] = rest else {
+                    return err("a function type is `((\\ params ..) : result)`", *span);
+                };
+                if !colon.is_empty() {
+                    return err("a function type is `((\\ params ..) : result)`", *span);
+                }
+                TypeExpr::Fn(params, with, Box::new(type_expr(ret)?))
+            }
+            [Sexp::Symbol(global, _), value] if global.contains('/') => {
+                TypeExpr::Attribute(global.clone(), Box::new(type_expr(value)?), *span)
+            }
+            [Sexp::Symbol(head, _), args @ ..] if !args.is_empty() => {
+                TypeExpr::App(head.clone(), type_args(args, *span)?, *span)
             }
             _ => return err(format!("expected a type, found `{form}`"), *span),
         },
-        Sexp::Vector(items, _) => TypeExpr::Keywords(
-            items
-                .iter()
-                .map(|k| match k {
-                    Sexp::Keyword(k, _) => Ok(k.clone()),
-                    other => {
-                        err("a list of keywords, `[:a :b]`, is the only union an attribute takes yet", other.span())
+        Sexp::Vector(items, _) => TypeExpr::Union(items.iter().map(type_expr).collect::<Result<_>>()?),
+        Sexp::Map(items, _) => {
+            let mut members = Vec::new();
+            let mut optional = None;
+            for item in items {
+                match item {
+                    Sexp::Symbol(s, sspan) if s == "?" => {
+                        if optional.is_some() {
+                            return err("a record type has one `?`, before its optional attributes", *sspan);
+                        }
+                        optional = Some(members.len());
                     }
-                })
-                .collect::<Result<_>>()?,
-        ),
-        Sexp::Map(items, _) if items.is_empty() => TypeExpr::Empty,
+                    Sexp::Symbol(s, sspan) => members.push(Member::Name(s.clone(), *sspan)),
+                    Sexp::List(parts, pspan) => match parts.as_slice() {
+                        [Sexp::Symbol(global, _), value] if global.contains('/') => {
+                            members.push(Member::Inline(global.clone(), type_expr(value)?))
+                        }
+                        _ => return err("a record type lists attributes: names, or `(domain/name type)`", *pspan),
+                    },
+                    other => {
+                        return err("a record type lists attributes: names, or `(domain/name type)`", other.span());
+                    }
+                }
+            }
+            let optional = optional.unwrap_or(members.len());
+            TypeExpr::Record(members, optional)
+        }
         other => return err(format!("expected a type, found `{other}`"), other.span()),
     })
 }
@@ -488,7 +676,7 @@ fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
     if clauses.is_empty() || !clauses.len().is_multiple_of(2) {
         return err("`match` takes a value and pairs of a pattern and a result", span);
     }
-    let mut arms: Vec<(Pattern, Expr)> = Vec::new();
+    let mut arms: Vec<(Pat, Expr)> = Vec::new();
     let mut default = None;
     let pairs: Vec<&[Sexp]> = clauses.chunks(2).collect();
     for (i, pair) in pairs.iter().enumerate() {
@@ -515,12 +703,12 @@ fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
     Ok(Expr::Match(boxed(scrutinee)?, arms, default, span))
 }
 
-fn pattern(form: &Sexp) -> Result<Pattern> {
+fn pattern(form: &Sexp) -> Result<Pat> {
     Ok(match form {
-        Sexp::Keyword(k, _) => Pattern::Keyword(k.clone()),
-        Sexp::Str(s, _) => Pattern::Str(s.clone()),
-        Sexp::Int(n, _) => Pattern::Int(*n),
-        Sexp::Symbol(s, _) if s == "_" => Pattern::Any,
+        Sexp::Keyword(k, _) => Pat::Keyword(k.clone()),
+        Sexp::Str(s, _) => Pat::Str(s.clone()),
+        Sexp::Int(n, _) => Pat::Int(*n),
+        Sexp::Symbol(s, _) if s == "_" => Pat::Any,
         Sexp::Symbol(s, sspan) => {
             if let Some(why) = retired(s) {
                 return err(why, *sspan);
@@ -528,10 +716,10 @@ fn pattern(form: &Sexp) -> Result<Pattern> {
             if RESERVED.contains(&s.as_str()) {
                 return err(format!("`{s}` is reserved, so it cannot name a value a pattern binds"), *sspan);
             }
-            Pattern::Bind(s.clone())
+            Pat::Name(s.clone())
         }
         Sexp::Map(items, _) if !items.is_empty() && items.len().is_multiple_of(2) => {
-            let mut fields: Vec<(String, Pattern)> = Vec::new();
+            let mut fields: Vec<(String, Pat)> = Vec::new();
             for pair in items.chunks(2) {
                 let name = match &pair[0] {
                     Sexp::Label(name, _) if !name.is_empty() => name,
@@ -545,12 +733,33 @@ fn pattern(form: &Sexp) -> Result<Pattern> {
                 }
                 fields.push((name.clone(), pattern(&pair[1])?));
             }
-            Pattern::Fields(fields)
+            Pat::Record(fields)
+        }
+        Sexp::List(items, lspan) => {
+            let Some((Sexp::Symbol(name, _), args)) = items.split_first() else {
+                return err("a constructor pattern names a record type: `(ok value)`", *lspan);
+            };
+            let mut out: Vec<(Option<String>, Pat)> = Vec::new();
+            let mut rest = args.iter();
+            while let Some(item) = rest.next() {
+                match item {
+                    Sexp::Label(label, l) => {
+                        let Some(p) = rest.next() else {
+                            return err(format!("the label `{label}:` needs a pattern"), *l);
+                        };
+                        out.push((Some(label.clone()), pattern(p)?));
+                    }
+                    p if out.is_empty() => out.push((None, pattern(p)?)),
+                    p => return err(format!("only the first pattern goes without a label, not `{p}`"), p.span()),
+                }
+            }
+            Pat::Ctor(name.clone(), out)
         }
         other => {
             return err(
                 format!(
-                    "a `match` pattern is a keyword, string, or integer, `_`, a name to bind, or a record of those, not `{other}`"
+                    "a `match` pattern is a keyword, string, or integer, `_`, a name, a record of patterns, \
+                     or a constructor, `(ok value)`, not `{other}`"
                 ),
                 other.span(),
             );
