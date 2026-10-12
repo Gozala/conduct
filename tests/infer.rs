@@ -102,7 +102,17 @@ fn record_update() {
     );
     // Reading another field through an update reads the original's.
     assert_eq!(ty(&format!("{claims} (define (f m) (b (assoc m a: 1)))"), "f"), "({b: a}) -> a");
-    assert_eq!(ty(&format!("{claims} (define (g m) (a (assoc m a: 1)))"), "g"), "(Any) -> Int");
+    // Only a record has attributes to set.
+    assert_eq!(ty(&format!("{claims} (define (g m) (a (assoc m a: 1)))"), "g"), "({}) -> Int");
+    for not_a_record in ["123", "[1 2]", "{\"k\" \"v\"}", "\"text\"", ":kw"] {
+        let e = Codebase::new()
+            .add_source(&format!("{claims} (define r (assoc {not_a_record} a: 1))"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("`assoc` sets an attribute of a record"), "{not_a_record}: {e}");
+    }
+    // `{}` is a record with no attributes too.
+    assert_eq!(ty(&format!("{claims} (define r (assoc {{}} a: 1))"), "r"), "({} with a: Int)");
 }
 
 #[test]

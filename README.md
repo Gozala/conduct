@@ -14,7 +14,8 @@ compiled to WebAssembly components.
   A definition is type checked once, ever.
 - **Data declared, code inferred, with a lattice of types.** Attributes
   are claimed: a global name, a local one, and the type of its values.
-  Everything else is inferred, with no annotations. Types have unions
+  Everything else is inferred; a signature is optional, and checked when
+  given. Types have unions
   and intersections (Simple-sub's algebraic subtyping), records are
   structural, and unions of variants grow through inference, as in Roc.
   There is no `nil`: what may be missing is an attribute, and failure is
@@ -68,10 +69,10 @@ $ cargo run -- check examples/todo-item.cdt
 #30c7ccb2ae view : ({editing: Bool}, attrs: Dict[String]) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (24678 bytes)
+wrote todo-item.wasm (24967 bytes)
 
 $ cargo run -- route examples/todos-route.cdt -o todos.wasm
-wrote todos.wasm (29915 bytes)
+wrote todos.wasm (30018 bytes)
 ```
 
 Every type above is inferred; `editing` is the attribute the element
@@ -194,7 +195,10 @@ other claim **defines a type**:
 - `(claim person : {name age ? phone})` is a record type: attributes,
   by local name or written in place, `{(io.gozala.person/name text)}`,
   those after `?` optional. It is open: a value with more attributes is
-  still a `person`. It is also a constructor, `(person "Ada" age: 36)`,
+  still a `person`. A record type of one required attribute is a
+  variant instead, told apart by its key, so `(ok 1)` is not an `error`
+  and a record with more is not an `ok`. It is also a constructor,
+  `(person "Ada" age: 36)`,
   whose first attribute is the default label, and a pattern,
   `(person who age: n)`, which binds by label.
 - `(claim (ok ?a) : {(conduct.result/ok ?a)})` is a type constructor:
@@ -238,7 +242,9 @@ case it fits:
 A job with both `started-at` and `completed-at` is `done`. A wider case
 ranked above a narrower one, `[idle done pending]`, is an error, since
 the narrower could never be chosen; and a `match` over cases that
-overlap, with no variant ranking them, does not compile. Records of one
+overlap, with no variant ranking them, does not compile. Without `_`, a
+`match` must name every case, and the last case must be in every other
+(as `idle` is in `pending` and `done`), or a value could fit none. Records of one
 attribute (`ok`, `error`) are disjoint by their key, and need no rank.
 
 JSON is one type, `Json`, read with accessors that answer a neutral value
@@ -248,9 +254,13 @@ says which shape it has. JSON's `null`, a missing key, and malformed
 text are all a `Json` whose type is `"null"`; no other value can be
 null.
 
-Built-ins are applied in full; they are not yet values. A local or a
-definition with a built-in's name shadows it, so a parameter can be
-called `filter`.
+Built-ins are applied in full; they are not yet values. A record type
+is a value, its constructor, when it has no optional attributes:
+`(map xs each: ok)`. A call with no arguments is the value itself, since
+no function takes none: `(f)` is `f`. A local or a definition with a
+built-in's name shadows it, so a parameter can be called `filter`.
+`to-json` encodes a dictionary; a record with attributes is `null`, since
+it holds their ids, not their names.
 
 A record update keeps whatever else the record holds:
 `(define (bump m) (assoc m n: (+ (n m) 1)))` infers
@@ -398,9 +408,10 @@ calls the import.
 
 `codebase` resolves locals to de Bruijn indices and other definitions to
 their hashes, then hashes the canonical encoding of the term with BLAKE3.
-The type is not part of the hash: with full inference, a definition's
-type follows from its term and the types of what it refers to, so it is
-stored as derived data. Mutually recursive definitions are found as
+The type is not part of the hash, except a signature: with inference, a
+definition's type follows from its term and the types of what it refers
+to, so it is stored as derived data, but a signature is what callers
+see, so it is part of what the definition is. Mutually recursive definitions are found as
 strongly connected components and hashed as one cycle, with members
 ordered by their name-free encoding.
 

@@ -581,7 +581,7 @@ impl fmt::Display for Shallow<'_> {
                 write!(f, "}}")
             }
             Ty::List(_) => write!(f, "List"),
-            Ty::Task(..) => write!(f, "a task"),
+            Ty::Task(..) => write!(f, "task"),
             Ty::CapsPlus(c, l) => write!(f, "{} and {}", Shallow(c), caps_text(l)),
             Ty::Dict(_) => write!(f, "Dict"),
             Ty::Opt(t) => write!(f, "{} if present", Shallow(t)),

@@ -113,7 +113,9 @@ record type, or a type variable.
 A record type lists attributes, by local name or inline
 (`{(io.gozala.person/name text)}`); those after `?` are optional. It
 contains only attributes, never other records. A record type is open:
-a value with more attributes is still a `person`.
+a value with more attributes is still a `person`. **(built)** A record
+type of one required attribute is a variant, told apart by its key, as
+a record literal of one attribute already was.
 
 A record claim is a type, a constructor and a pattern. The constructor
 takes the attributes as labels, the first being the default label (the
@@ -216,7 +218,9 @@ Records overlap: facts accrete, so a job that finishes still has its
   `started-at` and `completed-at` is `done`.
 - The cases are disjoint once ranked, so a `match`'s arms may come in
   any order, and it covers the variant when it names every case or
-  ends with `_`.
+  ends with `_`. **(built)** Naming every case covers only when the
+  last case is in every other, as `idle` is; otherwise a value could
+  fit none, and the match needs `_`.
 - In each arm the value has that case's attributes.
 - **A wider case ranked above a narrower one is an error:**
   `[idle done pending]` fails, because every `done` is an `idle`, so
@@ -254,8 +258,9 @@ describing work that needs capabilities. `!` after a name performs.
 The rules:
 
 1. **A call with `!` calls, then performs the task the call returns.**
-   It is allowed only in the body of a definition whose head is marked
-   `!`, or in a `perform`.
+   It is allowed only in a task's body: a definition whose head is
+   marked `!`, or a function made with `fn!`, whose calls answer tasks.
+   A plain function's body is pure, even inside a task's.
 2. **A body that performs must be defined with `!`.** The head tells
    the reader without reading the body.
 3. **`!` appears only in call position.** As a value it is `show`;
@@ -276,25 +281,32 @@ type variable `?b` covers it.
 ### Environments
 
 ```scheme
-(perform t with: {print: (fn [line] {})})   ; a task needing what t needs, less print
-(perform! t with: test-env)                 ; ...and perform that
+(perform t with: {print: {print: (fn [line] {})}})   ; a task needing what t needs, less print
+(perform! t with: {clock: {now: 7}})                 ; ...and perform one
 ```
 
 An environment is a record of capability implementations, each a
-record of functions, one per operation. `(perform t with: env)` answers
+record of functions, one per operation; an operation of no parameters
+is implemented by its answer. **(built)** The environment is written
+out where it is used, so its labels are known; one held in a value is
+not supported yet. `(perform t with: env)` answers
 a task whose capabilities are `t`'s, less those `env` provides, plus
 those `env`'s implementations need. The environment's labels must be
 written out, so the subtraction is over known labels.
 
 Implementations answer: each returns the operation's result, and the
 work continues (tail-resumptive handlers). Handlers that abort or
-resume later need coroutines and are left for later.
+resume later need coroutines and are left for later. **(built)**
+Implementations are pure for now, so an environment needs nothing of
+its own.
 
 ### The host
 
-The host's imports are the root environment. A route's `handle!` and an
-element's effects are tasks the platform performs. A capability is a
-WIT interface; an operation is one of its functions.
+The host's imports are the root environment. A route's `handle!` is a
+task the platform performs. A capability is a WIT interface; an
+operation is one of its functions. **(built)** An element's `update` is
+still pure and returns its effects as data, which the glue performs;
+making them tasks is open.
 
 **Compiler:**
 
@@ -349,6 +361,11 @@ Each step is a pull request with tests; each keeps the demo working.
 The acceptance test: the demo's elements and routes, and the job
 example above, written as you would want to read them.
 
+Types are shown as a person reads them, not as a claim writes them:
+`(Int, with: Int) -> Int`, `List[a]`, `String`; tasks, records and
+variants are shown as claims write them, `(task {} with: {log})`,
+`{name: String}`, `(ok Int)`.
+
 ## Open decisions
 
 1. **Lambdas.** `fn` with a vector, or `(\ (x) body)` to match the
@@ -359,9 +376,11 @@ example above, written as you would want to read them.
    a record type lists only attributes.
 4. **Modules.** How a module is declared, and how its namespace relates
    to the attributes' global names.
-5. **Handlers that do not resume** (abort, retry), and the coroutine
+5. **Handlers that do not resume** (abort, retry), implementations that
+   need capabilities, environments held in values, and the coroutine
    compilation they need.
-6. **Predicates in types**, later.
+6. **Elements' effects as tasks**, in place of effects as data.
+7. **Predicates in types**, later.
 
 ## Decided in discussion
 

@@ -723,6 +723,12 @@ impl Names<'_> {
                     .position(|f| f.label == *l)
                     .ok_or_else(|| ResolveError::Invalid(format!("`{name}` has no attribute labeled `{l}:`")))?,
             };
+            if given[at].is_some() {
+                return Err(ResolveError::Invalid(format!(
+                    "the pattern gives `{name}`'s `{}:` twice",
+                    fields[at].label
+                )));
+            }
             given[at] = Some(self.pattern(p)?.0);
         }
         let mut out: Vec<(String, Pattern)> = Vec::new();
@@ -735,6 +741,30 @@ impl Names<'_> {
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(Pattern::Fields(out))
+    }
+
+    /// A record type as a value: the function its constructor is, when
+    /// every attribute is required.
+    fn constructor_value(&self, name: &str) -> Result<Term, ResolveError> {
+        let fields = self.claims.record(name).unwrap();
+        if fields.iter().any(|f| f.optional) {
+            return Err(ResolveError::Invalid(format!(
+                "`{name}` has optional attributes, so its constructor is not a value yet: wrap it in `fn`"
+            )));
+        }
+        let params: Vec<Param> =
+            fields.iter().map(|f| Param { label: f.label.clone(), local: f.label.clone() }).collect();
+        let order = canonical(&params);
+        let n = order.len() as u32;
+        let mut record: Vec<(String, Term)> = fields
+            .iter()
+            .map(|f| {
+                let at = order.iter().position(|p| p.label == f.label).unwrap() as u32;
+                (f.global.clone(), Term::Local(n - 1 - at))
+            })
+            .collect();
+        record.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(Term::Fn(order.into_iter().map(|p| p.label).collect(), Box::new(Term::Record(record))))
     }
 
     /// `(person "Ada" age: 36)`: a record of the attributes given, which
@@ -776,7 +806,7 @@ impl Names<'_> {
     /// The order a `match` over these record types tests them in: the
     /// rank of the variant that lists them all. Records of one attribute
     /// are variants already and need none.
-    fn rank(&self, cases: &[&str]) -> Result<Option<Vec<String>>, ResolveError> {
+    fn rank(&self, cases: &[&str]) -> Result<Option<(String, Vec<String>)>, ResolveError> {
         let mut distinct: Vec<&str> = cases.to_vec();
         distinct.sort();
         distinct.dedup();
@@ -788,7 +818,7 @@ impl Names<'_> {
             if let Some(order) = self.claims.variant(name)
                 && distinct.iter().all(|c| order.iter().any(|o| o == c))
             {
-                return Ok(Some(order));
+                return Ok(Some((name.clone(), order)));
             }
         }
         Err(ResolveError::Invalid(format!(
@@ -876,6 +906,7 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
                             "the built-in `{name}` is not a value yet; call it, or wrap it in `fn`"
                         )));
                     }
+                    None if names.claims.record(name).is_some() => names.constructor_value(name)?,
                     None if names.attribute(name).is_some() => {
                         return Err(ResolveError::Invalid(format!(
                             "the attribute `{name}` is read by calling it, `({name} record)`"
@@ -936,11 +967,29 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
             // a value lands in the first case it fits wherever the arm is
             // written.
             let cases: Vec<&str> = patterns.iter().filter_map(|(_, c, _)| c.as_deref()).collect();
-            if let Some(order) = names.rank(&cases)? {
+            if let Some((variant, order)) = names.rank(&cases)? {
                 if cases.len() != patterns.len() {
                     return Err(ResolveError::Invalid(
                         "a `match` over a ranked variant's cases names only cases, and `_`".into(),
                     ));
+                }
+                // Without `_`, the match covers what it is given only if it
+                // names every case, and every value of the variant fits
+                // its last case, the widest.
+                if default.is_none() {
+                    if let Some(missing) = order.iter().find(|o| !cases.contains(&o.as_str())) {
+                        return Err(ResolveError::Invalid(format!(
+                            "this `match` does not name `{missing}`: name every case of `{variant}`, or end with `_`"
+                        )));
+                    }
+                    let widest = names.claims.required(order.last().unwrap());
+                    if let Some(other) = order.iter().find(|o| !widest.is_subset(&names.claims.required(o))) {
+                        return Err(ResolveError::Invalid(format!(
+                            "a value may fit no case of `{variant}`: `{}` is not in `{other}`, so no case is in all \
+                             the others; end the `match` with `_`",
+                            order.last().unwrap()
+                        )));
+                    }
                 }
                 let at = |c: &Option<String>| order.iter().position(|o| Some(o) == c.as_ref()).unwrap();
                 patterns.sort_by_key(|(_, c, _)| at(c));

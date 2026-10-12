@@ -358,3 +358,13 @@ fn variants_match_and_bind() {
     assert_eq!(run(src, "a", &[]), strs(&["buy milk (2)", "missing", "bad :empty-title", "fine", "late"]));
     assert_eq!(run(src, "b", &[]), strs(&["a", "?", "?", "?"]));
 }
+
+#[test]
+fn the_empty_map_is_an_empty_record_too() {
+    let src = "(claim a : (t/a ?a))
+               (define e (assoc {} a: 1))
+               (define same (= {} (dissoc (assoc {} \"k\" 1) \"k\")))
+               (define text (to-json {}))";
+    assert_eq!(run(src, "same", &[]), Value::Bool(true));
+    assert_eq!(run(src, "text", &[]), Value::Str("{}".into()));
+}

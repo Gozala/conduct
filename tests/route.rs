@@ -370,3 +370,15 @@ async fn the_item_route() {
     let calls = m.lock().unwrap().calls.clone();
     assert_eq!(calls[0], "update[String(\"t1\"), Option(None), Option(Some(Bool(true)))]");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn nothing_from_the_model_is_the_empty_map() {
+    // The model answers `{}` for `toggle-all`; it equals the literal and
+    // encodes as `{}`.
+    let src = "(define pattern \"/x\")
+               (define (handle! request)
+                 (let [r (toggle-all! true)]
+                   (json {\"eq\" (= r {}) \"json\" (to-json r)} status: 200)))";
+    let answers = serve(src, model(&[]), &[("GET", "/x", "")]).await;
+    assert_eq!(answers[0].2, r#"{"eq":true,"json":"{}"}"#);
+}

@@ -130,7 +130,12 @@ impl Infer<'_> {
                             Ty::Task(answer, _) => (*answer).clone(),
                             other => other,
                         };
-                        let i = self.term(implementation, env, level)?;
+                        // An implementation is pure: it answers, and the
+                        // task goes on.
+                        self.effects.borrow_mut().push(None);
+                        let i = self.term(implementation, env, level);
+                        self.effects.borrow_mut().pop();
+                        let i = i?;
                         s.constrain(&i, &expected)
                             .map_err(|e| TypeError(format!("the implementation of `{op}`: {e}")))?;
                     }
@@ -179,6 +184,9 @@ impl Infer<'_> {
             }
             Term::Update(record, name, value) => {
                 let r = self.term(record, env, level)?;
+                // Only a record has attributes to set.
+                s.constrain(&r, &Ty::record([]))
+                    .map_err(|e| TypeError(format!("`assoc` sets an attribute of a record: {e}")))?;
                 let v = self.attribute(name, value, env, level)?;
                 Ty::update(r, name.clone(), v)
             }

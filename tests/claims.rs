@@ -204,3 +204,39 @@ fn capabilities_in_signatures() {
     cb.add_source("(claim (hi! text) : {}) (define (hi! who) (print! who))").unwrap();
     assert_eq!(cb.type_of("hi").unwrap(), "(String) -> (task {} with: {print})");
 }
+
+#[test]
+fn constructors_are_values() {
+    let cb = check(&format!(
+        "{PERSON}
+         (claim pair : {{name age}})
+         (define oks (map [1 2] each: ok))
+         (define pairs (map [\"Ada\"] each: (fn [n] (pair n age: 1))))
+         (define make pair)"
+    ));
+    assert_eq!(cb.type_of("oks").unwrap(), "List[(ok Int)]");
+    assert_eq!(cb.type_of("make").unwrap(), "(a & String, age: b & Int) -> {age: b, name: a}");
+    // With optional attributes, a constructor takes different labels at
+    // different calls, so it is not a value yet.
+    assert!(error(&format!("{PERSON} (define make person)")).contains("optional attributes"));
+    assert!(
+        error(&format!("{PERSON} (define (f p) (match p (person n name: m) n))"))
+            .contains("gives `person`'s `name:` twice")
+    );
+}
+
+#[test]
+fn a_ranked_match_names_every_case_or_ends_with_any() {
+    let job = format!("{JOB} (claim job : [done pending idle])");
+    let e = error(&format!("{job} (define (r j) (match j (pending description: d) d (done description: d) d))"));
+    assert!(e.contains("this `match` does not name `idle`: name every case of `job`, or end with `_`"), "{e}");
+    check(&format!("{job} (define (r j) (match j (pending description: d) d (done description: d) d _ \"?\"))"));
+    // Cases with no widest one may leave a value fitting none.
+    let src = "(claim x : (t/x integer)) (claim y : (t/y integer)) (claim z : (t/z integer))
+               (claim a : {x y}) (claim b : {x z}) (claim v : [a b])";
+    let e = error(&format!("{src} (define (f q) (match q (a x: n) n (b x: n) n))"));
+    assert!(e.contains("a value may fit no case of `v`"), "{e}");
+    let cb =
+        check(&format!("{src} (define (f q) (match q (a x: n) n (b x: n) (+ n 100) _ 0)) (define r (f (b 1 z: 2)))"));
+    assert_eq!(cb.type_of("r").unwrap(), "Int");
+}

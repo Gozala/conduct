@@ -737,6 +737,11 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
         return Ok(Expr::Perform(Box::new(Expr::App(Box::new(callee), arguments(args)?, span))));
     }
     let callee = expr(head)?;
+    // A call with no arguments is the value itself: no function takes
+    // none.
+    if args.is_empty() {
+        return Ok(callee);
+    }
     Ok(Expr::App(Box::new(callee), arguments(args)?, span))
 }
 
@@ -757,12 +762,18 @@ fn perform(args: &[Sexp], span: Span) -> Result<Expr> {
                 if !ops.len().is_multiple_of(2) {
                     return err("a capability's implementation is `{operation: function ..}`", *ospan);
                 }
-                let mut impls = Vec::new();
+                let mut impls: Vec<(String, Expr)> = Vec::new();
                 for op in ops.chunks(2) {
-                    let Sexp::Label(name, _) = &op[0] else {
+                    let Sexp::Label(name, lspan) = &op[0] else {
                         return err("a capability's implementation is `{operation: function ..}`", *ospan);
                     };
+                    if impls.iter().any(|(n, _)| n == name) {
+                        return err(format!("the operation `{name}:` appears twice"), *lspan);
+                    }
                     impls.push((name.clone(), expr(&op[1])?));
+                }
+                if provided.iter().any(|(c, _)| c == cap) {
+                    return err(format!("the capability `{cap}:` appears twice"), *mspan);
                 }
                 provided.push((cap.clone(), impls));
             }

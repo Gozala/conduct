@@ -584,12 +584,15 @@ impl<'a> Builder<'a> {
                     out,
                     " (local.set {implementation} (call $env_find (i64.const {}) (i64.const {})))\
                      (local.set {result} (if (result i64) (i64.eqz (local.get {implementation}))\
-                     (then (call {import} {})) (else (call $apply{}_take (local.get {implementation}) {}))))",
+                     (then (call {import} {})) (else {})))",
                     field_id(&cap),
                     field_id(name),
                     gets.join(" "),
-                    args.len(),
-                    dups.join(" ")
+                    if args.is_empty() {
+                        format!("(local.get {implementation})")
+                    } else {
+                        format!("(call $apply{}_take (local.get {implementation}) {})", args.len(), dups.join(" "))
+                    }
                 );
                 for t in &temps {
                     let _ = write!(out, " (call $drop (local.get {t}))");
@@ -674,23 +677,9 @@ impl<'a> Builder<'a> {
             // A task that performs another with an environment on top.
             Term::Handle(task, provided) => {
                 // An operation of no parameters is implemented by its
-                // answer, which the host's call performs as a task.
-                let nullary = |op: &str| self.cb.lookup(op).is_some_and(|d| !matches!(d.term, Term::Fn(..)));
-                let record = Term::Record(
-                    provided
-                        .iter()
-                        .map(|(cap, ops)| {
-                            let ops = ops
-                                .iter()
-                                .map(|(op, i)| {
-                                    let i = if nullary(op) { Term::Task(Box::new(i.clone())) } else { i.clone() };
-                                    (op.clone(), i)
-                                })
-                                .collect();
-                            (cap.clone(), Term::Record(ops))
-                        })
-                        .collect(),
-                );
+                // answer, which a host call answers in its place.
+                let record =
+                    Term::Record(provided.iter().map(|(cap, ops)| (cap.clone(), Term::Record(ops.clone()))).collect());
                 let body = Term::Prim(Op::WithEnv, vec![record, (**task).clone()]);
                 self.lambda(0, &body, env, frame, cycle, live)?
             }

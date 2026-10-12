@@ -235,3 +235,29 @@ fn host_functions_take_optional_attributes() {
     let e = cb.add_source("(define (e! t) (rename! {title: t}))").unwrap_err().to_string();
     assert!(e.contains("has no attribute `t/id`"), "{e}");
 }
+
+#[test]
+fn implementations_are_pure_and_given_once() {
+    let src = "(define (stamp! msg) (let [t (now!)] (log! (str t \": \" msg))))";
+    // An implementation that performs would run in the environment it
+    // belongs to.
+    let e = error(&format!("{src} (define (main! n) (perform! (stamp \"x\") with: {{clock: {{now: (now!)}}}}) n)"));
+    assert!(e.contains("only a task's body may"), "{e}");
+    let e =
+        error(&format!("{src} (define (f msg) (perform (stamp msg) with: {{clock: {{now: 1}}, clock: {{now: 2}}}}))"));
+    assert!(e.contains("the capability `clock:` appears twice"), "{e}");
+    let e = error(&format!("{src} (define (f msg) (perform (stamp msg) with: {{clock: {{now: 1, now: 2}}}}))"));
+    assert!(e.contains("the operation `now:` appears twice"), "{e}");
+    // An operation's implementation follows the host function, whatever
+    // else is later named like it.
+    let mut cb = host();
+    cb.add_source(src).unwrap();
+    cb.add_source("(define (now x) x)").unwrap();
+    cb.add_source("(define (main! n) (perform! (stamp \"x\") with: {clock: {now: 7}}) n)").unwrap();
+}
+
+#[test]
+fn a_call_with_no_arguments_is_the_value() {
+    assert_eq!(ty("(define r (now))", "r"), "(task Int with: {clock})");
+    assert_eq!(ty("(define (f x) x) (define g (f))", "g"), "(a) -> a");
+}

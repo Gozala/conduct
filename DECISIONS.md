@@ -43,6 +43,29 @@ it. Newest first.
   record operations treat as a record with no fields.
 - **Host functions are named without `!`,** and `add_host` refuses a
   name with one: a call performs them with it, as any task.
+- **An independent review found, and these fix:**
+  - `assoc` with an attribute never required a record, so `(assoc 1
+    name: "x")` type checked and corrupted memory. Its input must now
+    fit `{}`; this bug predates tasks.
+  - An implementation was checked inside the task's body, so it could
+    perform, and recursed forever into its own environment. It is now
+    checked as pure, and an operation of no parameters is given its
+    answer once, not a task re-run at each call. Which operations take
+    none came from looking a name up at compile time, which broke when
+    the name was later rebound; it now comes from the call.
+  - `{}` from the host (an empty record) and from source (an empty
+    dictionary) were unequal, and the record encoded as `null`. Empty
+    records and dictionaries now compare equal and encode as `{}`.
+  - A ranked match without `_` was sound but could reject values its
+    own constructors built. It must now name every case, and the last
+    case must be in every other; otherwise it needs `_`.
+  - A capability or operation given twice in an environment is an
+    error, as an attribute given twice is.
+- **A call with no arguments is the value itself,** as the note says:
+  `(now)` is `now`. No function takes none, so nothing is lost.
+- **A record type is a value** when it has no optional attributes: its
+  constructor, `(map xs each: ok)`. With optional ones, different calls
+  pass different labels, which a function value cannot.
 
 ## Claims
 
