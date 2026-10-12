@@ -5,9 +5,9 @@
 ;; {"title": string}. PATCH sets every todo's completion from
 ;; {"completed": bool}. DELETE removes every completed todo.
 ;;
-;; `handle!` calls the model directly; its name ends with `!` because
-;; it uses the `model` capability, and the route contract allows no
-;; other.
+;; `handle` is defined marked `!`: it makes a task, which the platform
+;; performs. Its task calls the model, and the route contract lets it
+;; need the `model` capability and no other.
 
 (define pattern "/api/todos")
 
@@ -15,7 +15,7 @@
   {"id" (id todo) "title" (title todo) "completed" (completed todo)})
 
 (define (filter-of request)
-  (match (get (query request) "filter" "all")
+  (match (get (search request) "filter" "all")
     "active" :active
     "completed" :completed
     _ :all))

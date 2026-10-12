@@ -48,6 +48,12 @@ pub enum Expr {
     /// be able to cover every value (see [`Pattern::cover`]). Record
     /// patterns' keys are as written, resolved with the expression.
     Match(Box<Expr>, Vec<(Pat, Expr)>, Option<Box<Expr>>, Span),
+    /// Work not done yet: the body of a definition or `fn!` marked `!`.
+    Task(Box<Expr>),
+    /// `(name! ..)`: perform the task the call answers.
+    Perform(Box<Expr>),
+    /// `(perform task with: {capability: {operation: implementation}})`.
+    Handle(Box<Expr>, Vec<(String, Vec<(String, Expr)>)>),
 }
 
 /// A pattern as written. Record keys and constructors are resolved
@@ -184,6 +190,9 @@ impl fmt::Display for TypeExpr {
 #[derive(Clone, Debug)]
 pub struct Claim {
     pub name: String,
+    /// Whether the name is claimed marked `!`: a definition that makes a
+    /// task.
+    pub performs: bool,
     /// The parameters, when the claim is written `(name params ..)`.
     pub params: Option<Vec<(Option<String>, TypeExpr)>>,
     pub with: Option<TypeExpr>,
@@ -273,20 +282,41 @@ fn item(form: &Sexp) -> Result<Item> {
     }
 }
 
+/// A name as a definition's head or a claim writes it: `show!` marks a
+/// definition that makes a task, and names `show`.
+fn marked(form: &Sexp) -> Result<(String, bool)> {
+    match form {
+        Sexp::Symbol(name, span) if name.len() > 1 && name.ends_with('!') => {
+            let bare = &name[..name.len() - 1];
+            binder(&Sexp::Symbol(bare.to_string(), *span)).map(|n| (n, true))
+        }
+        other => binder(other).map(|n| (n, false)),
+    }
+}
+
 fn define(args: &[Sexp], span: Span) -> Result<Def> {
     match args {
+        [Sexp::Symbol(name, nspan), ..] if name.ends_with('!') => {
+            err(format!("`{name}` is a task, so its body is a task's: `(define ({name}) body)`"), *nspan)
+        }
         [Sexp::Symbol(..), value] => Ok(Def { name: binder(&args[0])?, body: expr(value)?, span }),
         [Sexp::Symbol(..), ..] => err("`(define name value)` takes one value", span),
         [Sexp::List(head, hspan), body @ ..] => {
             let Some((name, params)) = head.split_first() else {
                 return err("`(define (name params ..) body)` needs a name", *hspan);
             };
-            let name = binder(name)?;
+            let (name, performs) = marked(name)?;
+            let body = sequence(body, span)?;
+            let body = if performs { Expr::Task(Box::new(body)) } else { body };
             if params.is_empty() {
+                // A task needs nothing to be made: it is the value.
+                if performs {
+                    return Ok(Def { name, body, span });
+                }
                 return err(format!("`{name}` takes no parameters, so it is a value: `(define {name} value)`"), *hspan);
             }
             let params = parameters(params, *hspan)?;
-            Ok(Def { name, body: Expr::Fn(params, Box::new(sequence(body, span)?)), span })
+            Ok(Def { name, body: Expr::Fn(params, Box::new(body)), span })
         }
         _ => err("`define` takes a name and a value, or `(name params ..)` and a body", span),
     }
@@ -330,13 +360,14 @@ fn claim(args: &[Sexp], span: Span) -> Result<Item> {
     let Some((head, rest)) = args.split_first() else {
         return err(FORM, span);
     };
-    let (name, params) = match head {
-        Sexp::Symbol(..) => (binder(head)?, None),
+    let ((name, performs), params) = match head {
+        Sexp::Symbol(..) => (marked(head)?, None),
         Sexp::List(items, hspan) => {
             let Some((name, params)) = items.split_first() else {
                 return err(FORM, *hspan);
             };
-            (binder(name)?, Some(type_args(params, *hspan)?))
+            let params = if params.is_empty() { None } else { Some(type_args(params, *hspan)?) };
+            (marked(name)?, params)
         }
         other => return err(FORM, other.span()),
     };
@@ -350,7 +381,10 @@ fn claim(args: &[Sexp], span: Span) -> Result<Item> {
     if !colon.is_empty() {
         return err(format!("{FORM}, with `:` before the type"), span);
     }
-    Ok(Item::Claim(Claim { name, params, with, ty: type_expr(ty)?, span }))
+    if with.is_some() && !performs {
+        return err(format!("only a task needs capabilities: claim `{name}!` with them"), span);
+    }
+    Ok(Item::Claim(Claim { name, performs, params, with, ty: type_expr(ty)?, span }))
 }
 
 /// `?a error: ?e`: types, each but the first after its label.
@@ -463,6 +497,12 @@ fn binder(form: &Sexp) -> Result<String> {
             if RESERVED.contains(&name.as_str()) {
                 return err(format!("`{name}` is reserved and cannot be bound"), *span);
             }
+            if name.len() > 1 && name.ends_with('!') {
+                return err(
+                    format!("`!` marks a call that performs, not a name: call it `{}`", &name[..name.len() - 1]),
+                    *span,
+                );
+            }
             Ok(name.clone())
         }
         other => err(format!("expected a name, found `{other}`"), other.span()),
@@ -493,6 +533,13 @@ pub fn expr(form: &Sexp) -> Result<Expr> {
             n if retired(n).is_some() => return err(retired(n).unwrap(), *span),
             "true" => Expr::Bool(true),
             "false" => Expr::Bool(false),
+            n if n.len() > 1 && n.ends_with('!') => {
+                let bare = &n[..n.len() - 1];
+                return err(
+                    format!("`!` performs, so it goes where a call does, `({n} ..)`; as a value this is `{bare}`"),
+                    *span,
+                );
+            }
             _ => Expr::Var(name.clone(), *span),
         }),
         Sexp::Keyword(k, _) => Ok(Expr::Keyword(k.clone())),
@@ -594,14 +641,26 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
         match name {
             n if retired(n).is_some() => return err(retired(n).unwrap(), span),
             "define" | "claim" => return err(format!("`{name}` is only allowed at the top level"), span),
-            "fn" => {
+            "fn" | "fn!" => {
                 let [Sexp::Vector(params, pspan), body @ ..] = args else {
-                    return err("`fn` takes a parameter vector and a body", span);
+                    return err(format!("`{name}` takes a parameter vector and a body"), span);
                 };
+                let body = sequence(body, span)?;
+                if name == "fn!" {
+                    let task = Expr::Task(Box::new(body));
+                    if params.is_empty() {
+                        return Ok(task);
+                    }
+                    return Ok(Expr::Fn(parameters(params, *pspan)?, Box::new(task)));
+                }
                 if params.is_empty() {
                     return err("a function takes at least one parameter", *pspan);
                 }
-                return Ok(Expr::Fn(parameters(params, *pspan)?, Box::new(sequence(body, span)?)));
+                return Ok(Expr::Fn(parameters(params, *pspan)?, Box::new(body)));
+            }
+            "perform" | "perform!" => {
+                let out = perform(args, span)?;
+                return Ok(if name == "perform!" { Expr::Perform(Box::new(out)) } else { out });
             }
             "do" => return sequence(args, span),
             "let" => {
@@ -665,8 +724,63 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
             return Ok(Expr::Update(boxed(record)?, labeled(&args[1..], span)?, span));
         }
     }
+    // `(show! x)` performs what `(show x)` answers, and `(t!)`, with no
+    // arguments, performs `t` itself.
+    if let Sexp::Symbol(name, nspan) = head
+        && name.len() > 1
+        && name.ends_with('!')
+    {
+        let callee = Expr::Var(name[..name.len() - 1].to_string(), *nspan);
+        if args.is_empty() {
+            return Ok(Expr::Perform(Box::new(callee)));
+        }
+        return Ok(Expr::Perform(Box::new(Expr::App(Box::new(callee), arguments(args)?, span))));
+    }
     let callee = expr(head)?;
+    // A call with no arguments is the value itself: no function takes
+    // none.
+    if args.is_empty() {
+        return Ok(callee);
+    }
     Ok(Expr::App(Box::new(callee), arguments(args)?, span))
+}
+
+/// `(perform task)` is the task; `(perform task with: env)` is a task
+/// that performs it with the environment's implementations.
+fn perform(args: &[Sexp], span: Span) -> Result<Expr> {
+    match args {
+        [task] => expr(task),
+        [task, Sexp::Label(l, _), Sexp::Map(caps, mspan)] if l == "with" => {
+            let mut provided: Vec<(String, Vec<(String, Expr)>)> = Vec::new();
+            if !caps.len().is_multiple_of(2) {
+                return err("an environment is `{capability: {operation: implementation ..} ..}`", *mspan);
+            }
+            for pair in caps.chunks(2) {
+                let (Sexp::Label(cap, _), Sexp::Map(ops, ospan)) = (&pair[0], &pair[1]) else {
+                    return err("an environment is `{capability: {operation: implementation ..} ..}`", *mspan);
+                };
+                if !ops.len().is_multiple_of(2) {
+                    return err("a capability's implementation is `{operation: function ..}`", *ospan);
+                }
+                let mut impls: Vec<(String, Expr)> = Vec::new();
+                for op in ops.chunks(2) {
+                    let Sexp::Label(name, lspan) = &op[0] else {
+                        return err("a capability's implementation is `{operation: function ..}`", *ospan);
+                    };
+                    if impls.iter().any(|(n, _)| n == name) {
+                        return err(format!("the operation `{name}:` appears twice"), *lspan);
+                    }
+                    impls.push((name.clone(), expr(&op[1])?));
+                }
+                if provided.iter().any(|(c, _)| c == cap) {
+                    return err(format!("the capability `{cap}:` appears twice"), *mspan);
+                }
+                provided.push((cap.clone(), impls));
+            }
+            Ok(Expr::Handle(Box::new(expr(task)?), provided))
+        }
+        _ => err("`perform` takes a task, and maybe `with:` an environment", span),
+    }
 }
 
 fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {

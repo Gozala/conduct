@@ -39,7 +39,7 @@
 
 use crate::codebase::Codebase;
 use crate::term::{Hash, Op, Pattern, Term};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 /// The value no conduct code can write or name: the slot of an absent
@@ -186,6 +186,13 @@ pub struct Builder<'a> {
     /// Host functions the module defines itself, by name: their glue
     /// calls the component's imports.
     provided: HashMap<String, String>,
+    /// Definitions marked `!` whose performing entry is compiled or
+    /// queued: called directly when a task is performed where it is
+    /// made, so the common case allocates no task.
+    runs: HashSet<Hash>,
+    run_queue: Vec<Hash>,
+    /// The capability each host function needs, by its name.
+    capabilities: HashMap<String, String>,
 }
 
 impl<'a> Builder<'a> {
@@ -205,6 +212,13 @@ impl<'a> Builder<'a> {
             exports: vec![],
             rtdata: 0,
             provided: HashMap::new(),
+            runs: HashSet::new(),
+            run_queue: vec![],
+            capabilities: cb
+                .hosts
+                .iter()
+                .flat_map(|(cap, fs)| fs.keys().map(move |f| (f.clone(), cap.clone())))
+                .collect(),
         };
         b.rtdata = b.static_bytes(RUNTIME_DATA.to_vec());
         b
@@ -364,8 +378,55 @@ impl<'a> Builder<'a> {
         Ok(format!("(call $apply{}_take {f} {})", args.len(), args.join(" ")))
     }
 
+    /// The body of a task a definition makes, if it is marked `!`: the
+    /// definition's term is a task, or a function answering one.
+    fn task_body(&self, hash: &Hash) -> Option<(u32, Term)> {
+        match &self.cb.defs.get(hash)?.term {
+            Term::Task(body) => Some((0, (**body).clone())),
+            Term::Fn(labels, body) => match &**body {
+                Term::Task(inner) => Some((labels.len() as u32, (**inner).clone())),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn run_name(hash: &Hash) -> String {
+        format!("$r_{}", &hash.hex()[..16])
+    }
+
+    /// A WAT expression performing what a definition marked `!` makes,
+    /// given its argument expressions (which it consumes): the task's
+    /// body, run directly, with no task made.
+    pub fn perform(&mut self, hash: Hash, args: &[String]) -> Result<String> {
+        let Some((arity, _)) = self.task_body(&hash) else {
+            return Err(CodegenError(format!("{} is not marked `!`", hash.short())));
+        };
+        if arity as usize != args.len() {
+            return Err(CodegenError(format!("{} takes {arity} argument(s)", hash.short())));
+        }
+        if self.runs.insert(hash) {
+            self.run_queue.push(hash);
+        }
+        Ok(format!("(call {} {})", Self::run_name(&hash), args.join(" ")))
+    }
+
     fn compile_queued(&mut self) -> Result<()> {
-        while let Some(hash) = self.queue.pop() {
+        loop {
+            if let Some(hash) = self.run_queue.pop() {
+                let (arity, body) = self.task_body(&hash).expect("queued as a task");
+                let cycle = self.cb.defs[&hash].cycle.clone();
+                let env: Vec<Slot> = (0..arity).map(|i| Slot::Local(format!("$p{i}"))).collect();
+                let (body, frame) = self.function_body(&body, env, &cycle)?;
+                let params: String = (0..arity).map(|i| format!(" (param $p{i} i64)")).collect();
+                self.funcs.push(format!(
+                    "  (func {}{params} (result i64){}\n    {body})",
+                    Self::run_name(&hash),
+                    locals(&frame)
+                ));
+                continue;
+            }
+            let Some(hash) = self.queue.pop() else { break };
             let def = &self.cb.defs[&hash];
             let term = def.term.clone();
             let cycle = def.cycle.clone();
@@ -508,12 +569,31 @@ impl<'a> Builder<'a> {
                 let import = self.host_import(name, args.len());
                 let temps: Vec<String> = values.iter().map(|_| frame.local()).collect();
                 let result = frame.local();
+                let implementation = frame.local();
                 let mut out = String::from("(block (result i64)");
                 for (t, v) in temps.iter().zip(values) {
                     let _ = write!(out, " (local.set {t} {v})");
                 }
                 let gets: Vec<String> = temps.iter().map(|t| format!("(local.get {t})")).collect();
-                let _ = write!(out, " (local.set {result} (call {import} {}))", gets.join(" "));
+                // An environment that provides the capability answers in
+                // the host's place.
+                let cap = self.capabilities.get(name).cloned().unwrap_or_default();
+                let dups: Vec<String> = temps.iter().map(|t| format!("(call $dup (local.get {t}))")).collect();
+                self.max_arity = self.max_arity.max(args.len());
+                let _ = write!(
+                    out,
+                    " (local.set {implementation} (call $env_find (i64.const {}) (i64.const {})))\
+                     (local.set {result} (if (result i64) (i64.eqz (local.get {implementation}))\
+                     (then (call {import} {})) (else {})))",
+                    field_id(&cap),
+                    field_id(name),
+                    gets.join(" "),
+                    if args.is_empty() {
+                        format!("(local.get {implementation})")
+                    } else {
+                        format!("(call $apply{}_take (local.get {implementation}) {})", args.len(), dups.join(" "))
+                    }
+                );
                 for t in &temps {
                     let _ = write!(out, " (call $drop (local.get {t}))");
                 }
@@ -564,6 +644,45 @@ impl<'a> Builder<'a> {
             Term::Ref(h) => self.value_of(*h)?,
             Term::CycleRef(i) => self.value_of(cycle[*i as usize])?,
             Term::Fn(labels, body) => self.lambda(labels.len() as u32, body, env, frame, cycle, live)?,
+            // A task is a closure of no parameters; performing it calls it.
+            Term::Task(body) => self.lambda(0, body, env, frame, cycle, live)?,
+            Term::Perform(task) => {
+                let direct = |t: &Term| match t {
+                    Term::Ref(h) => Some(*h),
+                    Term::CycleRef(i) => Some(cycle[*i as usize]),
+                    _ => None,
+                };
+                match &**task {
+                    // Performing what a definition marked `!` makes, where
+                    // it is made: run its body, with no task in between.
+                    Term::App(callee, args, _)
+                        if direct(callee).is_some_and(|h| {
+                            self.task_body(&h).is_some_and(|(arity, _)| arity as usize == args.len())
+                        }) =>
+                    {
+                        let h = direct(callee).unwrap();
+                        let refs: Vec<&Term> = args.iter().collect();
+                        let args = self.sequence(&refs, env, frame, cycle, live)?;
+                        self.perform(h, &args)?
+                    }
+                    t if direct(t).is_some_and(|h| self.task_body(&h).is_some_and(|(arity, _)| arity == 0)) => {
+                        self.perform(direct(t).unwrap(), &[])?
+                    }
+                    other => {
+                        let t = self.expr(other, env, frame, cycle, live)?;
+                        format!("(call $apply0_take {t})")
+                    }
+                }
+            }
+            // A task that performs another with an environment on top.
+            Term::Handle(task, provided) => {
+                // An operation of no parameters is implemented by its
+                // answer, which a host call answers in its place.
+                let record =
+                    Term::Record(provided.iter().map(|(cap, ops)| (cap.clone(), Term::Record(ops.clone()))).collect());
+                let body = Term::Prim(Op::WithEnv, vec![record, (**task).clone()]);
+                self.lambda(0, &body, env, frame, cycle, live)?
+            }
             Term::App(callee, args, _) => {
                 let direct = match &**callee {
                     Term::Ref(h) => Some(*h),
@@ -902,6 +1021,7 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::JsonBool => format!("(call $json_bool {})", a[0]),
         Op::JsonType => format!("(call $json_type {})", a[0]),
         Op::HasField => unreachable!("a field test is compiled where it is met"),
+        Op::WithEnv => format!("(call $with_env {} {})", a[0], a[1]),
     }
 }
 
@@ -938,6 +1058,11 @@ fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
         Term::Record(fs) | Term::Dict(fs) => fs.iter().for_each(|(_, t)| free_locals(t, binders, out)),
         Term::List(items) | Term::Prim(_, items) => items.iter().for_each(|t| free_locals(t, binders, out)),
         Term::Host(_, args) => args.iter().for_each(|t| free_locals(t, binders, out)),
+        Term::Task(t) | Term::Perform(t) => free_locals(t, binders, out),
+        Term::Handle(t, caps) => {
+            free_locals(t, binders, out);
+            caps.iter().flat_map(|(_, ops)| ops).for_each(|(_, i)| free_locals(i, binders, out));
+        }
         Term::Match(scrutinee, clauses, default) => {
             free_locals(scrutinee, binders, out);
             clauses.iter().for_each(|(p, r)| free_locals(r, binders + p.binders().len() as u32, out));
@@ -1000,6 +1125,14 @@ fn shift(term: &Term, by: u32, cutoff: u32) -> Term {
         Term::List(items) => Term::List(all(items)),
         Term::Prim(op, args) => Term::Prim(*op, all(args)),
         Term::Host(name, args) => Term::Host(name.clone(), all(args)),
+        Term::Task(t) => Term::Task(s(t)),
+        Term::Perform(t) => Term::Perform(s(t)),
+        Term::Handle(t, caps) => Term::Handle(
+            s(t),
+            caps.iter()
+                .map(|(c, ops)| (c.clone(), ops.iter().map(|(o, i)| (o.clone(), shift(i, by, cutoff))).collect()))
+                .collect(),
+        ),
         Term::Match(x, clauses, default) => Term::Match(
             s(x),
             clauses.iter().map(|(p, r)| (p.clone(), shift(r, by, cutoff + p.binders().len() as u32))).collect(),
@@ -1040,6 +1173,12 @@ pub fn compile_exports(cb: &Codebase, exports: &[(&str, Hash)]) -> Result<String
             _ => b.add_export(format!("(export \"{name}\" (func {def_name}))")),
         }
     }
+    finish_exports(b)
+}
+
+/// Finish a module, exporting what tests read: the live block count,
+/// the allocation count, and a way to drop a value.
+pub fn finish_exports(mut b: Builder) -> Result<String> {
     b.add_func("  (func (export \"conduct_live\") (result i32) (global.get $live))");
     b.add_func("  (func (export \"conduct_allocs\") (result i32) (global.get $allocs))");
     b.add_func("  (func (export \"conduct_drop\") (param $v i64) (call $drop (local.get $v)))");

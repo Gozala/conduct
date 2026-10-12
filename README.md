@@ -5,13 +5,17 @@ database: query functions, views, and routes, stored by hash and
 compiled to WebAssembly components.
 
 - **Lisp syntax.** A small Clojure-like reader. Syntax is not the point.
+- **Calls are pure; effects are tasks.** A definition marked `!` makes
+  a task, `!` at a call performs it, and a task's capabilities are
+  inferred.
 - **Hash-addressed definitions.** A definition's identity is the hash of
   its name-free term, as in Unison. Renaming a definition or its locals
   keeps its hash; mutually recursive definitions are hashed as a cycle.
   A definition is type checked once, ever.
 - **Data declared, code inferred, with a lattice of types.** Attributes
   are claimed: a global name, a local one, and the type of its values.
-  Everything else is inferred, with no annotations. Types have unions
+  Everything else is inferred; a signature is optional, and checked when
+  given. Types have unions
   and intersections (Simple-sub's algebraic subtyping), records are
   structural, and unions of variants grow through inference, as in Roc.
   There is no `nil`: what may be missing is an attribute, and failure is
@@ -46,7 +50,7 @@ Both of the demo's routes are written in conduct too:
 [`/api/todos`](examples/todos-route.cdt) and
 [`/api/todos/:id`](examples/todo-route.cdt). Each compiles to a component
 of the demo's `route-component` world: it exports `wasi:http/handler`
-and calls the demo's `demo:todo/model` directly, with Roc-style effects.
+and calls the demo's `demo:todo/model` directly, from a task.
 One test serves them on Wasmtime's own `wasi:http` handler, with a model
 whose `async` functions suspend before they answer. Another runs the
 whole demo in conduct on the polyfill: `<todo-app>`'s requests go to the
@@ -65,10 +69,10 @@ $ cargo run -- check examples/todo-item.cdt
 #30c7ccb2ae view : ({editing: Bool}, attrs: Dict[String]) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (24678 bytes)
+wrote todo-item.wasm (24967 bytes)
 
 $ cargo run -- route examples/todos-route.cdt -o todos.wasm
-wrote todos.wasm (29915 bytes)
+wrote todos.wasm (30018 bytes)
 ```
 
 Every type above is inferred; `editing` is the attribute the element
@@ -191,7 +195,10 @@ other claim **defines a type**:
 - `(claim person : {name age ? phone})` is a record type: attributes,
   by local name or written in place, `{(io.gozala.person/name text)}`,
   those after `?` optional. It is open: a value with more attributes is
-  still a `person`. It is also a constructor, `(person "Ada" age: 36)`,
+  still a `person`. A record type of one required attribute is a
+  variant instead, told apart by its key, so `(ok 1)` is not an `error`
+  and a record with more is not an `ok`. It is also a constructor,
+  `(person "Ada" age: 36)`,
   whose first attribute is the default label, and a pattern,
   `(person who age: n)`, which binds by label.
 - `(claim (ok ?a) : {(conduct.result/ok ?a)})` is a type constructor:
@@ -235,7 +242,9 @@ case it fits:
 A job with both `started-at` and `completed-at` is `done`. A wider case
 ranked above a narrower one, `[idle done pending]`, is an error, since
 the narrower could never be chosen; and a `match` over cases that
-overlap, with no variant ranking them, does not compile. Records of one
+overlap, with no variant ranking them, does not compile. Without `_`, a
+`match` must name every case, and the last case must be in every other
+(as `idle` is in `pending` and `done`), or a value could fit none. Records of one
 attribute (`ok`, `error`) are disjoint by their key, and need no rank.
 
 JSON is one type, `Json`, read with accessors that answer a neutral value
@@ -245,9 +254,13 @@ says which shape it has. JSON's `null`, a missing key, and malformed
 text are all a `Json` whose type is `"null"`; no other value can be
 null.
 
-Built-ins are applied in full; they are not yet values. A local or a
-definition with a built-in's name shadows it, so a parameter can be
-called `filter`.
+Built-ins are applied in full; they are not yet values. A record type
+is a value, its constructor, when it has no optional attributes:
+`(map xs each: ok)`. A call with no arguments is the value itself, since
+no function takes none: `(f)` is `f`. A local or a definition with a
+built-in's name shadows it, so a parameter can be called `filter`.
+`to-json` encodes a dictionary; a record with attributes is `null`, since
+it holds their ids, not their names.
 
 A record update keeps whatever else the record holds:
 `(define (bump m) (assoc m n: (+ (n m) 1)))` infers
@@ -342,47 +355,63 @@ Racket's occurrence typing, inferred without annotations.
 Equality and `str` work on any value, so there is no type class
 machinery: `=` takes `(Any, Any)`.
 
-### Effects
+### Effects: tasks
 
-As in Roc, effects run directly and purity is inferred: a function that
-calls one using a capability uses it too, and its type says which, with
-`=>` in place of `->`. Only the host provides functions that use
-capabilities, so the capabilities in a function's type are exactly what
-it can reach outside itself.
+Calls are pure. A definition marked `!` makes a **task**, a value
+describing work that needs capabilities, and `!` after a name at a call
+performs it:
 
 ```clojure
 (define (stamp! msg) (let [t (now!)] (log! (str t ": " msg))))
-; stamp! : (Any) => {} ! {clock, log}
+; stamp : (Any) -> (task {} with: {clock, log})
 
-(define (all! xs) (map xs each: (fn [x] (log! x))))   ; map lends its function's effect
-; all! : (List[String]) => List[{}] ! {log}
-
-(define (apply f x) (f x))                            ; effect-polymorphic
-; apply : ((a) => b ! c, x: a) => b ! c
+(stamp "hi")                          ; a task: nothing happens
+(stamp! "hi")                         ; performs it, inside a task's body
+(define (later!) (log! "later"))      ; no parameters: `later` is the task
+(define (run! t) (t!))                ; `(t!)` performs a task held in a value
+(map xs each: log)                    ; pure: a list of tasks
+(map xs each: (fn! [x] (log! x)))     ; `fn!` makes a function answering a task
 ```
 
-- A name ends with `!` exactly when what it names uses a capability; a
-  function whose effect is its argument's, like `apply`, may be named
-  either way.
-- A top-level value is pure: nothing may happen when it is computed.
-- An element's `update` and `view` are pure, since the naming rule keeps
-  an effectful one from being called `update`; elements keep returning
-  effects as data.
-- Capabilities form a lattice by inclusion, like keyword sets, so they
-  need no new machinery in the solver.
+- `(f! x)` calls `f` and performs the task it answers. Only a task's
+  body may perform: a definition or `fn!` marked `!`. A function's body
+  is pure, even inside a task, and so is a top-level value.
+- `!` is never part of a name: `stamp` and `stamp!` are one definition,
+  `!` marks only its head and its calls, and as a value it is `stamp`.
+- A task's capabilities are inferred: the union of what its body
+  performs. Since tasks are values, nothing needs effect polymorphism:
+  `map` over a function that answers tasks gives a list of tasks.
+- An element's `update` and `view` stay pure: they return effects as
+  data, which the glue performs.
 
 A host function is declared with its capability and type
-(`Codebase::add_host`) and compiled to a core import from
-`conduct:host`, unless the module provides it itself, as a route does
-for the model's functions.
+(`Codebase::add_host`): it answers a task, or is one when it takes no
+parameters, and performing it calls a core import from `conduct:host`,
+unless the module provides it itself, as a route does for the model's
+functions.
+
+**Environments.** `(perform t with: {clock: {now: 7}, log: {log: (fn
+[line] {})}})` is a task that performs `t` with those implementations in
+the host's place: it needs `t`'s capabilities less the ones provided. An
+implementation answers what performing the operation would (an
+operation of no parameters by its answer), so a test can run a task
+with no host at all. Implementations are pure for now.
+
+**Compiled code.** A task is a closure of no parameters. Performing a
+definition's task where it is made, `(stamp! "hi")`, calls a performing
+entry compiled for the definition, which runs its body directly, so the
+common case makes no task at all. A host call first looks for an
+implementation in the environments `perform ... with:` pushed, then
+calls the import.
 
 ### Hashing
 
 `codebase` resolves locals to de Bruijn indices and other definitions to
 their hashes, then hashes the canonical encoding of the term with BLAKE3.
-The type is not part of the hash: with full inference, a definition's
-type follows from its term and the types of what it refers to, so it is
-stored as derived data. Mutually recursive definitions are found as
+The type is not part of the hash, except a signature: with inference, a
+definition's type follows from its term and the types of what it refers
+to, so it is stored as derived data, but a signature is what callers
+see, so it is part of what the definition is. Mutually recursive definitions are found as
 strongly connected components and hashed as one cycle, with members
 ordered by their name-free encoding.
 
@@ -488,32 +517,33 @@ ask for a request.
 
 ## Routes
 
-A route is one function with effects, and the path it serves:
+A route is one definition marked `!`, whose task the platform performs,
+and the path it serves:
 
 ```text
-pattern : String                    such as "/api/todos/:id"
-handle! : (Request) => Response ! {model}
+pattern : String        such as "/api/todos/:id"
+handle  : (request) -> (task response with: {model})
 
-Request  = {method: String, path: String, params: Dict[String],
-            query: Dict[String], headers: Dict[String], body: String}
-Response = {status: Int, headers: Dict[String], body: String}
+request  = {method path params search headers body}
+response = {code headers body}
 ```
 
-`params` holds what the pattern's `:name` segments matched, and `query`
+`params` holds what the pattern's `:name` segments matched, and `search`
 the decoded query string, as the demo's authoring library gives a Zena
 route. A route's codebase starts with the model's functions and a
-[prelude](src/route.cdt) of `json`, `status` and `problem`, the helpers
-the Zena routes import. Unlike an element's `update`, `handle!` does its
-work itself: it calls the model and waits for it.
+[prelude](src/route.cdt) that claims the attributes above and defines
+`json`, `status` and `problem`, the helpers the Zena routes import.
+Unlike an element's `update`, `handle`'s task does its work itself: it
+calls the model and waits for it.
 
 ```text
-query!           : (:all | :active | :completed) => {todos: List[Todo], counts: {active-count: Int, completed-count: Int}}
-add!             : (String) => {ok: Todo} | {error: :empty-title | :not-found}
-update!          : ({id: String, title?: String, completed?: Bool}) => {ok: Todo} | {error: ...}
-remove!          : (String) => :ok | {error: :empty-title | :not-found}
-toggle-all!      : (Bool) => {}
-clear-completed! : () => {}
-                   each ! {model}
+query           : (:all | :active | :completed) -> (task {todos: List[Todo], counts: {active-count: Int, completed-count: Int}})
+add             : (String) -> (task (ok Todo) | (error (:empty-title | :not-found)))
+update          : ({id: String, title?: String, completed?: Bool}) -> (task (ok Todo) | (error ..))
+remove          : (String) -> (task :ok | (error (:empty-title | :not-found)))
+toggle-all      : (Bool) -> (task {})
+clear-completed : (task {})
+                  each with: {model}
 ```
 
 A model `result` is a union of variants, `(ok v)` or `(error e)`, and
@@ -521,26 +551,26 @@ A model `result` is a union of variants, `(ok v)` or `(error e)`, and
 enum are keywords, so a misspelled filter is a type error. An `option`
 argument is an attribute that may be left out: a WIT function with
 `option` parameters takes one record of its named parameters, as
-`update!` does. An `option` result on its own, which says nothing of
+`update` does. An `option` result on its own, which says nothing of
 why, would be `{some: v} | :none`; the demo's model has none.
 
 The glue exports `wasi:http/handler#handle`, lifted with the async
-ABI's callback form. It reads the request and its body, runs `handle!`,
+ABI's callback form. It reads the request and its body, performs `handle`'s task,
 gives the response back with `task.return`, and then writes the
 response's body as the host reads it. It calls the model's `async`
 functions with the synchronous ABI, which blocks the task until the
 model answers; a task of an `async` function may block. Stream and
 future operations are async-lowered, and the glue waits on each one that
 blocks with `waitable-set.wait`, since their synchronous forms need a
-feature beyond the async ABI. So `handle!` is ordinary straight-line
+feature beyond the async ABI. So `handle`'s task is ordinary straight-line
 code, and the host does the suspending: Wasmtime with fibers, the
 polyfill with stack switching, JSPI, or nested turns.
 
 ## Next
 
-1. **Tasks** (`notes/language.md`, step 3): calls are pure, a function
-   with effects returns a task, and `!` performs it, in an environment
-   of capabilities.
+1. **Handlers that do not resume** (abort, retry), and implementations
+   that need capabilities themselves: the coroutine compilation they
+   need.
 2. **Narrowing in later clauses**: a clause does not learn that the ones
    before it failed. That needs MLstruct's negation types.
 3. **The codebase in Dialog**: definitions as facts, names as assertions

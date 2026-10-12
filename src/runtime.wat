@@ -328,7 +328,14 @@
     (if (i64.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))
     (if (i32.eqz (i32.and (call $is_obj (local.get $a)) (call $is_obj (local.get $b)))) (then (return (i32.const 0))))
     (local.set $k (call $kind (local.get $a)))
-    (if (i32.ne (local.get $k) (call $kind (local.get $b))) (then (return (i32.const 0))))
+    (if (i32.ne (local.get $k) (call $kind (local.get $b)))
+      (then
+        ;; `{}` is an empty record and an empty dictionary alike.
+        (return (i32.and
+          (i32.and
+            (i32.or (i32.eq (local.get $k) (i32.const 3)) (i32.eq (local.get $k) (i32.const 4)))
+            (i32.or (i32.eq (call $kind (local.get $b)) (i32.const 3)) (i32.eq (call $kind (local.get $b)) (i32.const 4))))
+          (i32.and (i32.eqz (call $len (local.get $a))) (i32.eqz (call $len (local.get $b))))))))
     (if (i32.or (i32.eq (local.get $k) (i32.const 1)) (i32.eq (local.get $k) (i32.const 9)))
       (then (return (call $str_eq (local.get $a) (local.get $b)))))
     (if (i32.eq (local.get $k) (i32.const 4)) (then (return (call $dict_eq (local.get $a) (local.get $b)))))
@@ -544,6 +551,42 @@
         (br $next)))
     ;; The type checker rules this out.
     unreachable)
+
+  ;; Environments: what `(perform t with: env)` provides while `t` runs.
+  ;; Each frame is a block of the environment record (owned) and the
+  ;; frame below it.
+  (global $env_top (mut i32) (i32.const 0))
+
+  (func $with_env (param $env i64) (param $task i64) (result i64)
+    ;; Perform `task` with `env` on top of the environments. Borrows both.
+    (local $f i32) (local $r i64)
+    (local.set $f (call $alloc (i32.const 16)))
+    (i64.store (local.get $f) (call $dup (local.get $env)))
+    (i32.store offset=8 (local.get $f) (global.get $env_top))
+    (global.set $env_top (local.get $f))
+    (local.set $r (call $apply0 (local.get $task)))
+    (global.set $env_top (i32.load offset=8 (local.get $f)))
+    (call $drop (i64.load (local.get $f)))
+    (call $free (local.get $f))
+    (local.get $r))
+
+  (func $env_find (param $cap i64) (param $op i64) (result i64)
+    ;; The innermost environment's implementation of the operation `op`
+    ;; of the capability `cap`, owned, or 0 when none provides it.
+    (local $f i32) (local $impls i64) (local $r i64)
+    (local.set $f (global.get $env_top))
+    (block $done
+      (loop $next
+        (br_if $done (i32.eqz (local.get $f)))
+        (if (i64.eq (call $has_field (i64.load (local.get $f)) (local.get $cap)) (i64.const 0x12))
+          (then
+            (local.set $impls (call $rec_get (i64.load (local.get $f)) (local.get $cap)))
+            (local.set $r (call $rec_get (local.get $impls) (local.get $op)))
+            (call $drop (local.get $impls))
+            (return (local.get $r))))
+        (local.set $f (i32.load offset=8 (local.get $f)))
+        (br $next)))
+    (i64.const 0))
 
   (func $has_field (param $v i64) (param $id i64) (result i64)
     ;; Whether `v` is a record with the field `id`: a variant with that
@@ -1090,7 +1133,9 @@
             (local.set $i (i32.add (local.get $i) (i32.const 1)))
             (br $next)))
         (return (call $concat_owned (local.get $out) (call $lit (i32.const 10) (i32.const 1))))))
-    (if (i32.eq (local.get $k) (i32.const 4))
+    ;; `{}` may be an empty record as well as an empty dictionary.
+    (if (i32.or (i32.eq (local.get $k) (i32.const 4))
+                (i32.and (i32.eq (local.get $k) (i32.const 3)) (i32.eqz (call $len (local.get $v)))))
       (then
         (local.set $out (call $lit (i32.const 23) (i32.const 1)))
         (local.set $n (call $len (local.get $v)))

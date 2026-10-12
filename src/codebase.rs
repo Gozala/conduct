@@ -12,7 +12,7 @@ use crate::infer::{Binding, Globals, Infer};
 use crate::reader;
 use crate::syntax::{self, Arg, Claim, Def, Expr, Item, Param, Pat, TypeExpr};
 use crate::term::{Hash, Op, Pattern, Term};
-use crate::types::{Scheme, Solver, Ty, Type, TypeError, coalesce};
+use crate::types::{Scheme, Solver, Ty, TypeError, coalesce};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
@@ -43,6 +43,9 @@ pub struct Codebase {
     pub names: BTreeMap<String, Hash>,
     /// The attributes and types claimed.
     pub claims: Claims,
+    /// Host functions by the capability they need: each one's name and
+    /// hash.
+    pub hosts: BTreeMap<String, BTreeMap<String, Hash>>,
 }
 
 /// What adding a definition did.
@@ -112,27 +115,39 @@ impl Codebase {
         Some(self.claims.ty(&def.body, &mut env))
     }
 
-    /// Declare a function the host provides, under `name`, which must end
-    /// with `!`: a call takes `params`, answers `ret`, and uses the
-    /// capability `capability`. Its hash covers the name it is imported
-    /// by and its type.
+    /// Declare a function the host provides, under `name`: a call takes
+    /// `params` and answers a task that needs `capability` and answers
+    /// `ret`, performed `(name! ..)`. With no parameters it is that task.
+    /// Its hash covers the name it is imported by and its type.
     pub fn add_host(&mut self, name: &str, capability: &str, params: Vec<Ty>, ret: Ty) -> Result<Hash, Error> {
+        if name.ends_with('!') {
+            return Err(Error::Resolve {
+                def: name.into(),
+                message: "a host function is named without `!`; a call performs it with one".into(),
+            });
+        }
         let arity = params.len() as u32;
         let args = (0..arity).rev().map(Term::Local).collect();
+        let task = Ty::task(ret, Ty::caps([capability.to_string()]));
+        let body = Term::Task(Box::new(Term::Host(name.to_string(), args)));
         // A host function takes at most one argument, by position; the
         // labels are only there to make the term well formed.
         let labels: Vec<String> =
             (0..arity).map(|i| if i == 0 { "value".to_string() } else { format!("arg{i}") }).collect();
-        let term = Term::Fn(labels.clone(), Box::new(Term::Host(name.to_string(), args)));
-        let ty = Ty::func_eff(params, ret, Ty::caps([capability.to_string()]), labels[1.min(labels.len())..].to_vec());
+        let (term, ty) = if arity == 0 {
+            (body, task)
+        } else {
+            let rest = labels[1..].to_vec();
+            (Term::Fn(labels, Box::new(body)), Ty::func_eff(params, task, Ty::pure(), rest))
+        };
         let mut bytes = Vec::new();
         term.encode(&mut bytes, &|i| i);
         bytes.extend_from_slice(coalesce(&ty).to_string().as_bytes());
         let hash = Hash::of(&bytes);
         let scheme = Scheme { level: 0, body: ty };
-        check_name(name, &scheme)?;
         self.defs.insert(hash, Definition { hash, term, cycle: vec![], scheme });
         self.names.insert(name.to_string(), hash);
+        self.hosts.entry(capability.to_string()).or_default().insert(name.to_string(), hash);
         Ok(hash)
     }
 
@@ -193,8 +208,8 @@ impl Codebase {
                     c.name
                 ));
             }
-            if c.with.is_some() {
-                return error("only a function's signature says `with:`".into());
+            if c.performs {
+                return error(format!("`{}!` claims a task, so it goes with a definition of `{}!`", c.name, c.name));
             }
             match (&c.params, &c.ty) {
                 (None, TypeExpr::Attribute(global, value, _)) => self.claim_attribute(&c.name, global, value)?,
@@ -448,10 +463,6 @@ impl Codebase {
                 }
             }
             for (d, h) in members.iter().zip(hashes.iter()) {
-                let def = staged.iter().find(|s| s.hash == *h).or_else(|| self.defs.get(h));
-                if let Some(def) = def {
-                    check_name(&d.name, &def.scheme)?;
-                }
                 resolved.insert(d.name.clone(), *h);
                 added.push(Added { name: d.name.clone(), hash: *h, new: fresh });
             }
@@ -481,6 +492,7 @@ impl Codebase {
             defs: &'a HashMap<Hash, Definition>,
             staged: &'a [Definition],
             attributes: &'a BTreeMap<String, (String, Ty)>,
+            hosts: &'a BTreeMap<String, BTreeMap<String, Hash>>,
         }
         impl Globals for Layered<'_> {
             fn scheme(&self, hash: &Hash) -> Option<Scheme> {
@@ -489,8 +501,17 @@ impl Codebase {
             fn attribute(&self, global: &str) -> Option<Ty> {
                 self.attributes.get(global).map(|(_, t)| t.clone())
             }
+            fn operations(&self, capability: &str) -> Vec<(String, Scheme)> {
+                self.hosts
+                    .get(capability)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|(name, h)| Some((name.clone(), self.scheme(h)?)))
+                    .collect()
+            }
         }
-        let globals = Layered { defs: &self.defs, staged, attributes: &self.claims.attribute_types };
+        let globals =
+            Layered { defs: &self.defs, staged, attributes: &self.claims.attribute_types, hosts: &self.hosts };
         let s = &self.solver;
         // Cycle members are known to each other monomorphically while
         // their bodies are checked, by their canonical index.
@@ -501,12 +522,8 @@ impl Codebase {
         let cycle_types: Vec<Ty> = cycle_order.iter().map(|&p| member_vars[p].clone()).collect();
         // Outside any function, code must be pure: a top-level value is
         // computed once, and nothing may happen when it is.
-        let infer = Infer {
-            solver: s,
-            globals: &globals,
-            cycle: cycle_types,
-            effects: std::cell::RefCell::new(vec![Ty::pure()]),
-        };
+        let infer =
+            Infer { solver: s, globals: &globals, cycle: cycle_types, effects: std::cell::RefCell::new(vec![None]) };
         let mut schemes = Vec::new();
         for (i, (d, term)) in members.iter().zip(terms).enumerate() {
             let t = infer
@@ -553,24 +570,36 @@ impl Codebase {
                 ));
             }
         }
-        if claim.params.is_none() && claim.with.is_some() {
-            return Err("only a function's signature says `with:`".into());
+        let performs = matches!(term, Term::Task(_)) || matches!(term, Term::Fn(_, b) if matches!(**b, Term::Task(_)));
+        if claim.performs != performs {
+            return Err(if performs {
+                "the definition is marked `!`, so its claim is too".into()
+            } else {
+                "the claim is marked `!`, so the definition must be too".into()
+            });
         }
         // The claim's type, and the variable for capabilities it leaves
         // to inference, if it does.
         let read = |env: &mut Env| -> Result<(Ty, Option<Ty>), String> {
-            match &claim.params {
-                None => Ok((self.claims.ty(&claim.ty, env)?, None)),
-                Some(params) => {
-                    let (effect, inferred) = match &claim.with {
-                        Some(w) => (self.claims.ty(w, env)?, None),
-                        None => {
-                            let e = env.inferred(s, 1);
-                            (e.clone(), Some(e))
-                        }
-                    };
-                    Ok((self.claims.function(params, effect, &claim.ty, env)?, inferred))
+            let params = match &claim.params {
+                Some(params) => Some(self.claims.params(params, env)?),
+                None => None,
+            };
+            let ret = self.claims.ty(&claim.ty, env)?;
+            let (ret, inferred) = if claim.performs {
+                match &claim.with {
+                    Some(w) => (Ty::task(ret, self.claims.ty(w, env)?), None),
+                    None => {
+                        let e = env.inferred(s, 1);
+                        (Ty::task(ret, e.clone()), Some(e))
+                    }
                 }
+            } else {
+                (ret, None)
+            };
+            match params {
+                Some(params) => Ok((claims::function(params, ret)?, inferred)),
+                None => Ok((ret, inferred)),
             }
         };
         // Checked with its variables as types the caller chooses...
@@ -614,37 +643,6 @@ fn lower_bounds(t: &Ty) -> Vec<Ty> {
     }
     go(t, &mut out, &mut seen);
     out
-}
-
-/// Roc's rule: a name ends with `!` exactly when what it names uses
-/// capabilities. A function whose effect depends on its arguments' (like
-/// `map`'s) may be named either way.
-fn check_name(name: &str, scheme: &Scheme) -> Result<(), Error> {
-    let marked = name.ends_with('!');
-    let effect = match coalesce(&scheme.body) {
-        Type::Fn(_, _, effect, _) => *effect,
-        _ => Type::Caps(Default::default()),
-    };
-    let mut caps = std::collections::BTreeSet::new();
-    let mut polymorphic = false;
-    let mut visit = |t: &Type| match t {
-        Type::Caps(c) => caps.extend(c.iter().cloned()),
-        Type::Var(_) => polymorphic = true,
-        _ => {}
-    };
-    match &effect {
-        Type::Union(ts) => ts.iter().for_each(&mut visit),
-        t => visit(t),
-    }
-    let error = |message: String| Err(Error::Resolve { def: name.to_string(), message });
-    if !caps.is_empty() && !marked {
-        let used = caps.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ");
-        return error(format!("it uses {used}, so its name must end with `!`"));
-    }
-    if caps.is_empty() && !polymorphic && marked {
-        return error("it uses no capabilities, so its name must not end with `!`".into());
-    }
-    Ok(())
 }
 
 enum ResolveError {
@@ -725,6 +723,12 @@ impl Names<'_> {
                     .position(|f| f.label == *l)
                     .ok_or_else(|| ResolveError::Invalid(format!("`{name}` has no attribute labeled `{l}:`")))?,
             };
+            if given[at].is_some() {
+                return Err(ResolveError::Invalid(format!(
+                    "the pattern gives `{name}`'s `{}:` twice",
+                    fields[at].label
+                )));
+            }
             given[at] = Some(self.pattern(p)?.0);
         }
         let mut out: Vec<(String, Pattern)> = Vec::new();
@@ -737,6 +741,30 @@ impl Names<'_> {
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(Pattern::Fields(out))
+    }
+
+    /// A record type as a value: the function its constructor is, when
+    /// every attribute is required.
+    fn constructor_value(&self, name: &str) -> Result<Term, ResolveError> {
+        let fields = self.claims.record(name).unwrap();
+        if fields.iter().any(|f| f.optional) {
+            return Err(ResolveError::Invalid(format!(
+                "`{name}` has optional attributes, so its constructor is not a value yet: wrap it in `fn`"
+            )));
+        }
+        let params: Vec<Param> =
+            fields.iter().map(|f| Param { label: f.label.clone(), local: f.label.clone() }).collect();
+        let order = canonical(&params);
+        let n = order.len() as u32;
+        let mut record: Vec<(String, Term)> = fields
+            .iter()
+            .map(|f| {
+                let at = order.iter().position(|p| p.label == f.label).unwrap() as u32;
+                (f.global.clone(), Term::Local(n - 1 - at))
+            })
+            .collect();
+        record.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(Term::Fn(order.into_iter().map(|p| p.label).collect(), Box::new(Term::Record(record))))
     }
 
     /// `(person "Ada" age: 36)`: a record of the attributes given, which
@@ -778,7 +806,7 @@ impl Names<'_> {
     /// The order a `match` over these record types tests them in: the
     /// rank of the variant that lists them all. Records of one attribute
     /// are variants already and need none.
-    fn rank(&self, cases: &[&str]) -> Result<Option<Vec<String>>, ResolveError> {
+    fn rank(&self, cases: &[&str]) -> Result<Option<(String, Vec<String>)>, ResolveError> {
         let mut distinct: Vec<&str> = cases.to_vec();
         distinct.sort();
         distinct.dedup();
@@ -790,7 +818,7 @@ impl Names<'_> {
             if let Some(order) = self.claims.variant(name)
                 && distinct.iter().all(|c| order.iter().any(|o| o == c))
             {
-                return Ok(Some(order));
+                return Ok(Some((name.clone(), order)));
             }
         }
         Err(ResolveError::Invalid(format!(
@@ -878,6 +906,7 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
                             "the built-in `{name}` is not a value yet; call it, or wrap it in `fn`"
                         )));
                     }
+                    None if names.claims.record(name).is_some() => names.constructor_value(name)?,
                     None if names.attribute(name).is_some() => {
                         return Err(ResolveError::Invalid(format!(
                             "the attribute `{name}` is read by calling it, `({name} record)`"
@@ -938,11 +967,29 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
             // a value lands in the first case it fits wherever the arm is
             // written.
             let cases: Vec<&str> = patterns.iter().filter_map(|(_, c, _)| c.as_deref()).collect();
-            if let Some(order) = names.rank(&cases)? {
+            if let Some((variant, order)) = names.rank(&cases)? {
                 if cases.len() != patterns.len() {
                     return Err(ResolveError::Invalid(
                         "a `match` over a ranked variant's cases names only cases, and `_`".into(),
                     ));
+                }
+                // Without `_`, the match covers what it is given only if it
+                // names every case, and every value of the variant fits
+                // its last case, the widest.
+                if default.is_none() {
+                    if let Some(missing) = order.iter().find(|o| !cases.contains(&o.as_str())) {
+                        return Err(ResolveError::Invalid(format!(
+                            "this `match` does not name `{missing}`: name every case of `{variant}`, or end with `_`"
+                        )));
+                    }
+                    let widest = names.claims.required(order.last().unwrap());
+                    if let Some(other) = order.iter().find(|o| !widest.is_subset(&names.claims.required(o))) {
+                        return Err(ResolveError::Invalid(format!(
+                            "a value may fit no case of `{variant}`: `{}` is not in `{other}`, so no case is in all \
+                             the others; end the `match` with `_`",
+                            order.last().unwrap()
+                        )));
+                    }
                 }
                 let at = |c: &Option<String>| order.iter().position(|o| Some(o) == c.as_ref()).unwrap();
                 patterns.sort_by_key(|(_, c, _)| at(c));
@@ -981,6 +1028,22 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
                 .collect::<Result<_, ResolveError>>()?,
         ),
         Expr::List(items) => Term::List(items.iter().map(|i| resolve(i, scope, names)).collect::<Result<_, _>>()?),
+        Expr::Task(body) => Term::Task(b(body, scope)?),
+        Expr::Perform(task) => Term::Perform(b(task, scope)?),
+        Expr::Handle(task, provided) => Term::Handle(
+            b(task, scope)?,
+            provided
+                .iter()
+                .map(|(cap, ops)| {
+                    let ops = ops.iter().map(|(op, i)| Ok((op.clone(), resolve(i, scope, names)?))).collect::<Result<
+                        Vec<_>,
+                        ResolveError,
+                    >>(
+                    )?;
+                    Ok((cap.clone(), ops))
+                })
+                .collect::<Result<_, ResolveError>>()?,
+        ),
     })
 }
 
@@ -1167,6 +1230,11 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
                 free_names(d, scope, out);
             }
         }
+        Expr::Task(e) | Expr::Perform(e) => free_names(e, scope, out),
+        Expr::Handle(t, provided) => {
+            free_names(t, scope, out);
+            provided.iter().flat_map(|(_, ops)| ops).for_each(|(_, e)| free_names(e, scope, out));
+        }
         Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Keyword(_) => {}
     }
 }
@@ -1174,7 +1242,11 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
 fn renumber_cycle(term: &mut Term, canonical: &dyn Fn(u32) -> u32) {
     match term {
         Term::CycleRef(i) => *i = canonical(*i),
-        Term::Fn(_, b) | Term::Field(_, b) => renumber_cycle(b, canonical),
+        Term::Fn(_, b) | Term::Field(_, b) | Term::Task(b) | Term::Perform(b) => renumber_cycle(b, canonical),
+        Term::Handle(t, caps) => {
+            renumber_cycle(t, canonical);
+            caps.iter_mut().flat_map(|(_, ops)| ops).for_each(|(_, i)| renumber_cycle(i, canonical));
+        }
         Term::App(c, args, _) => {
             renumber_cycle(c, canonical);
             args.iter_mut().for_each(|a| renumber_cycle(a, canonical));

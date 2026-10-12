@@ -58,12 +58,11 @@ pub struct Env<'a> {
     pub vars: HashMap<String, Ty>,
     pub mode: Mode<'a>,
     depth: u32,
-    fresh: u32,
 }
 
 impl<'a> Env<'a> {
     pub fn new(mode: Mode<'a>) -> Self {
-        Env { vars: HashMap::new(), mode, depth: 0, fresh: 0 }
+        Env { vars: HashMap::new(), mode, depth: 0 }
     }
 
     fn var(&mut self, name: &str) -> Ty {
@@ -75,20 +74,6 @@ impl<'a> Env<'a> {
             Mode::Flexible(s, level) => s.fresh_ty(level),
         };
         self.vars.insert(name.to_string(), t.clone());
-        t
-    }
-
-    /// A variable no name refers to: a function type's capabilities left
-    /// unsaid. It is named by its order, so two readings of one claim
-    /// name it alike.
-    fn unnamed(&mut self, _hint: &str) -> Ty {
-        self.fresh += 1;
-        let name = format!("fx{}", self.fresh);
-        let t = match self.mode {
-            Mode::Rigid => Ty::Rigid(Rc::from(name.as_str())),
-            Mode::Flexible(s, level) => s.fresh_ty(level),
-        };
-        self.vars.insert(name, t.clone());
         t
     }
 
@@ -205,6 +190,16 @@ impl Claims {
             },
             TypeExpr::Var(v) => env.var(v),
             TypeExpr::App(head, args, _) => match (head.as_str(), args.as_slice()) {
+                ("task", [(None, t)]) => Ty::task(self.ty(t, env)?, Ty::pure()),
+                ("task", [(None, t), (Some(w), caps)]) if w == "with" => {
+                    // `{print}` reads as a record type; here it names
+                    // capabilities.
+                    let caps = match caps {
+                        TypeExpr::Record(members, _) => Ty::caps(members.iter().map(|m| m.to_string())),
+                        other => self.ty(other, env)?,
+                    };
+                    Ty::task(self.ty(t, env)?, caps)
+                }
                 ("list", [(None, t)]) => Ty::list(self.ty(t, env)?),
                 ("dict", [(None, t)]) => Ty::dict(self.ty(t, env)?),
                 _ => {
@@ -257,39 +252,24 @@ impl Claims {
                 union(cases)?
             }
             TypeExpr::Keyword(k) => Ty::keys([k.clone()]),
+            // A function type with capabilities answers a task that needs
+            // them: `((\ ?a) with: {print} : {})`.
             TypeExpr::Fn(params, with, ret) => {
-                let effect = match with {
-                    Some(w) => self.ty(w, env)?,
-                    None => env.unnamed(""),
+                let params = self.params(params, env)?;
+                let ret = self.ty(ret, env)?;
+                let ret = match with {
+                    Some(w) => Ty::task(ret, self.ty(w, env)?),
+                    None => ret,
                 };
-                self.function(params, effect, ret, env)?
+                function(params, ret)?
             }
             TypeExpr::Caps(caps) => Ty::caps(caps.iter().cloned()),
         })
     }
 
-    /// A function type: the first parameter, then the others in label
-    /// order, as calls pass them.
-    pub fn function(
-        &self,
-        params: &[(Option<String>, TypeExpr)],
-        effect: Ty,
-        ret: &TypeExpr,
-        env: &mut Env,
-    ) -> Result<Ty> {
-        let Some((first, rest)) = params.split_first() else {
-            return Err("a function takes at least one parameter".into());
-        };
-        let mut rest: Vec<&(Option<String>, TypeExpr)> = rest.iter().collect();
-        rest.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut types = vec![self.ty(&first.1, env)?];
-        let mut labels = Vec::new();
-        for (label, t) in rest {
-            labels.push(label.clone().ok_or("only the first parameter goes without a label")?);
-            types.push(self.ty(t, env)?);
-        }
-        let ret = self.ty(ret, env)?;
-        Ok(Ty::func_eff(types, ret, effect, labels))
+    /// A function's parameters' types, each with its label.
+    pub fn params(&self, params: &[(Option<String>, TypeExpr)], env: &mut Env) -> Result<Vec<(Option<String>, Ty)>> {
+        params.iter().map(|(l, t)| Ok((l.clone(), self.ty(t, env)?))).collect()
     }
 
     fn expand(&self, name: &str, def: &TypeDef, bound: Vec<(String, Ty)>, env: &mut Env) -> Result<Ty> {
@@ -303,6 +283,22 @@ impl Claims {
         env.vars = outer;
         out
     }
+}
+
+/// A function type: the first parameter, then the others in label
+/// order, as calls pass them.
+pub fn function(params: Vec<(Option<String>, Ty)>, ret: Ty) -> Result<Ty> {
+    let mut params = params.into_iter();
+    let first = params.next().ok_or("a function takes at least one parameter")?;
+    let mut rest: Vec<(Option<String>, Ty)> = params.collect();
+    rest.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut types = vec![first.1];
+    let mut labels = Vec::new();
+    for (label, t) in rest {
+        labels.push(label.ok_or("only the first parameter goes without a label")?);
+        types.push(t);
+    }
+    Ok(Ty::func_eff(types, ret, Ty::pure(), labels))
 }
 
 /// The cases of a variant as one type: variants and keywords as one set

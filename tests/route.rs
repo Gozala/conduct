@@ -245,11 +245,11 @@ fn model(todos: &[(&str, bool)]) -> Arc<Mutex<Model>> {
 fn routes_fit_the_contract() {
     let todos = load(TODOS);
     assert_eq!(
-        todos.type_of("handle!").unwrap(),
+        todos.type_of("handle").unwrap(),
         // The claim, `(handle! request) with: {model} : response`, is what
         // callers see.
-        "({body: String, headers: Dict[String], method: String, params: Dict[String], path: String, query: Dict[String]}) \
-         => {body: String, code: Int, headers: Dict[String]} ! {model}"
+        "({body: String, headers: Dict[String], method: String, params: Dict[String], path: String, search: Dict[String]}) \
+         -> (task {body: String, code: Int, headers: Dict[String]} with: {model})"
     );
     route::component(&todos).unwrap_or_else(|e| panic!("{e}"));
     let todo = load(TODO);
@@ -259,7 +259,7 @@ fn routes_fit_the_contract() {
 #[test]
 fn a_route_uses_only_the_model() {
     let mut cb = route::codebase().unwrap();
-    cb.add_host("now!", "clock", vec![], conduct::types::Ty::int()).unwrap();
+    cb.add_host("now", "clock", vec![], conduct::types::Ty::int()).unwrap();
     cb.add_source("(define (handle! r) (do (now!) (status 200)))").unwrap();
     let e = route::component(&cb).unwrap_err().to_string();
     assert!(e.contains("this uses `clock`, where only {model} may be used"), "{e}");
@@ -369,4 +369,16 @@ async fn the_item_route() {
     assert_eq!(todos, [Todo { id: "t2".into(), title: "Walk the dog".into(), completed: false }]);
     let calls = m.lock().unwrap().calls.clone();
     assert_eq!(calls[0], "update[String(\"t1\"), Option(None), Option(Some(Bool(true)))]");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nothing_from_the_model_is_the_empty_map() {
+    // The model answers `{}` for `toggle-all`; it equals the literal and
+    // encodes as `{}`.
+    let src = "(define pattern \"/x\")
+               (define (handle! request)
+                 (let [r (toggle-all! true)]
+                   (json {\"eq\" (= r {}) \"json\" (to-json r)} status: 200)))";
+    let answers = serve(src, model(&[]), &[("GET", "/x", "")]).await;
+    assert_eq!(answers[0].2, r#"{"eq":true,"json":"{}"}"#);
 }

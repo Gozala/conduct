@@ -6,11 +6,11 @@
 (claim method : (conduct.http/method text))
 (claim path : (conduct.http/path text))
 (claim params : (conduct.http/params (dict text)))
-(claim query : (conduct.http/query (dict text)))
+(claim search : (conduct.http/query (dict text)))
 (claim headers : (conduct.http/headers (dict text)))
 (claim body : (conduct.http/body text))
 (claim code : (conduct.http/status integer))
-(claim request : {method path params query headers body})
+(claim request : {method path params search headers body})
 (claim response : {code headers body})
 
 ;; A todo, and what the model's `query!` answers.

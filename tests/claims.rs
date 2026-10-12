@@ -166,7 +166,7 @@ fn signatures_are_checked_and_shown() {
          (claim pi : integer)
          (define pi 3)",
     );
-    assert_eq!(cb.type_of("twice").unwrap(), "((a) => a ! b, x: a) => a ! b");
+    assert_eq!(cb.type_of("twice").unwrap(), "((a) -> a, x: a) -> a");
     assert_eq!(cb.type_of("id").unwrap(), "(a) -> a");
     let e = error("(claim (id ?a) : ?a) (define (id x) (+ x 1))");
     assert!(e.contains("?a, any type the caller chooses is not a Int"), "{e}");
@@ -192,13 +192,51 @@ fn a_signature_is_what_callers_see() {
 #[test]
 fn capabilities_in_signatures() {
     let mut cb = Codebase::new();
-    cb.add_host("print!", "print", vec![conduct::types::Ty::str()], conduct::types::Ty::record([])).unwrap();
+    cb.add_host("print", "print", vec![conduct::types::Ty::str()], conduct::types::Ty::record([])).unwrap();
     cb.add_source("(claim (greet! text) with: {print} : {}) (define (greet! who) (print! who))").unwrap();
-    assert_eq!(cb.type_of("greet!").unwrap(), "(String) => {} ! {print}");
-    let e =
-        cb.add_source("(claim (quiet text) with: {} : {}) (define (quiet who) (print! who))").unwrap_err().to_string();
+    assert_eq!(cb.type_of("greet").unwrap(), "(String) -> (task {} with: {print})");
+    let e = cb
+        .add_source("(claim (quiet! text) with: {} : {}) (define (quiet! who) (print! who))")
+        .unwrap_err()
+        .to_string();
     assert!(e.contains("this uses `print`, where only pure code is allowed"), "{e}");
     // Left out, they are what the body uses.
     cb.add_source("(claim (hi! text) : {}) (define (hi! who) (print! who))").unwrap();
-    assert_eq!(cb.type_of("hi!").unwrap(), "(String) => {} ! {print}");
+    assert_eq!(cb.type_of("hi").unwrap(), "(String) -> (task {} with: {print})");
+}
+
+#[test]
+fn constructors_are_values() {
+    let cb = check(&format!(
+        "{PERSON}
+         (claim pair : {{name age}})
+         (define oks (map [1 2] each: ok))
+         (define pairs (map [\"Ada\"] each: (fn [n] (pair n age: 1))))
+         (define make pair)"
+    ));
+    assert_eq!(cb.type_of("oks").unwrap(), "List[(ok Int)]");
+    assert_eq!(cb.type_of("make").unwrap(), "(a & String, age: b & Int) -> {age: b, name: a}");
+    // With optional attributes, a constructor takes different labels at
+    // different calls, so it is not a value yet.
+    assert!(error(&format!("{PERSON} (define make person)")).contains("optional attributes"));
+    assert!(
+        error(&format!("{PERSON} (define (f p) (match p (person n name: m) n))"))
+            .contains("gives `person`'s `name:` twice")
+    );
+}
+
+#[test]
+fn a_ranked_match_names_every_case_or_ends_with_any() {
+    let job = format!("{JOB} (claim job : [done pending idle])");
+    let e = error(&format!("{job} (define (r j) (match j (pending description: d) d (done description: d) d))"));
+    assert!(e.contains("this `match` does not name `idle`: name every case of `job`, or end with `_`"), "{e}");
+    check(&format!("{job} (define (r j) (match j (pending description: d) d (done description: d) d _ \"?\"))"));
+    // Cases with no widest one may leave a value fitting none.
+    let src = "(claim x : (t/x integer)) (claim y : (t/y integer)) (claim z : (t/z integer))
+               (claim a : {x y}) (claim b : {x z}) (claim v : [a b])";
+    let e = error(&format!("{src} (define (f q) (match q (a x: n) n (b x: n) n))"));
+    assert!(e.contains("a value may fit no case of `v`"), "{e}");
+    let cb =
+        check(&format!("{src} (define (f q) (match q (a x: n) n (b x: n) (+ n 100) _ 0)) (define r (f (b 1 z: 2)))"));
+    assert_eq!(cb.type_of("r").unwrap(), "Int");
 }

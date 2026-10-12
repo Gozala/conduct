@@ -22,6 +22,9 @@ pub enum Prim {
     Str,
     /// A parsed JSON value, read with the `json-` built-ins.
     Json,
+    /// `{}`: nothing at all, which is both an empty dictionary and a
+    /// record with no attributes.
+    Empty,
 }
 
 impl Prim {
@@ -31,6 +34,7 @@ impl Prim {
             Prim::Bool => "Bool",
             Prim::Str => "String",
             Prim::Json => "Json",
+            Prim::Empty => "{}",
         }
     }
 }
@@ -83,6 +87,13 @@ pub enum Ty {
     /// against the claim: any type the caller chooses, so the definition
     /// can assume nothing of it.
     Rigid(Rc<str>),
+    /// Work that, performed, answers its result and needs its
+    /// capabilities: `(task {} with: {print})`. Covariant in both.
+    Task(Rc<Ty>, Rc<Ty>),
+    /// Capabilities and the given names besides: what a task needs once
+    /// an environment has provided those names. It only bounds what
+    /// flows into it.
+    CapsPlus(Rc<Ty>, Rc<BTreeSet<String>>),
 }
 
 impl Ty {
@@ -119,6 +130,10 @@ impl Ty {
     }
     pub fn list(t: Ty) -> Ty {
         Ty::List(Rc::new(t))
+    }
+    /// A task answering `t` and needing `caps`.
+    pub fn task(t: Ty, caps: Ty) -> Ty {
+        Ty::Task(Rc::new(t), Rc::new(caps))
     }
     pub fn dict(t: Ty) -> Ty {
         Ty::Dict(Rc::new(t))
@@ -162,6 +177,8 @@ impl Ty {
             }
             Ty::Record(fields) => fields.values().map(Ty::level).max().unwrap_or(0),
             Ty::List(t) | Ty::Dict(t) | Ty::Opt(t) => t.level(),
+            Ty::Task(t, c) => t.level().max(c.level()),
+            Ty::CapsPlus(c, _) => c.level(),
             Ty::Update(r, _, v) => r.level().max(v.level()),
             Ty::Tags(tags) => tags.values().flatten().map(Ty::level).max().unwrap_or(0),
             Ty::IfHas(_, t) => t.level(),
@@ -182,6 +199,8 @@ impl Ty {
             Ty::Fn(params, _, _, _) => (6, Rc::as_ptr(params) as *const u8 as usize),
             Ty::Record(fields) => (7, Rc::as_ptr(fields) as *const u8 as usize),
             Ty::List(t) => (8, Rc::as_ptr(t) as *const u8 as usize),
+            Ty::Task(t, _) => (17, Rc::as_ptr(t) as *const u8 as usize),
+            Ty::CapsPlus(c, _) => (18, Rc::as_ptr(c) as *const u8 as usize),
             Ty::Dict(t) => (9, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Update(r, _, _) => (11, Rc::as_ptr(r) as *const u8 as usize),
             Ty::Tags(k) => (12, Rc::as_ptr(k) as *const u8 as usize),
@@ -256,6 +275,15 @@ impl Solver {
         match (lhs, rhs) {
             (Ty::Bot, _) | (_, Ty::Top) => Ok(()),
             (Ty::Prim(a), Ty::Prim(b)) if a == b => Ok(()),
+            // `{}` is an empty dictionary, and a record that has none of
+            // the attributes it may have.
+            (Ty::Prim(Prim::Empty), Ty::Dict(_)) => Ok(()),
+            (Ty::Prim(Prim::Empty), Ty::Record(fields)) => {
+                match fields.iter().find(|(_, t)| !matches!(t, Ty::Opt(_))) {
+                    None => Ok(()),
+                    Some((name, _)) => Err(TypeError(format!("`{{}}` has no attribute `{name}`"))),
+                }
+            }
             (Ty::View, Ty::View) | (Ty::Effect, Ty::Effect) => Ok(()),
             (Ty::Rigid(a), Ty::Rigid(b)) if a == b => Ok(()),
             (Ty::Tags(a), Ty::Tags(b)) => {
@@ -348,6 +376,16 @@ impl Solver {
                 Ok(())
             }
             (Ty::List(a), Ty::List(b)) | (Ty::Dict(a), Ty::Dict(b)) => self.go(a, b, cache),
+            (Ty::Task(a, c), Ty::Task(b, d)) => {
+                self.go(a, b, cache)?;
+                self.go(c, d, cache)
+            }
+            // What an environment provides is not needed of the rest.
+            (Ty::Caps(a), Ty::CapsPlus(rest, provided)) => {
+                let left: BTreeSet<String> = a.difference(provided).cloned().collect();
+                self.go(&Ty::Caps(Rc::new(left)), rest, cache)
+            }
+            (Ty::Rigid(_), Ty::CapsPlus(rest, _)) => self.go(lhs, rest, cache),
             (Ty::Var(v), _) if rhs.level() <= v.level => {
                 v.upper.borrow_mut().push(rhs.clone());
                 let lowers = v.lower.borrow().clone();
@@ -432,6 +470,8 @@ impl Solver {
                 Ty::record(fields.iter().map(|(k, t)| (k.clone(), self.extrude(t, pol, level, cache))))
             }
             Ty::List(t) => Ty::list(self.extrude(t, pol, level, cache)),
+            Ty::Task(t, c) => Ty::task(self.extrude(t, pol, level, cache), self.extrude(c, pol, level, cache)),
+            Ty::CapsPlus(c, l) => Ty::CapsPlus(Rc::new(self.extrude(c, pol, level, cache)), l.clone()),
             Ty::Dict(t) => Ty::dict(self.extrude(t, pol, level, cache)),
             Ty::Opt(t) => Ty::opt(self.extrude(t, pol, level, cache)),
             Ty::Tags(tags) => {
@@ -499,6 +539,8 @@ impl Solver {
                 Ty::record(fields.iter().map(|(k, t)| (k.clone(), self.freshen(t, limit, level, map))))
             }
             Ty::List(t) => Ty::list(self.freshen(t, limit, level, map)),
+            Ty::Task(t, c) => Ty::task(self.freshen(t, limit, level, map), self.freshen(c, limit, level, map)),
+            Ty::CapsPlus(c, l) => Ty::CapsPlus(Rc::new(self.freshen(c, limit, level, map)), l.clone()),
             Ty::Dict(t) => Ty::dict(self.freshen(t, limit, level, map)),
             Ty::Opt(t) => Ty::opt(self.freshen(t, limit, level, map)),
             Ty::Tags(tags) => {
@@ -539,6 +581,8 @@ impl fmt::Display for Shallow<'_> {
                 write!(f, "}}")
             }
             Ty::List(_) => write!(f, "List"),
+            Ty::Task(..) => write!(f, "task"),
+            Ty::CapsPlus(c, l) => write!(f, "{} and {}", Shallow(c), caps_text(l)),
             Ty::Dict(_) => write!(f, "Dict"),
             Ty::Opt(t) => write!(f, "{} if present", Shallow(t)),
             Ty::Update(r, k, _) => write!(f, "{} with `{k}` set", Shallow(r)),
@@ -584,6 +628,7 @@ pub enum Type {
     Caps(BTreeSet<String>),
     /// A claim's type variable, shown as written.
     Named(String),
+    Task(Box<Type>, Box<Type>),
 }
 
 /// Turn an inferred type into a displayable one and simplify it.
@@ -630,6 +675,11 @@ fn coalesce_go(
             fields.iter().map(|(k, t)| (k.clone(), coalesce_go(t, pol, in_process, recursive, next))).collect(),
         ),
         Ty::List(t) => Type::List(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
+        Ty::Task(t, c) => Type::Task(
+            Box::new(coalesce_go(t, pol, in_process, recursive, next)),
+            Box::new(coalesce_go(c, pol, in_process, recursive, next)),
+        ),
+        Ty::CapsPlus(c, _) => coalesce_go(c, pol, in_process, recursive, next),
         Ty::Dict(t) => Type::Dict(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
         Ty::Opt(t) => Type::Opt(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
         Ty::Update(r, k, v) => Type::Update(
@@ -705,6 +755,7 @@ fn vacuous(ty: Type, pol: bool) -> Type {
         ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, vacuous(t, pol))).collect()),
         Type::List(t) => Type::List(Box::new(vacuous(*t, pol))),
+        Type::Task(t, c) => Type::Task(Box::new(vacuous(*t, pol)), Box::new(vacuous(*c, pol))),
         Type::Dict(t) => Type::Dict(Box::new(vacuous(*t, pol))),
         Type::Opt(t) => Type::Opt(Box::new(vacuous(*t, pol))),
         Type::Union(ts) => normalize(Type::Union(ts.into_iter().map(|t| vacuous(t, pol)).collect())),
@@ -752,6 +803,10 @@ fn cooccurrence(ty: Type) -> Type {
             Type::Record(fields) => fields.values().for_each(|t| visit(t, pol, co, bound)),
             Type::Tags(tags) => tags.values().flatten().for_each(|t| visit(t, pol, co, bound)),
             Type::List(t) | Type::Dict(t) | Type::Opt(t) => visit(t, pol, co, bound),
+            Type::Task(t, c) => {
+                visit(t, pol, co, bound);
+                visit(c, pol, co, bound);
+            }
             Type::Update(r, _, v) => {
                 visit(r, pol, co, bound);
                 visit(v, pol, co, bound);
@@ -816,6 +871,7 @@ fn drop_var(ty: Type, v: u32, pol: bool) -> Type {
         ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, drop_var(t, v, pol))).collect()),
         Type::List(t) => Type::List(Box::new(drop_var(*t, v, pol))),
+        Type::Task(t, c) => Type::Task(Box::new(drop_var(*t, v, pol)), Box::new(drop_var(*c, v, pol))),
         Type::Dict(t) => Type::Dict(Box::new(drop_var(*t, v, pol))),
         Type::Opt(t) => Type::Opt(Box::new(drop_var(*t, v, pol))),
         Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| drop_var(p, v, pol)))).collect()),
@@ -842,6 +898,7 @@ impl Type {
             ),
             Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, t)| (f(&k), t.map(go))).collect()),
             Type::List(t) => Type::List(boxed(t)),
+            Type::Task(t, c) => Type::Task(boxed(t), boxed(c)),
             Type::Dict(t) => Type::Dict(boxed(t)),
             Type::Opt(t) => Type::Opt(boxed(t)),
             Type::Rec(v, t) => Type::Rec(v, boxed(t)),
@@ -868,6 +925,7 @@ fn map_type(ty: Type, f: &dyn Fn(&Type) -> Option<Type>) -> Type {
         ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, map_type(t, f))).collect()),
         Type::List(t) => Type::List(Box::new(map_type(*t, f))),
+        Type::Task(t, c) => Type::Task(Box::new(map_type(*t, f)), Box::new(map_type(*c, f))),
         Type::Dict(t) => Type::Dict(Box::new(map_type(*t, f))),
         Type::Opt(t) => Type::Opt(Box::new(map_type(*t, f))),
         Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| map_type(p, f)))).collect()),
@@ -896,6 +954,10 @@ fn occurrences(ty: &Type, pol: bool, pos: &mut HashSet<u32>, neg: &mut HashSet<u
         Type::Record(fields) => fields.values().for_each(|t| occurrences(t, pol, pos, neg)),
         Type::Tags(tags) => tags.values().flatten().for_each(|t| occurrences(t, pol, pos, neg)),
         Type::List(t) | Type::Dict(t) | Type::Opt(t) => occurrences(t, pol, pos, neg),
+        Type::Task(t, c) => {
+            occurrences(t, pol, pos, neg);
+            occurrences(c, pol, pos, neg);
+        }
         Type::Update(r, _, v) => {
             occurrences(r, pol, pos, neg);
             occurrences(v, pol, pos, neg);
@@ -928,6 +990,7 @@ fn prune(ty: Type, pol: bool, keep: &HashSet<u32>) -> Type {
         ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, prune(t, pol, keep))).collect()),
         Type::List(t) => Type::List(Box::new(prune(*t, pol, keep))),
+        Type::Task(t, c) => Type::Task(Box::new(prune(*t, pol, keep)), Box::new(prune(*c, pol, keep))),
         Type::Dict(t) => Type::Dict(Box::new(prune(*t, pol, keep))),
         Type::Opt(t) => Type::Opt(Box::new(prune(*t, pol, keep))),
         Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| prune(p, pol, keep)))).collect()),
@@ -949,6 +1012,7 @@ fn normalize(ty: Type) -> Type {
         ),
         Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, normalize(t))).collect()),
         Type::List(t) => Type::List(Box::new(normalize(*t))),
+        Type::Task(t, c) => Type::Task(Box::new(normalize(*t)), Box::new(normalize(*c))),
         Type::Dict(t) => Type::Dict(Box::new(normalize(*t))),
         Type::Rec(v, body) => {
             let body = normalize(*body);
@@ -968,6 +1032,10 @@ fn normalize(ty: Type) -> Type {
             }
             if out.contains(&Type::Top) {
                 return Type::Top;
+            }
+            // `{}` adds nothing to a dictionary or a record beside it.
+            if out.iter().any(|t| matches!(t, Type::Dict(_) | Type::Record(_))) {
+                out.retain(|t| *t != Type::Prim(Prim::Empty));
             }
             merge_tags(&mut out, true);
             records_beside_records(&mut out);
@@ -1150,6 +1218,15 @@ fn merge_containers(parts: &mut Vec<Type>, union: bool) {
         parts.retain(|t| !matches!(t, Type::Dict(_)));
         parts.push(Type::Dict(Box::new(combine(dicts))));
     }
+    let tasks: Vec<(Type, Type)> = parts
+        .iter()
+        .filter_map(|t| if let Type::Task(r, c) = t { Some(((**r).clone(), (**c).clone())) } else { None })
+        .collect();
+    if tasks.len() > 1 {
+        parts.retain(|t| !matches!(t, Type::Task(..)));
+        let (results, caps): (Vec<Type>, Vec<Type>) = tasks.into_iter().unzip();
+        parts.push(Type::Task(Box::new(combine(results)), Box::new(combine(caps))));
+    }
 }
 
 /// In an intersection, records combine their fields; in a union, two
@@ -1228,6 +1305,7 @@ fn mentions(ty: &Type, v: u32) -> bool {
         Type::Fn(params, ret, eff, _) => params.iter().any(|p| mentions(p, v)) || mentions(ret, v) || mentions(eff, v),
         Type::Record(fields) => fields.values().any(|t| mentions(t, v)),
         Type::List(t) | Type::Dict(t) | Type::Opt(t) | Type::Rec(_, t) => mentions(t, v),
+        Type::Task(t, c) => mentions(t, v) || mentions(c, v),
         Type::Tags(tags) => tags.values().flatten().any(|t| mentions(t, v)),
         Type::Update(r, _, x) => mentions(r, v) || mentions(x, v),
         Type::Union(ts) | Type::Inter(ts) => ts.iter().any(|t| mentions(t, v)),
@@ -1254,6 +1332,7 @@ fn rename(ty: Type) -> Type {
             }
             Type::Record(fields) => Type::Record(fields.into_iter().map(|(k, t)| (k, go(t, map))).collect()),
             Type::List(t) => Type::List(Box::new(go(*t, map))),
+            Type::Task(t, c) => Type::Task(Box::new(go(*t, map)), Box::new(go(*c, map))),
             Type::Dict(t) => Type::Dict(Box::new(go(*t, map))),
             Type::Opt(t) => Type::Opt(Box::new(go(*t, map))),
             Type::Tags(tags) => Type::Tags(tags.into_iter().map(|(k, p)| (k, p.map(|p| go(p, map)))).collect()),
@@ -1359,6 +1438,17 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
             write!(f, "List[")?;
             write_type(t, f, 0)?;
             write!(f, "]")
+        }
+        // As a claim writes it.
+        Type::Task(t, c) => {
+            write!(f, "(task ")?;
+            write_type(t, f, 3)?;
+            let pure = matches!(&**c, Type::Caps(c) if c.is_empty()) || matches!(**c, Type::Bot);
+            if !pure {
+                write!(f, " with: ")?;
+                write_type(c, f, 3)?;
+            }
+            write!(f, ")")
         }
         Type::Dict(t) => {
             write!(f, "Dict[")?;

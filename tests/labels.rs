@@ -43,7 +43,7 @@ fn function_values_carry_their_labels() {
          (define (apply2 g) (g 10 with: 4))
          (define d (apply2 sum))",
     );
-    assert_eq!(cb.type_of("apply2").unwrap(), "((Int, with: Int) => a ! b) => a ! b");
+    assert_eq!(cb.type_of("apply2").unwrap(), "((Int, with: Int) -> a) -> a");
     let e = error("(define (f x y) x) (define (g h) (h 1 z: 2)) (define w (g f))");
     assert!(e.contains("a function labeled `y:` is called with `z:`"), "{e}");
     let e = error("(define (g h) (h x: 1))");
