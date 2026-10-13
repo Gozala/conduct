@@ -97,12 +97,12 @@ fn lists_and_dicts() {
 
 #[test]
 fn views() {
-    let src = "(define v (h \"li\" {:class \"done\"} [\"hi\" (h \"b\")] {:click \"go\"}))";
+    let src = "(define v (h \"li\" {:class \"done\"} [\"hi\" (h \"b\")] {:click :go}))";
     let Value::View { tag, attrs, children, events } = run(src, "v", &[]) else { panic!() };
     assert_eq!(tag, "li");
     assert_eq!(attrs, vec![("class".into(), Value::Str("done".into()))]);
     assert_eq!(children.len(), 2);
-    assert_eq!(events, vec![("click".into(), Value::Str("go".into()))]);
+    assert_eq!(events, vec![("click".into(), Value::Keyword("go".into()))]);
 }
 
 #[test]

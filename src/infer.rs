@@ -397,10 +397,10 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
             let v = var();
             (vec![Ty::dict(v.clone()), keyword()], Ty::dict(v))
         }
-        Op::H => (vec![Ty::str(), Ty::dict(Ty::str()), Ty::list(Ty::Top), Ty::dict(Ty::str())], Ty::View),
+        Op::H => (vec![Ty::str(), Ty::dict(Ty::str()), Ty::list(Ty::Top), Ty::dict(keyword())], Ty::View),
         Op::Emit => (vec![Ty::str(), Ty::str()], Ty::Effect),
         Op::Trim => (vec![Ty::str()], Ty::str()),
-        Op::Fetch => (vec![Ty::str(), Ty::str(), Ty::str(), Ty::str()], Ty::Effect),
+        Op::Fetch => (vec![Ty::str(), Ty::str(), Ty::str(), keyword()], Ty::Effect),
         Op::Split => (vec![Ty::str(), Ty::str()], Ty::list(Ty::str())),
         Op::ParseJson => (vec![Ty::str()], json()),
         Op::ToJson => (vec![Ty::Top], Ty::str()),

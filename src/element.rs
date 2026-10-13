@@ -7,24 +7,25 @@
 //! attributes : List[String]          the attributes it observes
 //! styles     : String                the CSS of its shadow root
 //! init       : (Dict[String]) -> m   its first model, from its attributes
-//! update     : (m, attrs: Dict[String], event: Event, handler: String)
+//! update     : (Command, model: m, attrs: Dict[String])
 //!                -> {model: m, effects: List[Effect]}
 //! view       : (m, attrs: Dict[String]) -> View
 //! ```
 //!
-//! where `Event` is `{kind: String, value?: String, checked?: Bool,
-//! key?: String, status?: Int}`: an event has only the attributes that
-//! apply to it, read with a default, `(value event "")`. The element
-//! prelude ([`PRELUDE`]) claims these attributes.
+//! where `Command` is `{action: Keyword, kind: String, value?: String,
+//! checked?: Bool, key?: String, status?: Int}`: an action, and the
+//! attributes of its event that apply to it, matched by a clause,
+//! `{action: :keydown key: "Enter"}`. The element prelude ([`PRELUDE`])
+//! declares these attributes.
 //!
-//! `update` hears everything that happens to the element, by handler
-//! name: the handlers the view's events name, `"connected"` when the
-//! element joins the document, and `"attribute-changed"` (with the
-//! attribute's name as the event's value) after an observed attribute
+//! `update` hears everything that happens to the element, by action:
+//! the actions the view's events name, `{:click :toggle}`, `:connected`
+//! when the element joins the document, and `:attribute-changed` (with
+//! the attribute's name as the value) after an observed attribute
 //! changes. It performs nothing itself. It returns effects as values,
 //! `(emit name detail)` for a custom event and
-//! `(fetch method url body handler)` for an HTTP request whose response
-//! comes back to `update` under `handler`, with the body as the event's
+//! `(fetch method url body action)` for an HTTP request whose response
+//! comes back to `update` as `action`, with the body as the command's
 //! value and the status as its `status`. The glue performs them. So
 //! element code stays pure, and the glue is the only code with effects.
 //!
@@ -141,16 +142,18 @@ pub struct ElementDefs {
 /// them.
 const MODEL: &str = "conduct.element/model";
 const EFFECTS: &str = "conduct.element/effects";
+const ACTION: &str = "conduct.event/action";
 const KIND: &str = "conduct.event/kind";
 const VALUE: &str = "conduct.event/value";
 const CHECKED: &str = "conduct.event/checked";
 const KEY: &str = "conduct.event/key";
 const STATUS: &str = "conduct.event/status";
 
-/// The record a handler receives: its kind, and whichever of the
-/// others the event has.
+/// The command `update` receives: its action, its event's kind, and
+/// whichever of the others the event has.
 pub fn event_type() -> Ty {
     Ty::record([
+        (ACTION.to_string(), Ty::Prim(crate::types::Prim::Keyword)),
         (KIND.to_string(), Ty::str()),
         (VALUE.to_string(), Ty::opt(Ty::str())),
         (CHECKED.to_string(), Ty::opt(Ty::bool())),
@@ -194,9 +197,9 @@ pub fn check(cb: &Codebase) -> Result<ElementDefs, ElementError> {
         "update",
         defs.update,
         Ty::func(
-            vec![model.clone(), attrs(), event_type(), Ty::str()],
+            vec![event_type(), attrs(), model.clone()],
             Ty::record([(MODEL.to_string(), model.clone()), (EFFECTS.to_string(), Ty::list(Ty::Effect))]),
-            &["attrs", "event", "handler"],
+            &["attrs", "model"],
         ),
     )?;
     fits("view", Some(defs.view), Ty::func(vec![model, attrs()], Ty::View, &["attrs"]))?;
@@ -256,10 +259,9 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
         Some(h) => b.call(
             h,
             &[
-                "(local.get $model)".into(),
+                "(local.get $command)".into(),
                 "(call $dup (i64.load offset=8 (call $slot (local.get $id))))".into(),
-                "(local.get $event)".into(),
-                "(local.get $handler)".into(),
+                "(local.get $model)".into(),
             ],
         )?,
         None => String::new(),
@@ -277,6 +279,8 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     let true_str = b.static_str("true");
     let connected = b.static_str("connected");
     let changed = b.static_str("attribute-changed");
+    let connected_action = b.static_keyword("connected");
+    let changed_action = b.static_keyword("attribute-changed");
 
     b.add_import("(import \"demo:element/host\" \"emit\" (func $host_emit (param i32 i32 i32 i32 i32)))");
     for name in ["connected", "attribute-changed", "handle-event"] {
@@ -524,8 +528,9 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
   (func (export "[async-lift]{iface}#connected") (param $id i32) (result i32)
     (call $release)
     (global.set $which (i32.const 0))
-    (call $dispatch (local.get $id) (call $lit_owned (i64.const {connected}))
-      (call $event_new (call $lit_owned (i64.const {connected})) (i64.const 2) (i64.const 2) (i64.const 2) (i64.const 2)))
+    (call $dispatch (local.get $id)
+      (call $event_new (call $lit_owned (i64.const {connected_action})) (call $lit_owned (i64.const {connected}))
+        (i64.const 2) (i64.const 2) (i64.const 2) (i64.const 2)))
     (call $task_end))
   (func (export "{iface}#disconnected") (param $id i32)
     (call $release)
@@ -547,8 +552,9 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     (call $drop (local.get $attrs))
     (call $drop (local.get $val))
     ;; Tell `update`, with the attribute's name as the event's value.
-    (call $dispatch (local.get $id) (call $lit_owned (i64.const {changed}))
-      (call $event_new (call $lit_owned (i64.const {changed})) (local.get $name) (i64.const 2) (i64.const 2) (i64.const 2)))
+    (call $dispatch (local.get $id)
+      (call $event_new (call $lit_owned (i64.const {changed_action})) (call $lit_owned (i64.const {changed}))
+        (local.get $name) (i64.const 2) (i64.const 2) (i64.const 2)))
     (call $task_end))
   (func (export "{iface}#render") (param $id i32) (result i32)
     (local $v i64) (local $n i32) (local $arr i32)
@@ -569,6 +575,7 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     // argument is consumed. An attribute the event does not have comes
     // as the glue's internal "absent" (2), and the record leaves it out.
     let mut fields = [
+        (field_id(ACTION), "action"),
         (field_id(KIND), "kind"),
         (field_id(VALUE), "value"),
         (field_id(CHECKED), "checked"),
@@ -588,25 +595,31 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
             "\n    (if (i64.ne (local.get ${v}) (i64.const 2)) (then (i64.store offset=8 (local.get $at) (i64.const {id})) (i64.store offset=16 (local.get $at) (local.get ${v})) (local.set $at (i32.add (local.get $at) (i32.const 16)))))"
         );
     }
+    let keyword = crate::codegen::KIND_KEYWORD;
     let _ = write!(
         x,
-        r#"  (func $event_new (param $kind i64) (param $value i64) (param $checked i64) (param $key i64) (param $status i64) (result i64)
+        r#"  (func $event_new (param $action i64) (param $kind i64) (param $value i64) (param $checked i64) (param $key i64) (param $status i64) (result i64)
     (local $w i32) (local $n i32) (local $at i32){count}
     (local.set $w (call $obj (i32.const 3) (local.get $n) (i32.shl (local.get $n) (i32.const 4))))
     (local.set $at (local.get $w)){stores}
     (i64.extend_i32_u (local.get $w)))
   (func $lit_owned (param $s i64) (result i64)
     (call $dup (local.get $s)))
+  (func $keyword_of (param $s i64) (result i64)
+    ;; A string just lifted, which nothing else holds, as the keyword of
+    ;; its name.
+    (i32.store (call $ptr (local.get $s)) (i32.const {keyword}))
+    (local.get $s))
 "#
     );
     // Run `update` on one element and perform the effects it returns.
     let dispatch = if update.is_empty() {
-        "    (call $drop (local.get $handler))\n    (call $drop (local.get $event))".to_string()
+        "    (call $drop (local.get $command))".to_string()
     } else {
         format!(
             r#"    ;; An element that left meanwhile hears nothing more.
     (if (i64.eqz (i64.load offset=8 (call $slot (local.get $id))))
-      (then (call $drop (local.get $handler)) (call $drop (local.get $event)) (return)))
+      (then (call $drop (local.get $command)) (return)))
     (local.set $model (i64.load (call $slot (local.get $id))))
     (i64.store (call $slot (local.get $id)) (i64.const 2))
     (local.set $r {update})
@@ -639,7 +652,7 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     };
     let _ = write!(
         x,
-        r#"  (func $dispatch (param $id i32) (param $handler i64) (param $event i64)
+        r#"  (func $dispatch (param $id i32) (param $command i64)
     (local $model i64) (local $r i64) (local $effects i64) (local $n i32) (local $i i32) (local $e i32)
 {dispatch})
   (func (export "[async-lift]{iface}#handle-event") (param $id i32) (param $hp i32) (param $hn i32)
@@ -648,8 +661,8 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     (call $release)
     (global.set $which (i32.const 2))
     (call $dispatch (local.get $id)
-      (call $arg_str (local.get $hp) (local.get $hn))
       (call $event_new
+        (call $keyword_of (call $arg_str (local.get $hp) (local.get $hn)))
         (call $arg_str (local.get $kp) (local.get $kn))
         (call $opt_str (local.get $vd) (local.get $vp) (local.get $vn))
         (if (result i64) (local.get $cd) (then (call $bool (local.get $cv))) (else (i64.const 2)))

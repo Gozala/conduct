@@ -66,25 +66,26 @@ $ cargo run -- check examples/todo-item.cdt
 #a65931f7a3 stay : (a) -> {effects: List[Nothing], model: a}
 #0d487b5d59 id-of : (Dict[a]) -> a | String
 #60dab6ec0c save : (Any, attrs: Dict[Any]) -> {effects: List[Effect], model: {editing: Bool}}
-#b7ffd47bd1 update : (a, attrs: Dict[String], event: Any, handler: Any) -> {effects: List[Effect], model: a | {editing: Bool}}
-#22d915a618 view : ({editing: Bool}, attrs: Dict[String]) -> View
+#2f0237dbd5 update : (Any, attrs: Dict[String], model: a) -> {effects: List[Effect], model: a | {editing: Bool}}
+#9726cb5fab view : ({editing: Bool}, attrs: Dict[String]) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (27467 bytes)
+wrote todo-item.wasm (27624 bytes)
 
 $ cargo run -- route examples/todos-route.cdt -o todos.wasm
 wrote todos.wasm (30409 bytes)
 ```
 
 Every type above is inferred; `editing` is the attribute the element
-declares. `update` is defined by clauses, one per event it handles:
+declares. `update` is defined by clauses on the command it hears, by
+its `action`, the keyword the view named it by:
 
 ```clojure
-(define (update model handler: "edit" event attrs) (stay {editing: true}))
-(define (update model handler: "key" event: {key: "Escape"} attrs) (stay {editing: false}))
-(define (update {editing: true} handler: "key" event: {key: "Enter" value: title} attrs)
+(define (update {action: :edit} model attrs) (stay {editing: true}))
+(define (update {action: :keydown key: "Escape"} model attrs) (stay {editing: false}))
+(define (update {action: :keydown key: "Enter" value: title} model: {editing: true} attrs)
   (save title attrs: attrs))
-(define (update model handler event attrs) (stay model))
+(define (update command model attrs) (stay model))
 ```
 
 `cargo test` runs everything: the reader, inference, hashing, the code
@@ -154,7 +155,7 @@ The design the language is heading for is in
 (claim (half integer) : (result integer error: [:odd]))  ; a signature
 (claim (greet! person) with: {print} : {})              ; with capabilities
 
-(h "li" {:class "done"} [child ...] {:click "handler"})     ; a view
+(h "li" {:class "done"} [child ...] {:click :toggle})       ; a view; a click is `:toggle`
 (emit "todo-toggle" id)                                     ; an event to send
 (fetch "PATCH" "/api/todos/a" body "changed")               ; a request to make
 
@@ -570,22 +571,27 @@ An element is pure definitions in the Elm architecture's shape:
 attributes : List[String]          the attributes it observes
 styles     : String                the CSS of its shadow root
 init       : (Dict[String]) -> m   its first model
-update     : (m, String, Event, Dict[String]) -> {model: m, effects: List[Effect]}
-view       : (m, Dict[String]) -> View
+update     : (Command, model: m, attrs: Dict[String]) -> {model: m, effects: List[Effect]}
+view       : (m, attrs: Dict[String]) -> View
 
-Event = {kind: String, value?: String, checked?: Bool,
-         key?: String, status?: Int}
+Command = {action: Keyword, kind: String, value?: String,
+           checked?: Bool, key?: String, status?: Int}
 ```
+
+A command is what happened, by the `action` the code named it by: a
+view names the action each of a node's events stands for, `{:click
+:toggle}`, and a request names the action its response comes back as.
+`update` matches it by its fields, `{action: :keydown key: "Enter"}`,
+and the event's `kind` (`"click"`, `"keydown"`) is beside it.
 
 `update` does nothing itself: it returns effects as data, and generated
 glue performs them. An `emit` effect sends a custom event through the
 world's `host.emit` import. A `fetch` effect names a method, a path, a
-body and a handler, and its response is meant to come back to `update`
-under that handler as an event of kind `"response"` with the body and
-status. So element code stays pure, and the glue is the only code with
+body and an action, and its response comes back to `update` as that
+action, of kind `"response"`, with the body and status. So element code stays pure, and the glue is the only code with
 effects. The element's lifecycle goes through `update` too: the glue
-dispatches `"connected"` when an element is created and
-`"attribute-changed"`, with the attribute's name as the value, when an
+dispatches `:connected` when an element is created and
+`:attribute-changed`, with the attribute's name as the value, when an
 observed attribute changes. `element::check`
 checks the definitions against this contract by subtyping, with the
 model type being whatever `init` returns.
@@ -605,7 +611,7 @@ body, a `future` for trailers, and an async-lowered `send`. The export
 then returns to the host while the request is in flight, and the
 callback carries it on as its events arrive: the body written, the
 response returned, its body read to the end. Then `update` hears the
-response under the handler the effect named, and may ask for more
+response as the action the effect named, and may ask for more
 requests, which join the same task. The task returns once nothing it
 started is in flight, so the host renders after a change has gone out
 and the list has been loaded again, as it does after the Zena element's

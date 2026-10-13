@@ -13,9 +13,9 @@
 ;; and fades the list in as it rises into place.
 ;;
 ;; The Zena version awaits each request in its handler. Here `update`
-;; returns a `fetch` effect naming the handler its response comes back
-;; to: a change goes out under "changed", and "changed" asks for the
-;; list again under "loaded".
+;; returns a `fetch` effect naming the action its response comes back
+;; as: a change goes out as `:changed`, and `:changed` asks for the
+;; list again as `:loaded`.
 
 (define attributes ["filter"])
 
@@ -163,10 +163,10 @@
 ;; Requests
 
 (define (load attrs)
-  (fetch "GET" (str "/api/todos?filter=" (filter-of attrs)) "" "loaded"))
+  (fetch "GET" (str "/api/todos?filter=" (filter-of attrs)) "" :loaded))
 
 (define (change method path body)
-  (fetch method path body "changed"))
+  (fetch method path body :changed))
 
 (define (todo-of j)
   {id: (json-str (json-get j "id"))
@@ -193,40 +193,38 @@
 
 (define (next model effects) {model: model, effects: effects})
 
-(define (text event) (value event ""))
-
 ;; Loading the list.
-(define (update model handler: "connected" event attrs) (next model effects: [(load attrs)]))
-(define (update model handler: "attribute-changed" event: {value: "filter"} attrs) (next model effects: [(load attrs)]))
-(define (update model handler: "loaded" event attrs) (next (loaded model body: (text event)) effects: []))
-(define (update model handler: "changed" event attrs) (next model effects: [(load attrs)]))
+(define (update {action: :connected} model attrs) (next model effects: [(load attrs)]))
+(define (update {action: :attribute-changed value: "filter"} model attrs) (next model effects: [(load attrs)]))
+(define (update {action: :loaded value: body} model attrs) (next (loaded model body: body) effects: []))
+(define (update {action: :changed} model attrs) (next model effects: [(load attrs)]))
 ;; The steps of the reveal, which call no route.
-(define (update model handler: "measured" event attrs)
+(define (update {action: :measured value: height} model attrs)
   (next (assoc model
-          height: (text event)
+          height: height
           phase: (if (= (phase model) "measuring") "revealing" (phase model)))
         effects: []))
-(define (update model handler: "revealed" event attrs)
+(define (update {action: :revealed} model attrs)
   (next (assoc model phase: (if (= (phase model) "revealing") "shown" (phase model))) effects: []))
-(define (update model handler: "about" event attrs) (next (assoc model about-open: (not (about-open model))) effects: []))
+(define (update {action: :about} model attrs) (next (assoc model about-open: (not (about-open model))) effects: []))
 ;; What a person did.
-(define (update model handler: "add" event attrs)
-  (next model effects: [(change "POST" path: "/api/todos" body: (to-json {:title (text event)}))]))
-(define (update model handler: "toggleAll" event attrs)
-  (next model effects: [(change "PATCH" path: "/api/todos" body: (to-json {:completed (= (text event) "true")}))]))
+(define (update {action: :add value: title} model attrs)
+  (next model effects: [(change "POST" path: "/api/todos" body: (to-json {:title title}))]))
+(define (update {action: :toggle-all value: all} model attrs)
+  (next model effects: [(change "PATCH" path: "/api/todos" body: (to-json {:completed (= all "true")}))]))
 ;; The todo with that id, if there is one, flips.
-(define (update model handler: "toggle" event attrs)
+(define (update {action: :toggle value: which} model attrs)
   (next model
-    effects: (map (filter (todos model) where: (fn [todo] (= (id todo) (text event))))
+    effects: (map (filter (todos model) where: (fn [todo] (= (id todo) which)))
                   each: (fn [todo] (change "PATCH"
                                            path: (str "/api/todos/" (id todo))
                                            body: (to-json {:completed (not (completed todo))}))))))
-(define (update model handler: "destroy" event attrs)
-  (next model effects: [(change "DELETE" path: (str "/api/todos/" (text event)) body: "")]))
-(define (update model handler: "edit" event attrs) (next model effects: [(edit (text event))]))
-(define (update model handler: "clear" event attrs) (next model effects: [(change "DELETE" path: "/api/todos" body: "")]))
-;; Any other handler, or another attribute changing, changes nothing.
-(define (update model handler event attrs) (next model effects: []))
+(define (update {action: :destroy value: which} model attrs)
+  (next model effects: [(change "DELETE" path: (str "/api/todos/" which) body: "")]))
+(define (update {action: :edit value: detail} model attrs) (next model effects: [(edit detail)]))
+(define (update {action: :clear} model attrs) (next model effects: [(change "DELETE" path: "/api/todos" body: "")]))
+;; Any other command, or another attribute changing, changes nothing.
+(define (update command model attrs) (next model effects: []))
 
 ;; The view
 
@@ -258,7 +256,7 @@
                   :aria-expanded (if (about-open model) "true" "false")
                   :aria-controls "about"}
         [(h "span" {:class "icon" :aria-hidden "true"} ["i"]) "About this demo"]
-        {:click "about"})
+        {:click :about})
      (if (about-open model) (h "div" {:id "about" :class "about"} about) [])]))
 
 (define (item todo)
@@ -267,7 +265,7 @@
                   :title (title todo)
                   :completed (if (completed todo) "true" "false")}
      []
-     {:todo-toggle "toggle" :todo-destroy "destroy" :todo-edit "edit"}))
+     {:todo-toggle :toggle :todo-destroy :destroy :todo-edit :edit}))
 
 (define (frame-attrs model)
   (let [base {:class "frame" :data-phase (phase model)}]
@@ -282,14 +280,14 @@
                   (h "todo-input" {:has-todos (if (> total 0) "true" "false")
                                    :all-completed (if (and (> total 0) (= (active-count model) 0)) "true" "false")}
                      []
-                     {:todo-add "add" :todo-toggle-all "toggleAll"})])
+                     {:todo-add :add :todo-toggle-all :toggle-all})])
         main (if (> total 0)
                [(h "section" {:class "main"} [(h "ul" {:class "todo-list"} (map (todos model) each: item))])
                 (h "todo-footer" {:active (str (active-count model))
                                   :completed (str (completed-count model))
                                   :filter (filter-of attrs)}
                    []
-                   {:todo-clear "clear"})]
+                   {:todo-clear :clear})]
                [])
         list (h "section" {:class "todoapp"} [header main])
         content [list (info model)]]
@@ -300,4 +298,4 @@
       (h "div" (frame-attrs model)
         [(h "div" {:class "spinner" :key "spinner"} [(h "slot")])
          (h "div" {:class "content" :key "content"} content
-            {:resize "measured" :transitionend "revealed"})]))))
+            {:resize :measured :transitionend :revealed})]))))

@@ -1,10 +1,12 @@
 ;; What every element starts with: the attributes of the element
 ;; contract. `update` answers a `model` and its `effects`, and hears
-;; events, each with its `kind` and whichever of the others apply.
+;; commands: each an `action`, the keyword the view or a request names
+;; it by, its event's `kind`, and whichever of the others apply.
 
 (type model : (conduct.element/model ?model))
 (type effects : (conduct.element/effects (list ?effect)))
 
+(type action : (conduct.event/action keyword))
 (type kind : (conduct.event/kind text))
 (type value : (conduct.event/value text))
 (type checked : (conduct.event/checked boolean))
