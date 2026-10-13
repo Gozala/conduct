@@ -3,7 +3,6 @@
 //! name-free terms that can be hashed.
 
 use crate::reader::{Sexp, Span, bare, mark_of};
-use crate::term::Op;
 use std::fmt;
 
 /// A parameter: the label a caller passes it by, and the name the body
@@ -53,13 +52,6 @@ pub enum Expr {
     Perform(Box<Expr>),
     /// `(perform task with: {capability: {operation: implementation}})`.
     Handle(Box<Expr>, Vec<(String, Vec<(String, Expr)>)>),
-    /// A symbol a template writes: the form `(symbol "name")`, whose
-    /// name is pinned, when the macro is defined, to what it refers to
-    /// there.
-    TemplateSymbol(String),
-    /// A built-in a template uses to build its form, whatever the names
-    /// around it are bound to.
-    Prim(Op, Vec<Expr>),
 }
 
 /// A pattern as written. Record keys and constructors are resolved
@@ -223,22 +215,21 @@ impl Claim {
     }
 }
 
-/// `(macro (name params .. & rest) body)`: a function from the forms
-/// a call is written with to the form it stands for.
+/// `(macro (name pattern ..) template)`: one rule of a macro. A call
+/// whose forms match the pattern stands for the template, with the
+/// pattern's variables replaced by what they matched.
 #[derive(Clone, Debug)]
 pub struct Macro {
     pub name: String,
-    pub params: Vec<Param>,
-    /// The parameter that takes every unlabeled form after the first.
-    pub rest: Option<String>,
-    pub body: Expr,
+    pub pattern: Vec<Sexp>,
+    pub template: Sexp,
     pub span: Span,
 }
 
 /// A top-level form.
 #[derive(Clone, Debug)]
 pub enum Item {
-    /// `(macro (name params ..) body)`.
+    /// `(macro (name pattern ..) template)`.
     Macro(Macro),
     Def(Def),
     /// `(claim name : type)`: what type a definition has.
@@ -271,6 +262,12 @@ fn err<T>(message: impl Into<String>, span: Span) -> Result<T> {
 /// Words that cannot name a definition or a local.
 const RESERVED: &[&str] =
     &["define", "claim", "type", "macro", "fn", "let", "do", "if", "match", "nil", "true", "false"];
+
+/// Whether `name` is a word of the language: a form, or a name no
+/// definition may take.
+pub fn reserved(name: &str) -> bool {
+    RESERVED.contains(&name) || matches!(name, "fn!" | "perform" | "perform!" | "_" | "...")
+}
 
 /// What to write instead of the forms conduct no longer has.
 fn retired(name: &str) -> Option<&'static str> {
@@ -413,34 +410,25 @@ fn parameters(items: &[Sexp], span: Span) -> Result<Vec<Param>> {
     Ok(params)
 }
 
-/// `(macro (when test & body) ..)`: parameters as `define` takes them,
-/// and after `&` the one that takes the rest.
+/// `(macro (cond test then rest ...) (if test then (cond rest ...)))`.
 fn macro_item(args: &[Sexp], span: Span) -> Result<Macro> {
-    const FORM: &str = "a macro is `(macro (name params .. & rest) body)`";
-    let [Sexp::List(head, hspan), body @ ..] = args else {
+    const FORM: &str = "a macro rule is `(macro (name pattern ..) template)`";
+    let [Sexp::List(head, hspan), template] = args else {
         return err(FORM, span);
     };
-    let Some((name, params)) = head.split_first() else {
+    let Some((name, pattern)) = head.split_first() else {
         return err(FORM, *hspan);
     };
-    let name = bare(&binder(name)?).to_string();
-    let (params, rest) = match params.iter().position(|p| p.as_symbol() == Some("&")) {
-        Some(at) => match &params[at + 1..] {
-            [rest] => (&params[..at], Some(binder(rest)?)),
-            _ => return err("`&` is followed by the one parameter that takes the rest", *hspan),
-        },
-        None => (params, None),
+    // A macro's name is the word its calls start with, `!` and all: a
+    // macro may stand for a form that performs.
+    let name = match name {
+        Sexp::Symbol(s, sspan) if reserved(bare(s)) => {
+            return err(format!("`{}` is reserved and cannot be bound", bare(s)), *sspan);
+        }
+        Sexp::Symbol(s, _) => bare(s).to_string(),
+        other => return err(format!("a macro is named by a symbol, not `{other}`"), other.span()),
     };
-    if params.is_empty() && rest.is_none() {
-        return err(format!("`{name}` takes the forms it is called with: `(macro ({name} form) ..)`"), *hspan);
-    }
-    let params = parameters(params, *hspan)?;
-    if let Some(r) = &rest
-        && params.iter().any(|p| &p.local == r || &p.label == r)
-    {
-        return err(format!("parameter `{}` appears twice", bare(r)), *hspan);
-    }
-    Ok(Macro { name, params, rest, body: sequence(body, span)?, span })
+    Ok(Macro { name, pattern: pattern.to_vec(), template: template.clone(), span })
 }
 
 fn claim(args: &[Sexp], span: Span, is_type: bool) -> Result<Claim> {
@@ -762,15 +750,6 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
             "define" | "claim" | "type" | "macro" => {
                 return err(format!("`{name}` is only allowed at the top level"), span);
             }
-            "quasiquote" => {
-                let [form] = args else {
-                    return err("a template is one form", span);
-                };
-                return template(form, span);
-            }
-            "unquote" | "unquote-splicing" => {
-                return err("`~` and `~@` go inside a template, `` `(..) ``", span);
-            }
             "fn" | "fn!" => {
                 let [Sexp::Vector(params, pspan), body @ ..] = args else {
                     return err(format!("`{name}` takes a parameter vector and a body"), span);
@@ -980,55 +959,4 @@ fn pattern(form: &Sexp) -> Result<Pat> {
             );
         }
     })
-}
-
-/// The expression that builds the form a template writes: what a macro
-/// answers. `~e` is `e`'s value, and `~@e` splices the forms of the list
-/// `e` into the form around it.
-fn template(form: &Sexp, span: Span) -> Result<Expr> {
-    let variant = |key: &str, value: Expr| Expr::Record(vec![(format!("conduct.form/{key}"), value)], span);
-    Ok(match form {
-        Sexp::List(items, _) => match items.as_slice() {
-            [head, e] if head.as_symbol() == Some("unquote") => expr(e)?,
-            [head, _] if head.as_symbol() == Some("unquote-splicing") => {
-                return err("`~@` splices forms into a form around it, `(f ~@args)`", span);
-            }
-            [head, _] if head.as_symbol() == Some("quasiquote") => {
-                return err("a template inside a template is not supported yet", span);
-            }
-            _ => variant("parens", spliced(items, span)?),
-        },
-        Sexp::Vector(items, _) => variant("brackets", spliced(items, span)?),
-        Sexp::Map(items, _) => variant("braces", spliced(items, span)?),
-        Sexp::Symbol(name, _) => variant("symbol", Expr::TemplateSymbol(name.clone())),
-        Sexp::Label(name, _) => variant("label", Expr::Str(name.clone())),
-        Sexp::Int(n, _) => Expr::Int(*n),
-        Sexp::Str(s, _) => Expr::Str(s.clone()),
-        Sexp::Keyword(k, _) => Expr::Keyword(k.clone()),
-    })
-}
-
-/// A list of the forms `items` write, with `~@` splices in place.
-fn spliced(items: &[Sexp], span: Span) -> Result<Expr> {
-    let mut parts: Vec<Expr> = Vec::new();
-    let mut run: Vec<Expr> = Vec::new();
-    for item in items {
-        match item {
-            Sexp::List(inner, _) if inner.len() == 2 && inner[0].as_symbol() == Some("unquote-splicing") => {
-                if !run.is_empty() {
-                    parts.push(Expr::List(std::mem::take(&mut run)));
-                }
-                parts.push(expr(&inner[1])?);
-            }
-            other => run.push(template(other, span)?),
-        }
-    }
-    if !run.is_empty() || parts.is_empty() {
-        parts.push(Expr::List(run));
-    }
-    let mut out = parts.pop().unwrap();
-    while let Some(before) = parts.pop() {
-        out = Expr::Prim(Op::Concat, vec![before, out]);
-    }
-    Ok(out)
 }

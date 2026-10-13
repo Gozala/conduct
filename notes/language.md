@@ -337,29 +337,45 @@ making them tasks is open.
 
 ## 7. Macros
 
-Two tiers, the first one first:
+Three tiers, the first one first:
 
-1. **Syntax macros.** A macro is a pure conduct function from forms to a
-   form, run by the compiler. Hygiene comes from hash addressing: a
-   symbol in a macro's template resolves to a hash where the *macro* is
-   defined; binders it introduces are fresh. Macros can read what the
-   compiler knows (a definition's type, a record's attributes), as Lux
-   macros run in `Meta` with the compiler's state. `cond`, `and`, `or`
-   move out of the core into macros.
-2. **Typed quotes** later, after Chris Done's sketch: `~e` has type
-   `'T`, so a macro that only splices its arguments (`when`, `->`)
-   can be checked at its call, before expansion.
+1. **Rules.** **(built)** A macro is a set of rules, each a form with
+   its pattern in the head, as a Datalog predicate is a set of rules:
+
+   ```scheme
+   (macro (cond :else result) result)
+   (macro (cond test then rest ...) (if test then (cond rest ...)))
+   ```
+
+   A call expands by the narrowest rule that matches; rules that overlap
+   with neither narrower are an error, so order means nothing. Every
+   rule of a name taking part in a compilation is closed into one macro.
+   Hygiene: a template's own symbols are marked per expansion and pinned
+   to the hashes they name, as Clojure's syntax-quote qualifies them.
+   `cond`, `and`, `or` are rules in the prelude.
+2. **Procedural macros**, when a macro must compute: a pure conduct
+   function from forms to forms, the forms a variant as Lux's `Code`
+   is, run by an interpreter while compiling. Racket's `syntax-parse`
+   is the model for patterns and error messages over them.
+3. **Typed quotes** later, after Chris Done's sketch: `~e` has type
+   `'T`, so a macro that only splices its arguments can be checked at
+   its call, before expansion.
 
 jerd (Jared Forsyth) planned a third arrangement: macros receive a
-*typed* syntax tree. Its catch puts tier 1 first here: a macro that
-introduces binders (`define`, `match`) cannot have its arguments typed
-before it runs.
+*typed* syntax tree. Its catch puts untyped macros first here: a macro
+that introduces binders (`define`, `match`) cannot have its arguments
+typed before it runs.
 
 Scopes answers the same question by having two kinds instead of a
 default: *sugars* rewrite raw syntax and may introduce binders,
 *spices* are compile-time functions over typed values. Conduct takes
-that split: tier 1 macros are sugars, and code that needs types is a
+that split: tiers 1 and 2 are sugars, and code that needs types is a
 separate kind, not a mode of the same macros.
+
+**Next, the same idea for functions:** several `define`s of one name,
+each with patterns for its parameters, closed into one function by the
+same narrowest-wins rule. That needs list patterns (`[]`, `[x rest
+...]`) in `match` first.
 
 ## 8. Plan
 
@@ -374,7 +390,8 @@ Each step is a pull request with tests; each keeps the demo working.
    the routes as tasks.
 4. **Types and dictionaries.** `type` split from `claim`; members are
    attributes; keyword-keyed sorted dictionaries; one `get`.
-5. **Macros, tier 1.**
+5. **Macros, tier 1: rules.**
+6. **Several `define`s of a name,** with list patterns in `match`.
 
 The acceptance test: the demo's elements and routes, and the job
 example above, written as you would want to read them.
@@ -429,3 +446,7 @@ variants are shown as declarations write them, `(task {} with: {log})`,
   capabilities from a record of implementations.
 - Roc's Task-era design, with the direct-call fast path for its cost.
 - Data is declared, code is inferred.
+- Macros are rules with patterns in the head, a set as Datalog's rules
+  are; every rule of a name in a compilation is closed together, the
+  narrowest matching rule wins, and overlap with neither narrower is an
+  error. Functions will take several `define`s the same way.

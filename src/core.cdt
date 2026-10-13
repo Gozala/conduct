@@ -4,3 +4,14 @@
 (type (ok ?value) : {(conduct.result/ok ?value)})
 (type (error ?reason) : {(conduct.result/error ?reason)})
 (type (result ?value error: ?reason) : [(ok ?value) (error ?reason)])
+
+;; `and`, `or` and `cond` are macros: each is the set of its rules, and
+;; a call expands by the narrowest rule that matches it.
+(macro (and x) x)
+(macro (and x rest ...) (if x (and rest ...) false))
+
+(macro (or x) x)
+(macro (or x rest ...) (if x true (or rest ...)))
+
+(macro (cond :else result) result)
+(macro (cond test then rest ...) (if test then (cond rest ...)))

@@ -172,20 +172,6 @@ impl Reader<'_> {
                 self.error(format!("unexpected `{}`", b as char), start)
             }
             b'"' => self.string(),
-            // A template, and the places in it where a value goes:
-            // `(when ~test ~@body)`.
-            b'`' | b'~' => {
-                let name = match (b, self.src.get(self.pos + 1)) {
-                    (b'`', _) => "quasiquote",
-                    (_, Some(b'@')) => "unquote-splicing",
-                    _ => "unquote",
-                };
-                self.pos += if name == "unquote-splicing" { 2 } else { 1 };
-                let mark = Span { start, end: self.pos };
-                let inner = self.form()?;
-                let span = Span { start, end: inner.span().end };
-                Ok(Sexp::List(vec![Sexp::Symbol(name.to_string(), mark), inner], span))
-            }
             _ => self.atom(),
         }
     }
@@ -290,12 +276,6 @@ mod tests {
             matches!(&forms[1], Sexp::Map(items, _) if matches!(&items[0], Sexp::Label(n, _) if n == "io.gozala.person/name"))
         );
         assert!(matches!(&forms[2], Sexp::Label(n, _) if n.is_empty()));
-    }
-
-    #[test]
-    fn reads_templates() {
-        let forms = read("`(if ~test {} ~@body)").unwrap();
-        assert_eq!(forms[0].to_string(), "(quasiquote (if (unquote test) {} (unquote-splicing body)))");
     }
 
     #[test]

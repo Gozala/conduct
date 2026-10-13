@@ -15,6 +15,18 @@ impl Hash {
         Hash(*blake3::hash(bytes).as_bytes())
     }
 
+    /// A hash from its hex, as [`Hash::hex`] writes it.
+    pub fn from_hex(hex: &str) -> Option<Hash> {
+        if hex.len() != 64 {
+            return None;
+        }
+        let mut out = [0u8; 32];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
+        }
+        Some(Hash(out))
+    }
+
     pub fn hex(&self) -> String {
         self.0.iter().map(|b| format!("{b:02x}")).collect()
     }
