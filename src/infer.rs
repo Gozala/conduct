@@ -286,6 +286,20 @@ impl Infer<'_> {
             Pattern::Int(_) => (Ty::int(), vec![]),
             Pattern::Any => (t, vec![]),
             Pattern::Bind(_) => (t.clone(), vec![t]),
+            Pattern::List(items, rest) => {
+                // Every item is one type, so a list's patterns narrow
+                // what is bound, not the list.
+                let item = s.fresh_ty(level);
+                s.constrain(&t, &Ty::list(item.clone()))?;
+                let mut binders = Vec::new();
+                for p in items {
+                    binders.extend(self.narrow(item.clone(), &[], p, level)?.1);
+                }
+                if let Some(r) = rest {
+                    binders.extend(self.narrow(Ty::list(item), &[], r, level)?.1);
+                }
+                (t, binders)
+            }
             Pattern::Fields(fields) => {
                 // A field is read only where the value has it, so a
                 // variant pattern asks nothing of the other variants.
@@ -396,6 +410,14 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         Op::JsonBool => (vec![json()], Ty::bool()),
         Op::JsonType => (vec![json()], Ty::str()),
         Op::HasField => (vec![Ty::Top, Ty::str()], Ty::bool()),
+        Op::Nth => {
+            let a = var();
+            (vec![Ty::list(a.clone()), Ty::int()], a)
+        }
+        Op::Drop => {
+            let a = var();
+            (vec![Ty::list(a.clone()), Ty::int()], Ty::list(a))
+        }
         Op::WithEnv => (vec![Ty::Top, Ty::Top], Ty::Top),
     }
 }
@@ -412,10 +434,27 @@ fn json() -> Ty {
 /// the variants named, each with what its payload patterns cover, or a
 /// record with the fields a pattern of `_`s names.
 fn cover_type(patterns: &[&Pattern]) -> Option<Ty> {
+    // A function's clauses: each argument holds only what its column's
+    // patterns name, which is what deciding they cover assumed.
+    if let Some(keys) = crate::term::argument_columns(patterns) {
+        let column = |k: &String| -> Vec<&Pattern> {
+            patterns
+                .iter()
+                .filter_map(|p| match p {
+                    Pattern::Fields(f) => f.iter().find(|(l, _)| l == k).map(|(_, p)| p),
+                    _ => None,
+                })
+                .collect()
+        };
+        return Some(Ty::record(keys.iter().map(|k| (k.clone(), column_type(&column(k))))));
+    }
     // An irrefutable clause covers by itself; the fields it names are
     // required by the reads that test them.
     if patterns.iter().any(|p| p.irrefutable()) {
         return None;
+    }
+    if patterns.iter().all(|p| matches!(p, Pattern::List(..))) {
+        return Some(Ty::list(Ty::Top));
     }
     let Some(variants) = patterns.iter().map(|p| p.variant()).collect::<Option<Vec<_>>>() else {
         // A record pattern of `_`s: the value must have its fields. Of
@@ -441,4 +480,16 @@ fn cover_type(patterns: &[&Pattern]) -> Option<Ty> {
         return Some(Ty::record([(k.to_string(), payload(k).unwrap_or(Ty::Top))]));
     }
     Some(Ty::tags(variants.iter().map(|v| (v.0.to_string(), payload(v.0)))))
+}
+
+/// What a column of a function's clauses lets its argument be: what
+/// deciding the clauses cover assumed (see [`crate::term::Sig`]).
+fn column_type(patterns: &[&Pattern]) -> Ty {
+    fn ty(sig: &crate::term::Sig) -> Ty {
+        match sig {
+            crate::term::Sig::Open => Ty::Top,
+            crate::term::Sig::Tags(tags) => Ty::tags(tags.iter().map(|(k, p)| (k.clone(), p.as_ref().map(ty)))),
+        }
+    }
+    ty(&crate::term::Sig::of(patterns))
 }

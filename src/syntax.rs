@@ -52,6 +52,30 @@ pub enum Expr {
     Perform(Box<Expr>),
     /// `(perform task with: {capability: {operation: implementation}})`.
     Handle(Box<Expr>, Vec<(String, Vec<(String, Expr)>)>),
+    /// A function defined by clauses, each with patterns for its
+    /// parameters: every `define` of one name in a compilation.
+    Clauses(Vec<Clause>),
+}
+
+/// One clause of a function: a pattern for each parameter, the first
+/// without a label, and the body for calls they match. A name alone
+/// binds the argument, whatever it is.
+#[derive(Clone, Debug)]
+pub struct Clause {
+    pub params: Vec<(Option<String>, Pat)>,
+    pub body: Expr,
+}
+
+impl Clause {
+    /// A function written with names alone, as a clause.
+    pub fn of_fn(params: &[Param], body: &Expr) -> Clause {
+        let params = params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| ((i > 0).then(|| p.label.clone()), Pat::Name(p.local.clone())))
+            .collect();
+        Clause { params, body: body.clone() }
+    }
 }
 
 /// A pattern as written. Record keys and constructors are resolved
@@ -71,6 +95,9 @@ pub enum Pat {
     /// `(ok value)`, `(done description: d)`: a record type, and patterns
     /// for its attributes, the first unlabeled.
     Ctor(String, Vec<(Option<String>, Pat)>),
+    /// `[]`, `[x y]`, `[first rest ...]`: patterns for a list's first
+    /// items and, after `...`, a name (or `_`) for the list of the rest.
+    List(Vec<Pat>, Option<Option<String>>),
 }
 
 impl Pat {
@@ -82,6 +109,12 @@ impl Pat {
                 Pat::Name(n) => out.push(n.clone()),
                 Pat::Record(fields) => fields.iter().for_each(|(_, p)| go(p, out)),
                 Pat::Ctor(_, args) => args.iter().for_each(|(_, p)| go(p, out)),
+                Pat::List(items, rest) => {
+                    items.iter().for_each(|p| go(p, out));
+                    if let Some(Some(r)) = rest {
+                        out.push(r.clone());
+                    }
+                }
                 _ => {}
             }
         }
@@ -370,8 +403,15 @@ fn define(args: &[Sexp], span: Span) -> Result<Def> {
                 }
                 return err(format!("`{name}` takes no parameters, so it is a value: `(define {name} value)`"), *hspan);
             }
-            let params = parameters(params, *hspan)?;
-            Ok(Def { name, body: Expr::Fn(params, Box::new(body)), span })
+            // Names alone make a function; any pattern makes a clause of
+            // one.
+            let plain = params.iter().all(|p| matches!(p, Sexp::Symbol(..) | Sexp::Label(..)));
+            if plain {
+                let params = parameters(params, *hspan)?;
+                return Ok(Def { name, body: Expr::Fn(params, Box::new(body)), span });
+            }
+            let params = clause_parameters(params, *hspan)?;
+            Ok(Def { name, body: Expr::Clauses(vec![Clause { params, body }]), span })
         }
         _ => err("`define` takes a name and a value, or `(name params ..)` and a body", span),
     }
@@ -431,6 +471,50 @@ fn macro_item(args: &[Sexp], span: Span) -> Result<Macro> {
         other => return err(format!("a macro is named by a symbol, not `{other}`"), other.span()),
     };
     Ok(Macro { name, pattern: pattern.to_vec(), template: template.clone(), span })
+}
+
+/// `[] by: 0`: a pattern for each parameter, the first unlabeled.
+fn clause_parameters(items: &[Sexp], span: Span) -> Result<Vec<(Option<String>, Pat)>> {
+    let mut out: Vec<(Option<String>, Pat)> = Vec::new();
+    let mut rest = items.iter();
+    while let Some(item) = rest.next() {
+        match item {
+            Sexp::Label(label, lspan) if !out.is_empty() => {
+                let Some(p) = rest.next() else {
+                    return err(format!("the label `{label}:` needs a pattern"), *lspan);
+                };
+                if out.iter().any(|(l, _)| l.as_deref() == Some(label)) {
+                    return err(format!("the label `{label}:` appears twice"), *lspan);
+                }
+                out.push((Some(label.clone()), pattern(p)?));
+            }
+            Sexp::Label(_, lspan) => {
+                return err("the first parameter is passed without a label, so it is a pattern alone", *lspan);
+            }
+            p if out.is_empty() => out.push((None, pattern(p)?)),
+            // A name alone is its own label, as in a function's head.
+            Sexp::Symbol(..) => {
+                let name = binder(item)?;
+                let label = bare(&name).to_string();
+                if out.iter().any(|(l, _)| l.as_deref() == Some(&label)) {
+                    return err(format!("the label `{label}:` appears twice"), item.span());
+                }
+                out.push((Some(label), Pat::Name(name)));
+            }
+            p => {
+                return err(
+                    format!("after the first parameter, each is a name or `label: pattern`, not `{p}`"),
+                    p.span(),
+                );
+            }
+        }
+    }
+    let mut names: Vec<String> = out.iter().flat_map(|(_, p)| p.binders()).collect();
+    names.sort();
+    if let Some(w) = names.windows(2).find(|w| w[0] == w[1]) {
+        return err(format!("the parameters bind `{}` twice", bare(&w[0])), span);
+    }
+    Ok(out)
 }
 
 fn claim(args: &[Sexp], span: Span, is_type: bool) -> Result<Claim> {
@@ -913,6 +997,35 @@ fn pattern(form: &Sexp) -> Result<Pat> {
                 return err(format!("`{}` is reserved, so it cannot name a value a pattern binds", bare(s)), *sspan);
             }
             Pat::Name(s.clone())
+        }
+        Sexp::Vector(items, _) => {
+            let mut out = Vec::new();
+            let mut rest = None;
+            let mut i = 0;
+            while i < items.len() {
+                if items[i].as_symbol() == Some("...") {
+                    return err("`...` follows the pattern it repeats: `[first rest ...]`", items[i].span());
+                }
+                if items.get(i + 1).is_some_and(|f| f.as_symbol() == Some("...")) {
+                    if i + 2 != items.len() {
+                        return err("`...` repeats the last pattern of a list, so nothing follows it", items[i].span());
+                    }
+                    rest = Some(match pattern(&items[i])? {
+                        Pat::Name(n) => Some(n),
+                        Pat::Any => None,
+                        _ => {
+                            return err(
+                                "in a list pattern, `...` follows a name for the rest of the list, or `_`",
+                                items[i].span(),
+                            );
+                        }
+                    });
+                    break;
+                }
+                out.push(pattern(&items[i])?);
+                i += 1;
+            }
+            Pat::List(out, rest)
         }
         Sexp::Map(items, _) if !items.is_empty() && items.len().is_multiple_of(2) => {
             let mut fields: Vec<(String, Pat)> = Vec::new();

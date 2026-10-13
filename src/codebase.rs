@@ -11,7 +11,7 @@ use crate::claims::{self, Claims, Env, Mode, TypeDef};
 use crate::infer::{Binding, Globals, Infer};
 use crate::macros::{self, Rule};
 use crate::reader::{self, Sexp, bare, pin_of};
-use crate::syntax::{self, Arg, Claim, Def, Expr, Item, Param, Pat, TypeExpr};
+use crate::syntax::{self, Arg, Claim, Clause, Def, Expr, Item, Param, Pat, TypeExpr};
 use crate::term::{Hash, Op, Pattern, Term};
 use crate::types::{Scheme, Solver, Ty, TypeError, coalesce};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -495,12 +495,34 @@ impl Codebase {
                 });
             }
         }
-        // A later definition of a name in the same source replaces an
-        // earlier one.
+        // Every definition of a function's name in a compilation is a
+        // clause of it, as every rule of a Datalog predicate is.
         let mut batch: Vec<Def> = Vec::new();
         for d in defs {
-            batch.retain(|b| b.name != d.name);
-            batch.push(d);
+            let Some(b) = batch.iter_mut().find(|b| b.name == d.name) else {
+                batch.push(d);
+                continue;
+            };
+            let clauses = |e: &Expr| match e {
+                Expr::Fn(params, body) => Some(vec![Clause::of_fn(params, body)]),
+                Expr::Clauses(cs) => Some(cs.clone()),
+                _ => None,
+            };
+            match (clauses(&b.body), clauses(&d.body)) {
+                (Some(mut all), Some(more)) => {
+                    all.extend(more);
+                    b.body = Expr::Clauses(all);
+                }
+                _ => {
+                    return Err(Error::Resolve {
+                        def: d.name.clone(),
+                        message: format!(
+                            "`{}` is defined twice: only a function may have several definitions, one per clause",
+                            d.name
+                        ),
+                    });
+                }
+            }
         }
         let index: HashMap<&str, usize> = batch.iter().enumerate().map(|(i, d)| (d.name.as_str(), i)).collect();
 
@@ -545,6 +567,7 @@ impl Codebase {
                     {
                         let labels = match &members[i].body {
                             Expr::Fn(params, _) => Some(canonical(params).into_iter().map(|p| p.label).collect()),
+                            Expr::Clauses(clauses) => clause_labels(clauses).ok(),
                             _ => None,
                         };
                         return Some(Target::Cycle(i as u32, labels));
@@ -884,6 +907,16 @@ impl Names<'_> {
                 (Pattern::Fields(out), None)
             }
             Pat::Ctor(name, args) => (self.constructor(name, args)?, Some(name.clone())),
+            Pat::List(items, rest) => {
+                let items = items.iter().map(|p| Ok(self.pattern(p)?.0)).collect::<Result<_, ResolveError>>()?;
+                let rest = rest.as_ref().map(|r| {
+                    Box::new(match r {
+                        Some(name) => Pattern::Bind(name.clone()),
+                        None => Pattern::Any,
+                    })
+                });
+                (Pattern::List(items, rest), None)
+            }
         })
     }
 
@@ -1111,6 +1144,7 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
             Term::Fn(params.into_iter().map(|p| p.label).collect(), Box::new(body?))
         }
         Expr::App(callee, args, _) => app(callee, args, scope, names)?,
+        Expr::Clauses(clauses) => clauses_term(clauses, scope, names)?,
         Expr::Let(name, value, body) => {
             names.local(name)?;
             let value = b(value, scope)?;
@@ -1464,6 +1498,20 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
                 free_names(d, scope, out);
             }
         }
+        Expr::Clauses(clauses) => {
+            for c in clauses {
+                let mut bound = Vec::new();
+                for (_, p) in &c.params {
+                    match p {
+                        Pat::Name(n) => bound.push(n.clone()),
+                        p => bound.extend(p.binders()),
+                    }
+                }
+                scope.extend(bound.iter().cloned());
+                free_names(&c.body, scope, out);
+                scope.truncate(scope.len() - bound.len());
+            }
+        }
         Expr::Task(e) | Expr::Perform(e) => free_names(e, scope, out),
         Expr::Handle(t, provided) => {
             free_names(t, scope, out);
@@ -1565,4 +1613,173 @@ fn strongly_connected(deps: &[Vec<usize>]) -> Vec<Vec<usize>> {
         }
     }
     s.out
+}
+
+/// The labels of a function defined by clauses, in its parameters'
+/// order: the first parameter's, which the clauses that name it must
+/// agree on, then the others', which every clause gives.
+fn clause_labels(clauses: &[Clause]) -> Result<Vec<String>, ResolveError> {
+    let invalid = |m: String| Err(ResolveError::Invalid(m));
+    let mut first: Option<String> = None;
+    for c in clauses {
+        if let Some((None, Pat::Name(n))) = c.params.first() {
+            let n = bare(n).to_string();
+            match &first {
+                Some(f) if *f != n => {
+                    return invalid(format!(
+                        "the clauses call the first parameter `{f}` and `{n}`: callers may pass it by its name, \
+                         so the clauses agree on it"
+                    ));
+                }
+                _ => first = Some(n),
+            }
+        }
+    }
+    let labels_of = |c: &Clause| {
+        let mut l: Vec<String> = c.params.iter().skip(1).filter_map(|(l, _)| l.clone()).collect();
+        l.sort();
+        l
+    };
+    let rest = labels_of(&clauses[0]);
+    for c in &clauses[1..] {
+        let other = labels_of(c);
+        if other != rest {
+            return invalid(format!("the clauses take different parameters: `{}` and `{}`", text(&rest), text(&other)));
+        }
+    }
+    Ok(std::iter::once(first.unwrap_or_else(|| "value".into())).chain(rest).collect())
+}
+
+/// A function defined by clauses: a `match` of its arguments, the
+/// narrowest clause first. Clauses that overlap, neither narrower, are an
+/// error, as rules of a macro are; so are clauses that leave a call
+/// unmatched.
+fn clauses_term(clauses: &[Clause], scope: &mut Vec<String>, names: &Names) -> Result<Term, ResolveError> {
+    let invalid = |m: String| Err(ResolveError::Invalid(m));
+    let labels = clause_labels(clauses)?;
+    let n = labels.len();
+    let key = |i: usize| format!("conduct.argument/{i:03}");
+    let performs = clauses.iter().all(|c| matches!(c.body, Expr::Task(_)));
+    if !performs && clauses.iter().any(|c| matches!(c.body, Expr::Task(_))) {
+        return invalid(
+            "some clauses are marked `!` and some are not: a function makes a task in every clause or in none".into(),
+        );
+    }
+    let params: Vec<String> = (0..n).map(|i| format!(" argument {i}")).collect();
+    let mut arms: Vec<(Pattern, Term, String)> = Vec::new();
+    for c in clauses {
+        // Parameters in the function's order: the first, then by label.
+        let mut ordered: Vec<&(Option<String>, Pat)> = c.params.iter().collect();
+        ordered[1..].sort_by(|a, b| a.0.cmp(&b.0));
+        let mut patterns = Vec::new();
+        for (_, p) in ordered {
+            patterns.push(match p {
+                // A parameter's name binds the argument, even one that
+                // names a record type.
+                Pat::Name(name) => Pattern::Bind(name.clone()),
+                p => names.pattern(p)?.0,
+            });
+        }
+        let pattern = if n == 1 {
+            patterns.pop().unwrap()
+        } else {
+            Pattern::Fields(patterns.into_iter().enumerate().map(|(i, p)| (key(i), p)).collect())
+        };
+        let bound = pattern.binders();
+        for b in &bound {
+            names.local(b)?;
+        }
+        scope.extend(params.iter().cloned());
+        scope.extend(bound.iter().cloned());
+        let body = match &c.body {
+            Expr::Task(inner) => resolve(inner, scope, names),
+            other => resolve(other, scope, names),
+        };
+        scope.truncate(scope.len() - params.len() - bound.len());
+        let head = c.params.iter().map(|(l, p)| match (l, p) {
+            (Some(l), Pat::Name(n)) if bare(n) == l => l.clone(),
+            (Some(l), p) => format!("{l}: {}", pat_text(p)),
+            (None, p) => pat_text(p),
+        });
+        arms.push((pattern, body?, head.collect::<Vec<_>>().join(" ")));
+    }
+    // The order clauses are written in means nothing: start from one
+    // that does not depend on it.
+    let encoded = |p: &Pattern, t: &Term| {
+        let mut bytes = Vec::new();
+        Term::Match(Box::new(Term::Nil), vec![(p.clone(), t.clone())], None).encode(&mut bytes, &|i| i);
+        bytes
+    };
+    arms.sort_by_cached_key(|(p, t, _)| encoded(p, t));
+    for (i, (a, _, ah)) in arms.iter().enumerate() {
+        for (b, _, bh) in &arms[i + 1..] {
+            if !a.overlaps(b) {
+                continue;
+            }
+            match (a.narrower(b), b.narrower(a)) {
+                (true, true) => return invalid(format!("the clauses `({ah})` and `({bh})` match the same calls")),
+                (false, false) => {
+                    return invalid(format!(
+                        "some call matches both `({ah})` and `({bh})`, and neither is narrower, so it could take \
+                         either: make one narrower than the other, or make them disjoint"
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    // Narrower clauses first: each is tried before any it is in.
+    let mut ordered = Vec::new();
+    while !arms.is_empty() {
+        let at = (0..arms.len())
+            .find(|&i| {
+                !arms.iter().enumerate().any(|(j, b)| j != i && b.0.overlaps(&arms[i].0) && b.0.narrower(&arms[i].0))
+            })
+            .expect("narrower is a partial order");
+        let (p, t, _) = arms.remove(at);
+        ordered.push((p, t));
+    }
+    if !Pattern::cover(&ordered.iter().map(|(p, _)| p).collect::<Vec<_>>()) {
+        return invalid(
+            "the clauses do not cover every call: add one for the calls they leave out, or one whose parameters \
+             are all names"
+                .into(),
+        );
+    }
+    let scrutinee = if n == 1 {
+        Term::Local(0)
+    } else {
+        Term::Record((0..n).map(|i| (key(i), Term::Local((n - 1 - i) as u32))).collect())
+    };
+    let body = Term::Match(Box::new(scrutinee), ordered, None);
+    let body = if performs { Term::Task(Box::new(body)) } else { body };
+    Ok(Term::Fn(labels, Box::new(body)))
+}
+
+/// A parameter's pattern, as a person wrote it.
+fn pat_text(p: &Pat) -> String {
+    match p {
+        Pat::Keyword(k) => format!(":{k}"),
+        Pat::Str(s) => format!("{s:?}"),
+        Pat::Int(n) => n.to_string(),
+        Pat::Any => "_".into(),
+        Pat::Name(n) => bare(n).to_string(),
+        Pat::Record(fields) => {
+            format!("{{{}}}", fields.iter().map(|(k, p)| format!("{k}: {}", pat_text(p))).collect::<Vec<_>>().join(" "))
+        }
+        Pat::Ctor(name, args) => {
+            let args = args.iter().map(|(l, p)| match l {
+                Some(l) => format!(" {l}: {}", pat_text(p)),
+                None => format!(" {}", pat_text(p)),
+            });
+            format!("({name}{})", args.collect::<String>())
+        }
+        Pat::List(items, rest) => {
+            let mut parts: Vec<String> = items.iter().map(pat_text).collect();
+            if let Some(r) = rest {
+                parts.push(format!("{} ...", r.as_deref().map(bare).unwrap_or("_")));
+            }
+            format!("[{}]", parts.join(" "))
+        }
+    }
 }

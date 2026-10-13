@@ -372,10 +372,10 @@ default: *sugars* rewrite raw syntax and may introduce binders,
 that split: tiers 1 and 2 are sugars, and code that needs types is a
 separate kind, not a mode of the same macros.
 
-**Next, the same idea for functions:** several `define`s of one name,
-each with patterns for its parameters, closed into one function by the
-same narrowest-wins rule. That needs list patterns (`[]`, `[x rest
-...]`) in `match` first.
+**The same idea for functions** **(built)**: several `define`s of one
+name, each with patterns for its parameters, are one function closed by
+the same narrowest-wins rule, with list patterns (`[]`, `[x rest ...]`)
+in `match` and in parameters.
 
 ## 8. Plan
 
@@ -391,7 +391,7 @@ Each step is a pull request with tests; each keeps the demo working.
 4. **Types and dictionaries.** `type` split from `claim`; members are
    attributes; keyword-keyed sorted dictionaries; one `get`.
 5. **Macros, tier 1: rules.**
-6. **Several `define`s of a name,** with list patterns in `match`.
+6. **Several `define`s of a name,** with list patterns in `match`. **(built)**
 
 The acceptance test: the demo's elements and routes, and the job
 example above, written as you would want to read them.
