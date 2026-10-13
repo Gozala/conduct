@@ -100,9 +100,9 @@ pub enum Pat {
     /// `[]`, `[x y]`, `[first rest ...]`: patterns for a list's first
     /// items and, after `...`, a name (or `_`) for the list of the rest.
     List(Vec<Pat>, Option<Option<String>>),
-    /// A pattern that also binds the whole value: `{action: :toggle
-    /// command ...}`.
-    As(String, Box<Pat>),
+    /// A record pattern that also binds the rest of the record, without
+    /// the fields it names: `{action: :toggle params ...}`.
+    Rest(String, Box<Pat>),
 }
 
 impl Pat {
@@ -120,7 +120,7 @@ impl Pat {
                         out.push(r.clone());
                     }
                 }
-                Pat::As(name, p) => {
+                Pat::Rest(name, p) => {
                     out.push(name.clone());
                     go(p, out);
                 }
@@ -1038,22 +1038,32 @@ fn pattern(form: &Sexp) -> Result<Pat> {
             }
             Pat::List(out, rest)
         }
-        // `{action: :toggle command ...}`: the record's fields, and after
-        // them a name for the whole record, as `...` names the rest of a
-        // list.
+        // `{action: :toggle params ...}`: the record's fields, and after
+        // them a name for the rest of the record, as `...` names the rest
+        // of a list.
         Sexp::Map(items, mspan) if items.len() >= 2 && items.last().and_then(Sexp::as_symbol) == Some("...") => {
             let n = items.len();
             let whole = match &items[n - 2] {
                 Sexp::Symbol(..) => match pattern(&items[n - 2])? {
                     Pat::Name(name) => Some(name),
                     Pat::Any => None,
-                    _ => return err("a record pattern ends with a name for the whole record: `{.. rest ...}`", *mspan),
+                    _ => {
+                        return err(
+                            "a record pattern ends with a name for the rest of the record: `{.. rest ...}`",
+                            *mspan,
+                        );
+                    }
                 },
-                _ => return err("a record pattern ends with a name for the whole record: `{.. rest ...}`", *mspan),
+                _ => {
+                    return err(
+                        "a record pattern ends with a name for the rest of the record: `{.. rest ...}`",
+                        *mspan,
+                    );
+                }
             };
             let fields = pattern(&Sexp::Map(items[..n - 2].to_vec(), *mspan))?;
             match whole {
-                Some(name) => Pat::As(name, Box::new(fields)),
+                Some(name) => Pat::Rest(name, Box::new(fields)),
                 None => fields,
             }
         }

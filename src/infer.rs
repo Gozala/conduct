@@ -289,9 +289,14 @@ impl Infer<'_> {
             Pattern::Bind(_) => (t.clone(), vec![t]),
             // The whole value, as the pattern it is bound beside narrows
             // it.
-            Pattern::As(_, p) => {
+            Pattern::Rest(_, p) => {
                 let (narrowed, mut binders) = self.narrow(t, &[], p, level)?;
-                binders.insert(0, narrowed.clone());
+                let named: Vec<String> = match p.core() {
+                    Pattern::Fields(fields) => fields.iter().map(|(k, _)| k.clone()).collect(),
+                    _ => vec![],
+                };
+                let rest = named.into_iter().fold(narrowed.clone(), Ty::without);
+                binders.insert(0, rest);
                 (narrowed, binders)
             }
             Pattern::List(items, rest) => {
@@ -418,6 +423,7 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         Op::JsonBool => (vec![json()], Ty::bool()),
         Op::JsonType => (vec![json()], Ty::str()),
         Op::HasField => (vec![Ty::Top, Ty::str()], Ty::bool()),
+        Op::Without => (vec![Ty::Top, Ty::str()], Ty::Top),
         Op::Nth => {
             let a = var();
             (vec![Ty::list(a.clone()), Ty::int()], a)

@@ -908,9 +908,9 @@ impl Names<'_> {
                 (Pattern::Fields(out), None)
             }
             Pat::Ctor(name, args) => (self.constructor(name, args)?, Some(name.clone())),
-            Pat::As(name, p) => {
+            Pat::Rest(name, p) => {
                 let (inner, ctor) = self.pattern(p)?;
-                (Pattern::As(name.clone(), Box::new(inner)), ctor)
+                (Pattern::Rest(name.clone(), Box::new(inner)), ctor)
             }
             Pat::List(items, rest) => {
                 let items = items.iter().map(|p| Ok(self.pattern(p)?.0)).collect::<Result<_, ResolveError>>()?;
@@ -1816,7 +1816,7 @@ fn pat_text(p: &Pat) -> String {
             });
             format!("({name}{})", args.collect::<String>())
         }
-        Pat::As(name, p) => {
+        Pat::Rest(name, p) => {
             let inner = pat_text(p);
             format!("{} {} ...}}", &inner[..inner.len() - 1], bare(name))
         }

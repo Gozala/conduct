@@ -138,6 +138,17 @@ impl Ty {
     pub fn task(t: Ty, caps: Ty) -> Ty {
         Ty::Task(Rc::new(t), Rc::new(caps))
     }
+    /// A record without the field `field`: what a record pattern's rest
+    /// is. It is an update that sets the field to nothing.
+    pub fn without(record: Ty, field: String) -> Ty {
+        Ty::update(record, field, Ty::Opt(Rc::new(Ty::Bot)))
+    }
+
+    /// Whether a field set to this is no field at all.
+    pub fn absent(&self) -> bool {
+        matches!(self, Ty::Opt(t) if matches!(**t, Ty::Bot))
+    }
+
     pub fn dict(t: Ty) -> Ty {
         Ty::Dict(Rc::new(t))
     }
@@ -428,7 +439,13 @@ impl Solver {
                 // field the reader wants comes from the original record.
                 Ty::Record(wanted) => {
                     for (name, t) in wanted.iter() {
-                        if name == field {
+                        // A field taken out is there only where it may
+                        // be absent.
+                        if name == field && value.absent() {
+                            if !matches!(t, Ty::Opt(_)) {
+                                return Err(TypeError(format!("the record has no `{field}`: a pattern took it out")));
+                            }
+                        } else if name == field {
                             self.go(value, unopt(t), cache)?;
                         } else if cache.reads.insert((record.key(), name.clone(), t.key())) {
                             self.go(record, &Ty::record([(name.clone(), t.clone())]), cache)?;
@@ -436,6 +453,7 @@ impl Solver {
                     }
                     Ok(())
                 }
+                Ty::IfHas(k, _) if k == field && value.absent() => Ok(()),
                 Ty::IfHas(k, t) if k == field => self.go(value, t, cache),
                 Ty::IfHas(..) => self.go(record, rhs, cache),
                 // A variant with its own field set is that variant again.
@@ -735,7 +753,7 @@ fn simplify(ty: Type) -> Type {
     let mut ty = normalize(ty);
     // Merge or drop variables by what they co-occur with, until nothing
     // changes.
-    for _ in 0..8 {
+    for _ in 0..64 {
         let next = normalize(cooccurrence(ty.clone()));
         if next == ty {
             break;
@@ -869,6 +887,26 @@ fn cooccurrence(ty: Type) -> Type {
                 // Always beside the same concrete type in both
                 // polarities: the variable can only ever be that type.
                 _ => return drop_var(ty, v, true),
+            }
+        }
+    }
+    // Two variables that every negative occurrence has together are one:
+    // what flows in flows into both, so instantiating both with what
+    // flows in is as general, where they only flow out apart.
+    let mut vars: Vec<u32> = co.keys().filter(|k| !k.1).map(|k| k.0).collect();
+    vars.sort();
+    for v in vars {
+        if bound.contains(&v) {
+            continue;
+        }
+        let Some(neg) = co.get(&(v, false)) else { continue };
+        for t in neg {
+            if let Type::Var(w) = t
+                && *w != v
+                && !bound.contains(w)
+                && co.get(&(*w, false)).is_some_and(|other| other.contains(&Type::Var(v)))
+            {
+                return substitute(ty, v, &Type::Var(*w));
             }
         }
     }
@@ -1307,11 +1345,18 @@ fn merge_records(parts: &mut Vec<Type>, union: bool) {
 /// A record with one field set, shown as the record when the original
 /// is one.
 fn update(record: Type, field: String, value: Type) -> Type {
+    let absent = value == Type::Opt(Box::new(Type::Bot));
     match record {
+        Type::Record(mut fields) if absent => {
+            fields.remove(&field);
+            Type::Record(fields)
+        }
         Type::Record(mut fields) => {
             fields.insert(field, value);
             Type::Record(fields)
         }
+        // Setting a field again sets it once.
+        Type::Update(inner, k, _) if k == field => update(*inner, field, value),
         // A variant is the record of one field it is.
         Type::Tags(ref tags) if tags.len() == 1 && tags.values().all(|p| p.is_some()) => {
             update(as_record(&record), field, value)
@@ -1505,11 +1550,32 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
             write_type(body, f, 0)?;
             write!(f, ")")
         }
-        Type::Update(r, k, v) => {
+        Type::Update(..) => {
+            // Updates of an update are one: `(a with x: Int, y: Bool)`.
+            let mut steps = Vec::new();
+            let mut base = ty;
+            while let Type::Update(r, k, v) = base {
+                steps.push((k, v));
+                base = r;
+            }
+            steps.reverse();
             write!(f, "(")?;
-            write_type(r, f, 0)?;
-            write!(f, " with {k}: ")?;
-            write_type(v, f, 0)?;
+            write_type(base, f, 0)?;
+            let absent = Type::Opt(Box::new(Type::Bot));
+            let (gone, set): (Vec<_>, Vec<_>) = steps.into_iter().partition(|(_, v)| ***v == absent);
+            if !set.is_empty() {
+                write!(f, " with ")?;
+                for (i, (k, v)) in set.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{k}: ")?;
+                    write_type(v, f, 0)?;
+                }
+            }
+            if !gone.is_empty() {
+                write!(f, " without {}", gone.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(", "))?;
+            }
             write!(f, ")")
         }
         Type::Opt(t) => write_type(t, f, prec),
