@@ -24,6 +24,7 @@ pub mod infer;
 pub mod macros;
 pub mod reader;
 pub mod route;
+pub mod service;
 pub mod syntax;
 pub mod term;
 pub mod types;

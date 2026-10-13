@@ -58,6 +58,15 @@ conduct routes, each in a store of its own as the demo's service worker
 keeps them, and the routes change the model. Neither the element's
 memory nor the routes' grows over 120 more requests.
 
+The compiler is a component too ([`compiler/`](compiler)). It builds for
+`wasm32-unknown-unknown` with `wit-bindgen`, imports nothing, and exports
+`compile` and `check` as WASI 0.3 `async` functions
+([`compiler.wit`](compiler/wit/compiler.wit)): `compile` answers a
+source's component, `check` the type of each definition it adds, and
+either answers a failure with the bytes of the source it is about. A test
+runs it on the polyfill and gets, for each example, the bytes the native
+compiler makes. `compiler/build.sh` builds it.
+
 ```
 $ cargo run -- check examples/todo-item.cdt
 #2b845adc8c attributes : (list text)
@@ -703,9 +712,8 @@ polyfill with stack switching, JSPI, or nested turns.
    before it failed. That needs MLstruct's negation types.
 3. **The codebase in Dialog**: definitions as facts, names as assertions
    that point at hashes.
-4. **The compiler in the browser**: its dependencies are pure Rust, but
-   building it for `wasm32` has not been tried yet. With it, the demo's
-   page could compile conduct as it compiles Zena.
+4. **The demo in the browser**: the demo's page and service worker,
+   compiling conduct with the compiler component as they compile Zena.
 
 [Wasm Component Model Polyfill]: https://github.com/dialog-db/wasm-component-model-polyfill
 [`examples/todo-item.cdt`]: examples/todo-item.cdt

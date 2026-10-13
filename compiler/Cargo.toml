@@ -1,0 +1,23 @@
+[package]
+name = "conduct-compiler"
+version = "0.1.0"
+edition = "2024"
+description = "The conduct compiler as a component with WASI 0.3 async exports"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+conduct = { path = ".." }
+wit-bindgen = { version = "=0.62.0", features = ["async"] }
+
+# Its own workspace: it builds for `wasm32-unknown-unknown` only.
+[workspace]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

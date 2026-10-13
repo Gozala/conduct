@@ -17,3 +17,28 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+
+  # The compiler as a component, built for `wasm32-unknown-unknown` and
+  # run on the polyfill.
+  component:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            compiler
+      - name: Install wasm-tools
+        run: |
+          curl -sSL https://github.com/bytecodealliance/wasm-tools/releases/download/v1.261.0/wasm-tools-1.261.0-x86_64-linux.tar.gz | tar xz
+          echo "$PWD/wasm-tools-1.261.0-x86_64-linux" >> "$GITHUB_PATH"
+      - run: cargo clippy --manifest-path compiler/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
+      - run: compiler/build.sh
+      - run: cargo test --test compiler_component -- --nocapture
+        env:
+          CONDUCT_COMPILER_REQUIRED: "1"
