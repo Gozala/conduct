@@ -60,13 +60,13 @@ memory nor the routes' grows over 120 more requests.
 
 ```
 $ cargo run -- check examples/todo-item.cdt
-#2b845adc8c attributes : List[String]
-#f7a2cda090 styles : String
-#4747ea7b44 init : (Dict[String]) -> {done: Bool, editing: Bool, title: String, todo-id: String}
-#a65931f7a3 stay : (a) -> {effects: List[Nothing], model: a}
-#6716c18e6a save : (Any, model: a & {todo-id: Any}) -> {effects: List[Effect], model: (a with editing: Bool)}
-#7dd369880c update : ({action?: Any, attribute?: Any, key?: Any, value?: a & String}, model: b & {editing?: Any, todo-id: String}) -> {effects: List[Effect], model: b | (b with done: Bool) | (b with editing: Bool) | (b with todo-id: a) | (b with title: a)}
-#e670df2d1f view : ({done: Bool, editing: Bool, title: String}) -> View
+#2b845adc8c attributes : (list text)
+#f7a2cda090 styles : text
+#4747ea7b44 init : ((\ (dict text)) : {done: boolean, editing: boolean, title: text, todo-id: text})
+#a65931f7a3 stay : ((\ ?a) : {effects: (list nothing), model: ?a})
+#6716c18e6a save : ((\ any model: {todo-id: any ?a ...}) : {effects: (list effect), model: (?a with editing: boolean)})
+#7dd369880c update : ((\ {action?: any, attribute?: any, key?: any, value?: (& ?a text)} model: {editing?: any, todo-id: text ?b ...}) : {effects: (list effect), model: [?b (?b with done: boolean) (?b with editing: boolean) (?b with todo-id: ?a) (?b with title: ?a)]})
+#e670df2d1f view : ((\ {done: boolean, editing: boolean, title: text}) : view)
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
 wrote todo-item.wasm (28966 bytes)
@@ -75,7 +75,11 @@ $ cargo run -- route examples/todos-route.cdt -o todos.wasm
 wrote todos.wasm (30409 bytes)
 ```
 
-Every type above is inferred. `update` is defined by clauses on the
+Every type above is inferred, and shown as a `type` or `claim` writes
+types: `[A B]` for a union, `(list A)`, `?a` for a variable, `((\
+params) : result)` for a function, and `{todo-id: text ?a ...}` for an
+open record, the record `?a`, which has `todo-id`, as a record pattern's
+`rest ...` names the rest of a record. `update` is defined by clauses on the
 command it hears, by its `action`, the keyword the view named it by,
 and on the model, which holds the attributes the element shows:
 
@@ -105,14 +109,14 @@ The design the language is heading for is in
 ```clojure
 (define greeting "hello")               ; a definition
 (define (inc x) (+ x 1))                ; a function
-(define (sum x with) (+ x with))        ; parameters after the first are labeled
-(sum 1 with: 2)                         ; the first goes without its label
-(sum with: 2 x: 1)                      ; or with it; labels in any order
+(define (sum x plus) (+ x plus))        ; parameters after the first are labeled
+(sum 1 plus: 2)                         ; the first goes without its label
+(sum plus: 2 x: 1)                      ; or with it; labels in any order
 (define (greet who greeting: g) ..)     ; a label and a different local name
 (fn [x y] (+ x y))                      ; a lambda; closures capture
 (let [a 1 b (inc a)] (* a b))           ; sequential bindings, polymorphic
 (do (log! a) b)                         ; in order; the last is the value
-(if test then else)                     ; the test must be a Bool
+(if test then else)                     ; the test must be a boolean
 (cond a x b y :else z)                  ; macros: see below
 (and a b) (or a b) (not a)
 
@@ -137,7 +141,7 @@ The design the language is heading for is in
 
 (match status                           ; the first pattern that matches
   :active "Active"
-  :suspended "Paused")                  ; no `_`: status is :active | :suspended
+  :suspended "Paused")                  ; no `_`: status is [:active :suspended]
 (match handler "add" 1 "clear" 2 _ 0)   ; strings need a final `_`
 (match job                              ; record patterns narrow `job`
   {state: :active} (str "Since " (since job))
@@ -145,7 +149,7 @@ The design the language is heading for is in
 (match job {n: n} (+ n 1) _ 0)          ; n where job has n
 
 (ok todo) (error :not-found)            ; variants: records of one attribute
-(if ok? (ok t) (error :empty-title))    ; (error :empty-title) | (ok ...)
+(if ok? (ok t) (error :empty-title))    ; [(error :empty-title) (ok ...)]
 (match (add! title)                     ; constructors are patterns; names bind
   (ok todo) (json (todo-json todo) status: 201)
   (error why) (problem why))            ; no `_`: these two variants cover
@@ -166,8 +170,8 @@ The design the language is heading for is in
 
 (split "a\nb" "\n") (trim " a ")                            ; text
 (parse-json body) (to-json {:title t})                      ; JSON in and out
-(json-get j "todos") (json-items j)                         ; Json -> Json, List[Json]
-(json-str j) (json-int j) (json-bool j)                     ; Json -> String, Int, Bool
+(json-get j "todos") (json-items j)                         ; json to json, (list json)
+(json-str j) (json-int j) (json-bool j)                     ; json to text, integer, boolean
 (json-type j)                                               ; "string", "null", ...
 ```
 
@@ -179,7 +183,7 @@ order, so a call says what each argument is: `(link "all" label: "All"
 href: "#/")`. Underneath, parameters are passed in a fixed order (the
 first, then the rest by label), so a labeled call costs what a
 positional one does. A function's type keeps its labels,
-`(Int, with: Int) -> Int`, and a call through a function value is
+`((\ integer plus: integer) : integer)`, and a call through a function value is
 checked against them. The first parameter's label is part of the
 definition's hash, since callers may use it.
 
@@ -284,7 +288,7 @@ it holds their ids, not their names.
 A dictionary's keys are keywords, `{:class "toggle"}`, and its entries
 are kept sorted by key, however it was built: a literal, `assoc`, or
 the host, so two equal dictionaries are one value with one hash, and
-encode to the same JSON. Its type is `Dict[v]`, its values' type; a key
+encode to the same JSON. Its type is `(dict v)`, by its values' type; a key
 is a `Keyword`. `{}` is both the empty dictionary and the record with no
 attributes.
 
@@ -297,7 +301,7 @@ dictionary read whatever `k` is called.
 
 A record update keeps whatever else the record holds:
 `(define (bump m) (assoc m n: (+ (n m) 1)))` infers
-`(a & {n: Int}) -> (a with n: Int)`, where `a` is the rest of the record,
+`((\ {n: integer ?a ...}) : (?a with n: integer))`, where `?a` is the record,
 the way row polymorphism would type it.
 
 ### Types
@@ -317,16 +321,16 @@ where it belongs:
 - **What can fail answers a variant that says why:** `(ok v)` or
   `(error :not-found)`, never "nothing".
 - **Absence that means something is a variant that names it:**
-  `:unspecified | {specified: artist}`.
+  `[:unspecified {specified: artist}]`.
 - **An attribute a record may not have is simply not there.** That is
   Hickey's point: optionality belongs to the context, not to the value.
-  A record's type marks such a field `title?: String`, and reading it
+  A record's type marks such a field `title?: text`, and reading it
   takes a default, `(title todo "untitled")`, or a `match`,
   `{title: t}`. A record built in two branches, one with the attribute
   and one without, has it as optional.
 
 With subtyping, the "Maybe Not" argument about change still holds:
-promising more (`(ok v)` where `(ok v) | :none` was promised) or
+promising more (`(ok v)` where `[(ok v) :none]` was promised) or
 handling another variant breaks no caller.
 
 `get` and `first` take the value to give when there is none. A view
@@ -337,13 +341,13 @@ nothing to answer answers `{}`.
 
 A keyword is a value whose type is the set of just itself, and these
 sets are ordered by inclusion, so `(if b :active :suspended)` is
-`:active | :suspended`. A record of one field is a variant the same way:
+`[:active :suspended]`. A record of one field is a variant the same way:
 `(ok t)` is the variant `ok` carrying `t`, and `(if c (ok t) (error
-e))` is `(error E) | (ok T)`. Keywords are the variants that carry
-nothing, so `:ok | (error String)` is one union too. As in Roc, unions
+e))` is `[(error E) (ok T)]`. Keywords are the variants that carry
+nothing, so `[:ok (error text)]` is one union too. As in Roc, unions
 grow through inference: a function that returns its callee's result or
-a new error returns the union of both, `(error (:empty-title |
-:not-found)) | (ok a)`. Roc needs a row variable to keep a union open;
+a new error returns the union of both, `[(error [:empty-title
+:not-found]) (ok ?a)]`. Roc needs a row variable to keep a union open;
 here subtyping does that.
 
 A variant is still the record it is: `(n {n: 1})` reads its attribute. But
@@ -432,7 +436,7 @@ performs it:
 
 ```clojure
 (define (stamp! msg) (let [t (now!)] (log! (str t ": " msg))))
-; stamp : (Any) -> (task {} with: {clock, log})
+; stamp : ((\ any) : (task {} with: {clock log}))
 
 (stamp "hi")                          ; a task: nothing happens
 (stamp! "hi")                         ; performs it, inside a task's body
@@ -573,15 +577,15 @@ is built in amortized constant time per element.
 An element is pure definitions in the Elm architecture's shape:
 
 ```text
-attributes : List[String]          the attributes it observes
-styles     : String                the CSS of its shadow root
-init       : (Dict[String]) -> m   its first model
-update     : (Command, model: m) -> {model: m, effects: List[Effect]}
-view       : (m) -> View
+attributes : (list text)                    the attributes it observes
+styles     : text                           the CSS of its shadow root
+init       : ((\ (dict text)) : ?m)         its first model
+update     : ((\ command model: ?m) : {model: ?m, effects: (list effect)})
+view       : ((\ ?m) : view)
 
-Command = {action: Keyword, kind: String, value?: String,
-           checked?: Bool, key?: String, status?: Int,
-           attribute?: Keyword}
+command = {action: keyword, kind: text, value?: text,
+           checked?: boolean, key?: text, status?: integer,
+           attribute?: keyword}
 ```
 
 `init` sees the attributes the element starts with; after that each
@@ -644,8 +648,8 @@ A route is one definition marked `!`, whose task the platform performs,
 and the path it serves:
 
 ```text
-pattern : String        such as "/api/todos/:id"
-handle  : (request) -> (task response with: {model})
+pattern : text          such as "/api/todos/:id"
+handle  : ((\ request) : (task response with: {model}))
 
 request  = {method path params search headers body}
 response = {code headers body}
@@ -660,11 +664,11 @@ Unlike an element's `update`, `handle`'s task does its work itself: it
 calls the model and waits for it.
 
 ```text
-query           : (:all | :active | :completed) -> (task {todos: List[Todo], counts: {active-count: Int, completed-count: Int}})
-add             : (String) -> (task (ok Todo) | (error (:empty-title | :not-found)))
-update          : ({id: String, title?: String, completed?: Bool}) -> (task (ok Todo) | (error ..))
-remove          : (String) -> (task :ok | (error (:empty-title | :not-found)))
-toggle-all      : (Bool) -> (task {})
+query           : ((\ [:all :active :completed]) : (task {todos: (list todo), counts: {active-count: integer, completed-count: integer}}))
+add             : ((\ text) : (task [(ok todo) (error [:empty-title :not-found])]))
+update          : ((\ {id: text, title?: text, completed?: boolean}) : (task [(ok todo) (error ..)]))
+remove          : ((\ text) : (task [:ok (error [:empty-title :not-found])]))
+toggle-all      : ((\ boolean) : (task {}))
 clear-completed : (task {})
                   each with: {model}
 ```
@@ -675,7 +679,7 @@ enum are keywords, so a misspelled filter is a type error. An `option`
 argument is an attribute that may be left out: a WIT function with
 `option` parameters takes one record of its named parameters, as
 `update` does. An `option` result on its own, which says nothing of
-why, would be `{some: v} | :none`; the demo's model has none.
+why, would be `[{some: v} :none]`; the demo's model has none.
 
 The glue exports `wasi:http/handler#handle`, lifted with the async
 ABI's callback form. It reads the request and its body, performs `handle`'s task,

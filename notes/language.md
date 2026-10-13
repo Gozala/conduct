@@ -182,10 +182,10 @@ signatures checked by subsumption against the inferred type.
 ## 4. Functions
 
 ```scheme
-(define (sum x with) (+ x with))
-(sum 1 with: 2)                        ; the first parameter is the default label
-(sum x: 1 with: 2)                     ; or labeled, by name
-(sum with: 2 x: 1)                     ; labels in any order
+(define (sum x plus) (+ x plus))
+(sum 1 plus: 2)                        ; the first parameter is the default label
+(sum x: 1 plus: 2)                     ; or labeled, by name
+(sum plus: 2 x: 1)                     ; labels in any order
 
 (define (greet who greeting: g) (concat g " " who))  ; label `greeting`, local `g`
 ```
@@ -396,10 +396,14 @@ Each step is a pull request with tests; each keeps the demo working.
 The acceptance test: the demo's elements and routes, and the job
 example above, written as you would want to read them.
 
-Types are shown as a person reads them, not as a declaration writes them:
-`(Int, with: Int) -> Int`, `List[a]`, `String`; tasks, records and
-variants are shown as declarations write them, `(task {} with: {log})`,
-`{name: String}`, `(ok Int)`.
+Types are shown as a `type` or `claim` writes them, so that what the
+checker shows can be written back **(built)**: `[:a :b]`, `(list ?a)`,
+`text`, `((\ integer plus: integer) : integer)`, `(task {} with: {log})`,
+`(ok integer)`. A record that is also a variable is an open record,
+`{todo-id: text ?a ...}`, after Roc's `{ todoId : Str }a`, with the
+`...` of a record pattern's rest. Writing back is partial: a claim
+cannot yet say an open record, an intersection, `(& ?a text)`, or a
+union of anything but variants.
 
 ## Open decisions
 

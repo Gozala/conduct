@@ -32,11 +32,11 @@ pub enum Prim {
 impl Prim {
     pub fn name(self) -> &'static str {
         match self {
-            Prim::Int => "Int",
-            Prim::Bool => "Bool",
-            Prim::Str => "String",
-            Prim::Json => "Json",
-            Prim::Keyword => "Keyword",
+            Prim::Int => "integer",
+            Prim::Bool => "boolean",
+            Prim::Str => "text",
+            Prim::Json => "json",
+            Prim::Keyword => "keyword",
             Prim::Empty => "{}",
         }
     }
@@ -301,7 +301,7 @@ impl Solver {
             // Every keyword is a keyword; a variant with a payload is not.
             (Ty::Tags(tags), Ty::Prim(Prim::Keyword)) => match tags.iter().find(|(_, p)| p.is_some()) {
                 None => Ok(()),
-                Some((k, _)) => Err(TypeError(format!("{} is not a Keyword", tag_text(k, true)))),
+                Some((k, _)) => Err(TypeError(format!("{} is not a keyword", tag_text(k, true)))),
             },
             (Ty::View, Ty::View) | (Ty::Effect, Ty::Effect) => Ok(()),
             (Ty::Rigid(a), Ty::Rigid(b)) if a == b => Ok(()),
@@ -464,7 +464,7 @@ impl Solver {
                     }
                     _ => Err(TypeError(format!("{} is not one of {}", Shallow(lhs), tags_text(tags)))),
                 },
-                _ => Err(TypeError(format!("{} is not a {}", Shallow(lhs), Shallow(rhs)))),
+                _ => Err(TypeError(format!("{} is not {}", Shallow(lhs), article(&Shallow(rhs).to_string())))),
             },
             (Ty::Var(v), _) => {
                 let rhs = self.extrude(rhs, false, v.level, &mut HashMap::new());
@@ -474,7 +474,7 @@ impl Solver {
                 let lhs = self.extrude(lhs, true, v.level, &mut HashMap::new());
                 self.go(&lhs, rhs, cache)
             }
-            _ => Err(TypeError(format!("{} is not a {}", Shallow(lhs), Shallow(rhs)))),
+            _ => Err(TypeError(format!("{} is not {}", Shallow(lhs), article(&Shallow(rhs).to_string())))),
         }
     }
 
@@ -587,12 +587,12 @@ pub struct Shallow<'a>(pub &'a Ty);
 impl fmt::Display for Shallow<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            Ty::Top => write!(f, "Any"),
-            Ty::Bot => write!(f, "Nothing"),
+            Ty::Top => write!(f, "any"),
+            Ty::Bot => write!(f, "nothing"),
             Ty::Prim(p) => write!(f, "{}", p.name()),
-            Ty::View => write!(f, "View"),
+            Ty::View => write!(f, "view"),
             Ty::Rigid(name) => write!(f, "?{name}, any type the caller chooses"),
-            Ty::Effect => write!(f, "Effect"),
+            Ty::Effect => write!(f, "effect"),
             Ty::Var(_) => write!(f, "a value whose type is still being inferred"),
             Ty::Fn(params, _, _, _) => write!(f, "a function of {} argument(s)", params.len()),
             Ty::Caps(c) => write!(f, "{}", caps_text(c)),
@@ -606,10 +606,10 @@ impl fmt::Display for Shallow<'_> {
                 }
                 write!(f, "}}")
             }
-            Ty::List(_) => write!(f, "List"),
+            Ty::List(_) => write!(f, "a list"),
             Ty::Task(..) => write!(f, "task"),
             Ty::CapsPlus(c, l) => write!(f, "{} and {}", Shallow(c), caps_text(l)),
-            Ty::Dict(_) => write!(f, "Dict"),
+            Ty::Dict(_) => write!(f, "a dictionary"),
             Ty::Opt(t) => write!(f, "{} if present", Shallow(t)),
             Ty::Update(r, k, _) => write!(f, "{} with `{k}` set", Shallow(r)),
             Ty::Tags(k) => write!(f, "{}", tags_text(k)),
@@ -618,8 +618,19 @@ impl fmt::Display for Shallow<'_> {
     }
 }
 
+/// A type's name as a sentence says it: `an integer`, `a text`, and
+/// as it is where it is not a word.
+fn article(name: &str) -> String {
+    match name.chars().next() {
+        _ if name.starts_with("a ") || name.starts_with("an ") => name.to_string(),
+        Some(c) if "aeiou".contains(c) => format!("an {name}"),
+        Some(c) if c.is_ascii_alphabetic() => format!("a {name}"),
+        _ => name.to_string(),
+    }
+}
+
 fn caps_text(caps: &BTreeSet<String>) -> String {
-    format!("{{{}}}", caps.iter().cloned().collect::<Vec<_>>().join(", "))
+    format!("{{{}}}", caps.iter().cloned().collect::<Vec<_>>().join(" "))
 }
 
 fn tag_text(k: &str, payload: bool) -> String {
@@ -627,7 +638,8 @@ fn tag_text(k: &str, payload: bool) -> String {
 }
 
 fn tags_text(tags: &BTreeMap<String, Option<Ty>>) -> String {
-    tags.iter().map(|(k, p)| tag_text(k, p.is_some())).collect::<Vec<_>>().join(" | ")
+    let all: Vec<String> = tags.iter().map(|(k, p)| tag_text(k, p.is_some())).collect();
+    if all.len() == 1 { all.into_iter().next().unwrap() } else { format!("[{}]", all.join(" ")) }
 }
 
 /// A type as shown to a person: variables' bounds turned into unions
@@ -1426,40 +1438,48 @@ impl fmt::Display for Type {
 
 /// Precedence: 0 for a function arrow, 1 for a union, 2 for an
 /// intersection, 3 for an atom.
+/// A type as a `type` or `claim` writes it, so that what is shown can be
+/// written back: `[:a :b]`, `(list ?a)`, `((\\ integer with: text) : text)`.
+/// A record that is a variable as well is written as an open record,
+/// `{todo-id: text ?a ...}`: the record `?a`, which has `todo-id`.
 fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
+    let _ = prec;
     let var = |v: u32| -> String {
         let letter = (b'a' + (v % 26) as u8) as char;
-        if v < 26 { letter.to_string() } else { format!("{letter}{}", v / 26) }
+        if v < 26 { format!("?{letter}") } else { format!("?{letter}{}", v / 26) }
+    };
+    let fields = |f: &mut fmt::Formatter<'_>, fields: &BTreeMap<String, Type>| -> fmt::Result {
+        for (i, (k, t)) in fields.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            match t {
+                Type::Opt(_) => write!(f, "{k}?: ")?,
+                _ => write!(f, "{k}: ")?,
+            }
+            write_type(split_ref(t), f, 0)?;
+        }
+        Ok(())
     };
     match ty {
-        Type::Top => write!(f, "Any"),
-        Type::Bot => write!(f, "Nothing"),
+        Type::Top => write!(f, "any"),
+        Type::Bot => write!(f, "nothing"),
         Type::Prim(p) => write!(f, "{}", p.name()),
-        Type::View => write!(f, "View"),
-        Type::Effect => write!(f, "Effect"),
+        Type::View => write!(f, "view"),
+        Type::Effect => write!(f, "effect"),
         Type::Caps(c) => write!(f, "{}", caps_text(c)),
-        Type::Tags(tags) => {
-            let wrap = tags.len() > 1 && prec > 1;
-            if wrap {
-                write!(f, "(")?;
-            }
+        Type::Tags(tags) if tags.len() > 1 => {
+            write!(f, "[")?;
             write_tags(tags, f)?;
-            if wrap {
-                write!(f, ")")?;
-            }
-            Ok(())
+            write!(f, "]")
         }
+        Type::Tags(tags) => write_tags(tags, f),
         Type::Var(v) => write!(f, "{}", var(*v)),
         Type::Named(name) => write!(f, "?{name}"),
         Type::Fn(params, ret, eff, labels) => {
-            if prec > 0 {
-                write!(f, "(")?;
-            }
-            write!(f, "(")?;
+            write!(f, "((\\")?;
             for (i, p) in params.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
+                write!(f, " ")?;
                 if i > 0
                     && let Some(label) = labels.get(i - 1)
                 {
@@ -1467,91 +1487,88 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
                 }
                 write_type(p, f, 0)?;
             }
-            // Roc's arrows: `->` for a pure function, `=>` for one that
-            // may use capabilities, which follow its result after `!`.
+            write!(f, ")")?;
             let pure = match &**eff {
                 Type::Bot => true,
                 Type::Caps(c) => c.is_empty(),
                 _ => false,
             };
-            write!(f, "{}", if pure { ") -> " } else { ") => " })?;
-            write_type(ret, f, 0)?;
             if !pure {
-                write!(f, " ! ")?;
-                write_type(eff, f, 3)?;
+                write!(f, " with: ")?;
+                write_type(eff, f, 0)?;
             }
-            if prec > 0 {
-                write!(f, ")")?;
-            }
-            Ok(())
+            write!(f, " : ")?;
+            write_type(ret, f, 0)?;
+            write!(f, ")")
         }
-        Type::Record(fields) => {
+        Type::Record(fs) => {
             write!(f, "{{")?;
-            for (i, (k, t)) in fields.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                match t {
-                    Type::Opt(t) => {
-                        write!(f, "{k}?: ")?;
-                        write_type(t, f, 0)?;
-                    }
-                    t => {
-                        write!(f, "{k}: ")?;
-                        write_type(t, f, 0)?;
-                    }
-                }
-            }
+            fields(f, fs)?;
             write!(f, "}}")
         }
         Type::List(t) => {
-            write!(f, "List[")?;
+            write!(f, "(list ")?;
             write_type(t, f, 0)?;
-            write!(f, "]")
+            write!(f, ")")
+        }
+        Type::Dict(t) => {
+            write!(f, "(dict ")?;
+            write_type(t, f, 0)?;
+            write!(f, ")")
         }
         // As a claim writes it.
         Type::Task(t, c) => {
             write!(f, "(task ")?;
-            write_type(t, f, 3)?;
+            write_type(t, f, 0)?;
             let pure = matches!(&**c, Type::Caps(c) if c.is_empty()) || matches!(**c, Type::Bot);
             if !pure {
                 write!(f, " with: ")?;
-                write_type(c, f, 3)?;
+                write_type(c, f, 0)?;
             }
             write!(f, ")")
         }
-        Type::Dict(t) => {
-            write!(f, "Dict[")?;
-            write_type(t, f, 0)?;
-            write!(f, "]")
-        }
-        Type::Union(ts) | Type::Inter(ts) => {
-            let (sep, my) = if matches!(ty, Type::Union(_)) { (" | ", 1) } else { (" & ", 2) };
-            if prec > my {
-                write!(f, "(")?;
-            }
+        Type::Union(ts) => {
+            write!(f, "[")?;
             for (i, t) in ts.iter().enumerate() {
                 if i > 0 {
-                    write!(f, "{sep}")?;
+                    write!(f, " ")?;
                 }
                 match t {
                     // A variant set is already a union.
-                    Type::Tags(tags) if my == 1 => write_tags(tags, f)?,
-                    _ => write_type(t, f, my + 1)?,
+                    Type::Tags(tags) => write_tags(tags, f)?,
+                    _ => write_type(t, f, 0)?,
                 }
             }
-            if prec > my {
-                write!(f, ")")?;
+            write!(f, "]")
+        }
+        // A variable that is a record as well: the record, open.
+        Type::Inter(ts)
+            if ts.len() == 2
+                && let Some(Type::Var(v)) = ts.iter().find(|t| matches!(t, Type::Var(_)))
+                && let Some(Type::Record(fs)) = ts.iter().find(|t| matches!(t, Type::Record(_))) =>
+        {
+            write!(f, "{{")?;
+            fields(f, fs)?;
+            if !fs.is_empty() {
+                write!(f, " ")?;
             }
-            Ok(())
+            write!(f, "{} ...}}", var(*v))
+        }
+        Type::Inter(ts) => {
+            write!(f, "(&")?;
+            for t in ts {
+                write!(f, " ")?;
+                write_type(t, f, 0)?;
+            }
+            write!(f, ")")
         }
         Type::Rec(v, body) => {
-            write!(f, "(rec {}. ", var(*v))?;
+            write!(f, "(rec {} ", var(*v))?;
             write_type(body, f, 0)?;
             write!(f, ")")
         }
         Type::Update(..) => {
-            // Updates of an update are one: `(a with x: Int, y: Bool)`.
+            // Updates of an update are one: `(?a with x: integer, y: boolean)`.
             let mut steps = Vec::new();
             let mut base = ty;
             while let Type::Update(r, k, v) = base {
@@ -1582,6 +1599,14 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
     }
 }
 
+/// A field's displayed type, without whether it may be absent.
+fn split_ref(t: &Type) -> &Type {
+    match t {
+        Type::Opt(inner) => inner,
+        t => t,
+    }
+}
+
 /// Variants as a union: a keyword as itself, a variant as the record of
 /// one field it is.
 /// A variant's key that starts with this is shown as its constructor:
@@ -1592,13 +1617,13 @@ pub const CONSTRUCTOR: char = '\u{1}';
 fn write_tags(tags: &BTreeMap<String, Option<Type>>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     for (i, (k, p)) in tags.iter().enumerate() {
         if i > 0 {
-            write!(f, " | ")?;
+            write!(f, " ")?;
         }
         match (p, k.strip_prefix(CONSTRUCTOR)) {
             (None, _) => write!(f, ":{}", k.trim_start_matches(CONSTRUCTOR))?,
             (Some(p), Some(name)) => {
                 write!(f, "({name} ")?;
-                write_type(p, f, 3)?;
+                write_type(p, f, 0)?;
                 write!(f, ")")?;
             }
             (Some(p), None) => {

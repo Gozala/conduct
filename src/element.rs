@@ -4,15 +4,15 @@
 //! shape, plus two constants:
 //!
 //! ```text
-//! attributes : List[String]          the attributes it observes
-//! styles     : String                the CSS of its shadow root
-//! init       : (Dict[String]) -> m   its first model, from its attributes
-//! update     : (Command, model: m) -> {model: m, effects: List[Effect]}
-//! view       : (m) -> View
+//! attributes : (list text)                    the attributes it observes
+//! styles     : text                           the CSS of its shadow root
+//! init       : ((\ (dict text)) : ?m)         its first model
+//! update     : ((\ command model: ?m) : {model: ?m, effects: (list effect)})
+//! view       : ((\ ?m) : view)
 //! ```
 //!
-//! where `Command` is `{action: Keyword, kind: String, value?: String,
-//! checked?: Bool, key?: String, status?: Int, attribute?: Keyword}`:
+//! where `command` is `{action: keyword, kind: text, value?: text,
+//! checked?: boolean, key?: text, status?: integer, attribute?: keyword}`:
 //! an action, and the
 //! attributes of its event that apply to it, matched by a clause,
 //! `{action: :keydown key: "Enter"}`. The element prelude ([`PRELUDE`])

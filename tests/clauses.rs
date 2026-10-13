@@ -45,8 +45,8 @@ fn list_patterns_in_match() {
          (define s [(second [1 2 3]) (second [1])])
          (define t (tail [1 2 3]))",
     );
-    assert_eq!(cb.type_of("describe").unwrap(), "(List[Any]) -> :empty | :more | :one");
-    assert_eq!(cb.type_of("tail").unwrap(), "(List[a]) -> List[a]");
+    assert_eq!(cb.type_of("describe").unwrap(), "((\\ (list any)) : [:empty :more :one])");
+    assert_eq!(cb.type_of("tail").unwrap(), "((\\ (list ?a)) : (list ?a))");
     let kws = |v: &[&str]| Value::List(v.iter().map(|k| Value::Keyword(k.to_string())).collect());
     assert_eq!(run(&cb, "r"), kws(&["empty", "one", "more"]));
     assert_eq!(run(&cb, "s"), ints(&[2, 0]));
@@ -67,8 +67,8 @@ fn several_defines_are_one_function() {
          (define (fib n) (+ (fib (- n 1)) (fib (- n 2))))
          (define r [(len [1 2 3]) (fib 10)])",
     );
-    assert_eq!(cb.type_of("len").unwrap(), "(List[Any]) -> Int");
-    assert_eq!(cb.type_of("fib").unwrap(), "(Int) -> Int");
+    assert_eq!(cb.type_of("len").unwrap(), "((\\ (list any)) : integer)");
+    assert_eq!(cb.type_of("fib").unwrap(), "((\\ integer) : integer)");
     assert_eq!(run(&cb, "r"), ints(&[3, 55]));
 }
 
@@ -77,7 +77,7 @@ fn clauses_are_a_set() {
     let a = check("(define (sign 0) :zero) (define (sign n) (if (< n 0) :negative :positive))");
     let b = check("(define (sign n) (if (< n 0) :negative :positive)) (define (sign 0) :zero)");
     assert_eq!(a.lookup("sign").unwrap().hash, b.lookup("sign").unwrap().hash);
-    assert_eq!(a.type_of("sign").unwrap(), "(Int) -> :negative | :positive | :zero");
+    assert_eq!(a.type_of("sign").unwrap(), "((\\ integer) : [:negative :positive :zero])");
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn clauses_with_labels_and_variants() {
          (define r [(show (ok 1)) (show (error :no))])
          (define t (take [1 2 3] n: 2))",
     );
-    assert_eq!(cb.type_of("show").unwrap(), "((error Any) | (ok Any)) -> String");
+    assert_eq!(cb.type_of("show").unwrap(), "((\\ [(error any) (ok any)]) : text)");
     assert_eq!(run(&cb, "r"), Value::List(vec![Value::Str("ok 1".into()), Value::Str("error :no".into())]));
     assert_eq!(run(&cb, "t"), ints(&[1, 2]));
 }
@@ -119,7 +119,7 @@ fn a_task_by_clauses() {
     let mut cb = Codebase::new();
     cb.add_host("print", "print", vec![conduct::types::Ty::str()], conduct::types::Ty::record([])).unwrap();
     cb.add_source("(define (say! []) {}) (define (say! [x rest ...]) (do (print! x) (say! rest)))").unwrap();
-    assert_eq!(cb.type_of("say").unwrap(), "(List[String]) -> (task {} with: {print})");
+    assert_eq!(cb.type_of("say").unwrap(), "((\\ (list text)) : (task {} with: {print}))");
 }
 
 #[test]
@@ -159,13 +159,13 @@ fn a_signature_for_clauses() {
          (define (len [_ rest ...]) (+ 1 (len rest)))",
     );
     // `?a` appears once, so it asks nothing: any list.
-    assert_eq!(cb.type_of("len").unwrap(), "(List[Any]) -> Int");
+    assert_eq!(cb.type_of("len").unwrap(), "((\\ (list any)) : integer)");
     let e = error(
         "(claim (len (list ?a)) : text)
          (define (len []) 0)
          (define (len [_ rest ...]) (+ 1 (len rest)))",
     );
-    assert!(e.contains("Int is not a String"), "{e}");
+    assert!(e.contains("integer is not a text"), "{e}");
 }
 
 #[test]
@@ -217,14 +217,14 @@ fn boolean_patterns() {
          (define r [(word true) (word false)])
          (define s (match (= 1 1) true 1 false 0))",
     );
-    assert_eq!(cb.type_of("word").unwrap(), "(Bool) -> String");
+    assert_eq!(cb.type_of("word").unwrap(), "((\\ boolean) : text)");
     assert_eq!(run(&cb, "r"), Value::List(vec![Value::Str("yes".into()), Value::Str("no".into())]));
     assert_eq!(run(&cb, "s"), Value::Int(1));
     assert!(error("(define (w true) 1)").contains("do not cover every call"));
     // Covering both, a Bool is all a parameter may be.
-    assert!(error("(define (word true) 1) (define (word false) 0) (define x (word 5))").contains("Bool"));
+    assert!(error("(define (word true) 1) (define (word false) 0) (define x (word 5))").contains("boolean"));
     let cb = check("(define (w b) (match b true 1 false 0))");
-    assert_eq!(cb.type_of("w").unwrap(), "(Bool) -> Int");
+    assert_eq!(cb.type_of("w").unwrap(), "((\\ boolean) : integer)");
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn a_record_pattern_binds_the_rest() {
     let strs = |v: &[&str]| Value::List(v.iter().map(|s| Value::Str(s.to_string())).collect());
     assert_eq!(run(&cb, "r"), strs(&["hi!", "psst", ""]));
     // The rest is the record without what the pattern named.
-    assert_eq!(cb.type_of("o").unwrap(), "{value: String}");
+    assert_eq!(cb.type_of("o").unwrap(), "{value: text}");
     let Value::Record(fields) = run(&cb, "o") else { panic!() };
     assert_eq!(fields.len(), 1);
     let e = error(

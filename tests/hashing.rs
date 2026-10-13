@@ -80,6 +80,6 @@ fn later_sources_build_on_earlier_ones() {
     let mut cb = Codebase::new();
     cb.add_source("(define (inc x) (+ x 1))").unwrap();
     let added = cb.add_source("(define two (inc 1))").unwrap();
-    assert_eq!(cb.defs[&added[0].hash].type_string(), "Int");
+    assert_eq!(cb.defs[&added[0].hash].type_string(), "integer");
     assert!(cb.add_source("(define oops (missing 1))").is_err());
 }
