@@ -1,0 +1,11 @@
+[package]
+name = "todo-input"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+element-kit.workspace = true

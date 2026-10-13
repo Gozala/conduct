@@ -1,0 +1,25 @@
+[package]
+name = "element-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Drives the Rust elements' components through the Wasm Component Model Polyfill, natively"
+
+# Built for the host, so its own workspace.
+[workspace]
+
+[dev-dependencies]
+wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "eedcd22766b35cc34b3b81b4c753ab4f08a7c09a" }
+wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "eedcd22766b35cc34b3b81b4c753ab4f08a7c09a" }
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
+serde_json = "1"
+
+
+# Small on disk: no debug info, no incremental cache.
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = 0

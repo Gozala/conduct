@@ -1,0 +1,35 @@
+# Rust versions of the TodoMVC demo's custom elements, each a component
+# of the `demo:element/element-component` world. The members build for
+# `wasm32-unknown-unknown` only; see build.sh. The native test that
+# drives them through the polyfill is its own workspace, in `tests/`.
+[workspace]
+resolver = "3"
+members = [
+  "crates/element-kit",
+  "crates/todo-item",
+  "crates/todo-input",
+  "crates/todo-footer",
+  "crates/todo-app",
+]
+exclude = ["tests"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+element-kit = { path = "crates/element-kit" }
+wit-bindgen = { version = "=0.62.0", features = ["async"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# The same, optimized for size harder: `cargo build --profile release-z`.
+[profile.release-z]
+inherits = "release"
+opt-level = "z"

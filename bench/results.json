@@ -1,0 +1,1703 @@
+{
+  "compilers": {
+    "conduct": {
+      "bytes": 3808196,
+      "component": "../compiler/target/conduct-compiler.wasm",
+      "instantiate": {
+        "max_ms": 5.881,
+        "median_ms": 0.058,
+        "min_ms": 0.051,
+        "samples_ms": [
+          5.881,
+          0.115,
+          0.058,
+          0.055,
+          0.051
+        ]
+      },
+      "parse": {
+        "max_ms": 2739.39,
+        "median_ms": 2379.772,
+        "min_ms": 2210.074,
+        "samples_ms": [
+          2210.074,
+          2379.772,
+          2343.398,
+          2533.797,
+          2739.39
+        ]
+      },
+      "parse_plus_instantiate_median_ms": 2379.83,
+      "sources": {
+        "todo-app": {
+          "cold_ms": 18.23,
+          "matches_reference": {
+            "identical": true,
+            "reference": "todo-app.cdt compiled natively by conduct::service::compile"
+          },
+          "output_bytes": 51317,
+          "source_reads": null,
+          "warm": {
+            "max_ms": 22.316,
+            "median_ms": 16.897,
+            "min_ms": 16.483,
+            "samples_ms": [
+              16.897,
+              16.483,
+              17.882,
+              16.666,
+              22.316
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 51317,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 51317,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 51317,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 51317,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 51317,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            }
+          ],
+          "warm_outputs_identical_to_cold": true,
+          "world": "element-component"
+        },
+        "todo-footer": {
+          "cold_ms": 10.345,
+          "matches_reference": {
+            "identical": true,
+            "reference": "todo-footer.cdt compiled natively by conduct::service::compile"
+          },
+          "output_bytes": 26446,
+          "source_reads": null,
+          "warm": {
+            "max_ms": 11.621,
+            "median_ms": 10.088,
+            "min_ms": 9.637,
+            "samples_ms": [
+              9.637,
+              10.694,
+              9.827,
+              10.088,
+              11.621
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 26446,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 26446,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 26446,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 26446,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 26446,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            }
+          ],
+          "warm_outputs_identical_to_cold": true,
+          "world": "element-component"
+        },
+        "todo-input": {
+          "cold_ms": 11.609,
+          "matches_reference": {
+            "identical": true,
+            "reference": "todo-input.cdt compiled natively by conduct::service::compile"
+          },
+          "output_bytes": 26333,
+          "source_reads": null,
+          "warm": {
+            "max_ms": 10.631,
+            "median_ms": 10.256,
+            "min_ms": 9.707,
+            "samples_ms": [
+              10.01,
+              10.631,
+              10.256,
+              9.707,
+              10.554
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 26333,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 26333,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 26333,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 26333,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 26333,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            }
+          ],
+          "warm_outputs_identical_to_cold": true,
+          "world": "element-component"
+        },
+        "todo-item": {
+          "cold_ms": 15.426,
+          "matches_reference": {
+            "identical": true,
+            "reference": "todo-item.cdt compiled natively by conduct::service::compile"
+          },
+          "output_bytes": 28966,
+          "source_reads": null,
+          "warm": {
+            "max_ms": 13.384,
+            "median_ms": 11.454,
+            "min_ms": 11.399,
+            "samples_ms": [
+              12.64,
+              13.384,
+              11.399,
+              11.454,
+              11.453
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 28966,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 28966,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 28966,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 28966,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 28966,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            }
+          ],
+          "warm_outputs_identical_to_cold": true,
+          "world": "element-component"
+        },
+        "todo-route": {
+          "cold_ms": 12.56,
+          "matches_reference": {
+            "identical": true,
+            "reference": "todo-route.cdt compiled natively by conduct::service::compile"
+          },
+          "output_bytes": 29846,
+          "source_reads": null,
+          "warm": {
+            "max_ms": 12.308,
+            "median_ms": 11.667,
+            "min_ms": 11.029,
+            "samples_ms": [
+              11.029,
+              11.045,
+              12.308,
+              12.224,
+              11.667
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 29846,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 29846,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 29846,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 29846,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 29846,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            }
+          ],
+          "warm_outputs_identical_to_cold": true,
+          "world": "route-component"
+        },
+        "todos-route": {
+          "cold_ms": 15.631,
+          "matches_reference": {
+            "identical": true,
+            "reference": "todos-route.cdt compiled natively by conduct::service::compile"
+          },
+          "output_bytes": 30608,
+          "source_reads": null,
+          "warm": {
+            "max_ms": 14.583,
+            "median_ms": 12.08,
+            "min_ms": 11.425,
+            "samples_ms": [
+              14.583,
+              14.183,
+              12.08,
+              11.694,
+              11.425
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 30608,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 30608,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 30608,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 30608,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            },
+            {
+              "bytes": 30608,
+              "first_difference_at": null,
+              "identical_to_cold": true
+            }
+          ],
+          "warm_outputs_identical_to_cold": true,
+          "world": "route-component"
+        }
+      }
+    },
+    "zena": {
+      "bytes": 2439483,
+      "component": "$ZENA_DIR/zena-compiler.wasm",
+      "instantiate": {
+        "max_ms": 13.51,
+        "median_ms": 4.812,
+        "min_ms": 4.64,
+        "samples_ms": [
+          13.51,
+          4.83,
+          4.669,
+          4.812,
+          4.64
+        ]
+      },
+      "parse": {
+        "max_ms": 4844.842,
+        "median_ms": 4518.355,
+        "min_ms": 4409.845,
+        "samples_ms": [
+          4844.842,
+          4758.083,
+          4506.275,
+          4409.845,
+          4518.355
+        ]
+      },
+      "parse_plus_instantiate_median_ms": 4523.167,
+      "sources": {
+        "todo-app": {
+          "cold_ms": 13548.664,
+          "matches_reference": {
+            "identical": true,
+            "reference": "$ZENA_DIR/todo-app.wasm"
+          },
+          "output_bytes": 146121,
+          "source_reads": {
+            "distinct_paths": 52,
+            "missing": [],
+            "reads": 100
+          },
+          "warm": {
+            "max_ms": 10888.529,
+            "median_ms": 5418.327,
+            "min_ms": 2899.754,
+            "samples_ms": [
+              5418.327,
+              10888.529,
+              7528.381,
+              2899.754,
+              3253.449
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 146120,
+              "first_difference_at": 7891,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 146121,
+              "first_difference_at": 7903,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 146119,
+              "first_difference_at": 7891,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 146119,
+              "first_difference_at": 7891,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 146117,
+              "first_difference_at": 7891,
+              "identical_to_cold": false
+            }
+          ],
+          "warm_outputs_identical_to_cold": false,
+          "world": "element-component"
+        },
+        "todo-footer": {
+          "cold_ms": 9723.088,
+          "matches_reference": {
+            "identical": true,
+            "reference": "$ZENA_DIR/todo-footer.wasm"
+          },
+          "output_bytes": 67258,
+          "source_reads": {
+            "distinct_paths": 52,
+            "missing": [],
+            "reads": 100
+          },
+          "warm": {
+            "max_ms": 2110.873,
+            "median_ms": 1653.7,
+            "min_ms": 1537.413,
+            "samples_ms": [
+              1653.7,
+              1599.684,
+              1537.413,
+              1703.215,
+              2110.873
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 67277,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 67269,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 67256,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 67291,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 67258,
+              "first_difference_at": 7576,
+              "identical_to_cold": false
+            }
+          ],
+          "warm_outputs_identical_to_cold": false,
+          "world": "element-component"
+        },
+        "todo-input": {
+          "cold_ms": 9078.821,
+          "matches_reference": {
+            "identical": true,
+            "reference": "$ZENA_DIR/todo-input.wasm"
+          },
+          "output_bytes": 64308,
+          "source_reads": {
+            "distinct_paths": 52,
+            "missing": [],
+            "reads": 100
+          },
+          "warm": {
+            "max_ms": 1857.728,
+            "median_ms": 1599.717,
+            "min_ms": 1451.974,
+            "samples_ms": [
+              1451.974,
+              1465.865,
+              1599.717,
+              1789.109,
+              1857.728
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 64302,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 64305,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 64317,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 64307,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 64309,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            }
+          ],
+          "warm_outputs_identical_to_cold": false,
+          "world": "element-component"
+        },
+        "todo-item": {
+          "cold_ms": 9905.998,
+          "matches_reference": {
+            "identical": true,
+            "reference": "$ZENA_DIR/todo-item.wasm"
+          },
+          "output_bytes": 67902,
+          "source_reads": {
+            "distinct_paths": 52,
+            "missing": [],
+            "reads": 100
+          },
+          "warm": {
+            "max_ms": 1738.105,
+            "median_ms": 1642.106,
+            "min_ms": 1552.832,
+            "samples_ms": [
+              1552.832,
+              1738.105,
+              1631.215,
+              1698.377,
+              1642.106
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 67885,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 67902,
+              "first_difference_at": 6730,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 67934,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 67903,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 67899,
+              "first_difference_at": 6718,
+              "identical_to_cold": false
+            }
+          ],
+          "warm_outputs_identical_to_cold": false,
+          "world": "element-component"
+        },
+        "todo-route": {
+          "cold_ms": 22398.281,
+          "matches_reference": {
+            "identical": true,
+            "reference": "$ZENA_DIR/todo-route.wasm"
+          },
+          "output_bytes": 101292,
+          "source_reads": {
+            "distinct_paths": 64,
+            "missing": [],
+            "reads": 111
+          },
+          "warm": {
+            "max_ms": 2225.738,
+            "median_ms": 2156.984,
+            "min_ms": 1925.926,
+            "samples_ms": [
+              2121.924,
+              2203.082,
+              2156.984,
+              1925.926,
+              2225.738
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 101380,
+              "first_difference_at": 7638,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 101380,
+              "first_difference_at": 7638,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 101379,
+              "first_difference_at": 7638,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 101380,
+              "first_difference_at": 7638,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 101380,
+              "first_difference_at": 7638,
+              "identical_to_cold": false
+            }
+          ],
+          "warm_outputs_identical_to_cold": false,
+          "world": "route-component"
+        },
+        "todos-route": {
+          "cold_ms": 12866.696,
+          "matches_reference": {
+            "identical": true,
+            "reference": "$ZENA_DIR/todos-route.wasm"
+          },
+          "output_bytes": 105430,
+          "source_reads": {
+            "distinct_paths": 64,
+            "missing": [],
+            "reads": 111
+          },
+          "warm": {
+            "max_ms": 2271.3,
+            "median_ms": 2123.574,
+            "min_ms": 1932.202,
+            "samples_ms": [
+              2271.3,
+              2245.999,
+              1932.202,
+              2123.574,
+              2109.387
+            ]
+          },
+          "warm_outputs": [
+            {
+              "bytes": 105201,
+              "first_difference_at": 7704,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 105201,
+              "first_difference_at": 7704,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 105201,
+              "first_difference_at": 7704,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 105201,
+              "first_difference_at": 7704,
+              "identical_to_cold": false
+            },
+            {
+              "bytes": 105201,
+              "first_difference_at": 7704,
+              "identical_to_cold": false
+            }
+          ],
+          "warm_outputs_identical_to_cold": false,
+          "world": "route-component"
+        }
+      }
+    }
+  },
+  "elements": {
+    "todo-app": {
+      "conduct": {
+        "bytes": 51317,
+        "component": "../examples/todo-app.cdt, compiled by conduct::service::compile",
+        "instantiate": {
+          "max_ms": 4.681,
+          "median_ms": 0.483,
+          "min_ms": 0.429,
+          "samples_ms": [
+            4.681,
+            0.483,
+            0.515,
+            0.471,
+            0.602,
+            0.429,
+            1.045,
+            0.447,
+            0.464,
+            0.431,
+            0.503
+          ]
+        },
+        "parse": {
+          "max_ms": 46.751,
+          "median_ms": 37.537,
+          "min_ms": 32.726,
+          "samples_ms": [
+            37.537,
+            41.249,
+            34.181,
+            35.903,
+            37.764,
+            46.751,
+            32.726
+          ]
+        },
+        "sanity": {
+          "failures": [],
+          "first_requests": [
+            "GET /api/todos?filter=all",
+            "POST /api/todos {\"title\":\"todo 0\"}",
+            "GET /api/todos?filter=all"
+          ],
+          "last_render_bytes": 14073,
+          "nodes_rendered": 6750,
+          "requests": 201
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 100,
+          "per_iteration_us": 996.68,
+          "total": {
+            "max_ms": 105.896,
+            "median_ms": 99.668,
+            "min_ms": 80.359,
+            "samples_ms": [
+              105.896,
+              80.359,
+              99.668,
+              96.911,
+              103.055
+            ]
+          }
+        }
+      },
+      "rust-s": {
+        "bytes": 173079,
+        "component": "rust/out/todo-app.wasm",
+        "instantiate": {
+          "max_ms": 5.935,
+          "median_ms": 0.394,
+          "min_ms": 0.345,
+          "samples_ms": [
+            5.935,
+            0.461,
+            0.414,
+            0.426,
+            0.394,
+            0.349,
+            0.389,
+            0.35,
+            0.345,
+            0.448,
+            0.352
+          ]
+        },
+        "parse": {
+          "max_ms": 132.258,
+          "median_ms": 106.88,
+          "min_ms": 100.81,
+          "samples_ms": [
+            132.258,
+            100.81,
+            112.191,
+            107.025,
+            106.88,
+            103.55,
+            105.531
+          ]
+        },
+        "sanity": {
+          "failures": [],
+          "first_requests": [
+            "GET /api/todos?filter=all",
+            "POST /api/todos {\"title\":\"todo 0\"}",
+            "GET /api/todos?filter=all"
+          ],
+          "last_render_bytes": 14073,
+          "nodes_rendered": 6750,
+          "requests": 201
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 100,
+          "per_iteration_us": 721.5,
+          "total": {
+            "max_ms": 73.75,
+            "median_ms": 72.15,
+            "min_ms": 70.075,
+            "samples_ms": [
+              73.75,
+              70.075,
+              72.15,
+              73.535,
+              70.459
+            ]
+          }
+        }
+      },
+      "rust-z": {
+        "bytes": 165324,
+        "component": "rust/out/opt-z/todo-app.wasm",
+        "instantiate": {
+          "max_ms": 5.229,
+          "median_ms": 0.424,
+          "min_ms": 0.281,
+          "samples_ms": [
+            5.229,
+            0.424,
+            0.319,
+            0.281,
+            0.312,
+            0.344,
+            0.304,
+            0.516,
+            0.426,
+            0.511,
+            0.437
+          ]
+        },
+        "parse": {
+          "max_ms": 129.731,
+          "median_ms": 106.59,
+          "min_ms": 92.72,
+          "samples_ms": [
+            106.59,
+            101.076,
+            92.72,
+            104.983,
+            113.634,
+            129.731,
+            115.937
+          ]
+        },
+        "sanity": {
+          "failures": [],
+          "first_requests": [
+            "GET /api/todos?filter=all",
+            "POST /api/todos {\"title\":\"todo 0\"}",
+            "GET /api/todos?filter=all"
+          ],
+          "last_render_bytes": 14073,
+          "nodes_rendered": 6750,
+          "requests": 201
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 100,
+          "per_iteration_us": 744.02,
+          "total": {
+            "max_ms": 83.3,
+            "median_ms": 74.402,
+            "min_ms": 67.171,
+            "samples_ms": [
+              67.171,
+              74.402,
+              83.3,
+              80.514,
+              70.482
+            ]
+          }
+        }
+      },
+      "zena": {
+        "bytes": 146121,
+        "component": "$ZENA_DIR/todo-app.wasm",
+        "instantiate": {
+          "max_ms": 6.049,
+          "median_ms": 0.715,
+          "min_ms": 0.6,
+          "samples_ms": [
+            6.049,
+            0.938,
+            0.977,
+            0.784,
+            0.77,
+            0.656,
+            0.715,
+            0.6,
+            0.654,
+            0.664,
+            0.664
+          ]
+        },
+        "parse": {
+          "max_ms": 329.808,
+          "median_ms": 316.599,
+          "min_ms": 300.361,
+          "samples_ms": [
+            329.531,
+            306.296,
+            300.361,
+            327.046,
+            310.339,
+            316.599,
+            329.808
+          ]
+        },
+        "sanity": {
+          "failures": [],
+          "first_requests": [
+            "GET /api/todos?filter=all",
+            "POST /api/todos {\"title\":\"todo 0\"}",
+            "GET /api/todos?filter=all"
+          ],
+          "last_render_bytes": 14072,
+          "nodes_rendered": 6750,
+          "requests": 201
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 100,
+          "per_iteration_us": 2191.81,
+          "total": {
+            "max_ms": 256.844,
+            "median_ms": 219.181,
+            "min_ms": 172.692,
+            "samples_ms": [
+              200.061,
+              219.181,
+              256.844,
+              245.228,
+              172.692
+            ]
+          }
+        }
+      }
+    },
+    "todo-footer": {
+      "conduct": {
+        "bytes": 26446,
+        "component": "../examples/todo-footer.cdt, compiled by conduct::service::compile",
+        "instantiate": {
+          "max_ms": 3.073,
+          "median_ms": 0.03,
+          "min_ms": 0.027,
+          "samples_ms": [
+            3.073,
+            0.063,
+            0.036,
+            0.03,
+            0.041,
+            0.039,
+            0.029,
+            0.028,
+            0.027,
+            0.027,
+            0.027
+          ]
+        },
+        "parse": {
+          "max_ms": 28.574,
+          "median_ms": 19.862,
+          "min_ms": 18.399,
+          "samples_ms": [
+            19.862,
+            18.399,
+            19.68,
+            21.741,
+            18.992,
+            24.94,
+            28.574
+          ]
+        },
+        "sanity": {
+          "failures": [],
+          "last_render": "<footer class=\"footer\"><span class=\"todo-count\"><strong>999</strong> items left</span><ul class=\"filters\"><li><a class=\"selected\" href=\"#/\">All</a></li><li><a class=\"\" href=\"#/active\">Active</a></li><li><a class=\"\" href=\"#/completed\">Completed</a></li></ul></footer>",
+          "nodes_rendered": 16332,
+          "second_render": "<footer class=\"footer\"><span class=\"todo-count\"><strong>1</strong> item left</span><ul class=\"filters\"><li><a class=\"\" href=\"#/\">All</a></li><li><a class=\"selected\" href=\"#/active\">Active</a></li><li><a class=\"\" href=\"#/completed\">Completed</a></li></ul><button class=\"clear-completed\" @click=clear>Clear completed</button></footer>"
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 63.419,
+          "total": {
+            "max_ms": 70.888,
+            "median_ms": 63.419,
+            "min_ms": 58.176,
+            "samples_ms": [
+              63.419,
+              58.176,
+              64.43,
+              63.015,
+              70.888
+            ]
+          }
+        }
+      },
+      "rust-s": {
+        "bytes": 56865,
+        "component": "rust/out/todo-footer.wasm",
+        "instantiate": {
+          "max_ms": 3.864,
+          "median_ms": 0.058,
+          "min_ms": 0.049,
+          "samples_ms": [
+            3.864,
+            0.116,
+            0.068,
+            0.057,
+            0.119,
+            0.081,
+            0.058,
+            0.052,
+            0.054,
+            0.051,
+            0.049
+          ]
+        },
+        "parse": {
+          "max_ms": 48.987,
+          "median_ms": 42.803,
+          "min_ms": 38.295,
+          "samples_ms": [
+            39.624,
+            42.803,
+            38.295,
+            40.094,
+            46.692,
+            48.987,
+            45.18
+          ]
+        },
+        "sanity": {
+          "failures": [],
+          "last_render": "<footer class=\"footer\"><span class=\"todo-count\"><strong>999</strong> items left</span><ul class=\"filters\"><li><a class=\"selected\" href=\"#/\">All</a></li><li><a class=\"\" href=\"#/active\">Active</a></li><li><a class=\"\" href=\"#/completed\">Completed</a></li></ul></footer>",
+          "nodes_rendered": 16332,
+          "second_render": "<footer class=\"footer\"><span class=\"todo-count\"><strong>1</strong> item left</span><ul class=\"filters\"><li><a class=\"\" href=\"#/\">All</a></li><li><a class=\"selected\" href=\"#/active\">Active</a></li><li><a class=\"\" href=\"#/completed\">Completed</a></li></ul><button class=\"clear-completed\" @click=clear>Clear completed</button></footer>"
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 51.999,
+          "total": {
+            "max_ms": 71.468,
+            "median_ms": 51.999,
+            "min_ms": 46.845,
+            "samples_ms": [
+              46.845,
+              48.244,
+              71.468,
+              66.791,
+              51.999
+            ]
+          }
+        }
+      },
+      "rust-z": {
+        "bytes": 55719,
+        "component": "rust/out/opt-z/todo-footer.wasm",
+        "instantiate": {
+          "max_ms": 3.91,
+          "median_ms": 0.066,
+          "min_ms": 0.05,
+          "samples_ms": [
+            3.91,
+            0.103,
+            0.066,
+            0.055,
+            0.053,
+            0.05,
+            0.069,
+            0.111,
+            0.078,
+            0.061,
+            0.052
+          ]
+        },
+        "parse": {
+          "max_ms": 60.629,
+          "median_ms": 49.057,
+          "min_ms": 42.46,
+          "samples_ms": [
+            42.46,
+            53.202,
+            60.629,
+            52.421,
+            46.123,
+            46.102,
+            49.057
+          ]
+        },
+        "sanity": {
+          "failures": [],
+          "last_render": "<footer class=\"footer\"><span class=\"todo-count\"><strong>999</strong> items left</span><ul class=\"filters\"><li><a class=\"selected\" href=\"#/\">All</a></li><li><a class=\"\" href=\"#/active\">Active</a></li><li><a class=\"\" href=\"#/completed\">Completed</a></li></ul></footer>",
+          "nodes_rendered": 16332,
+          "second_render": "<footer class=\"footer\"><span class=\"todo-count\"><strong>1</strong> item left</span><ul class=\"filters\"><li><a class=\"\" href=\"#/\">All</a></li><li><a class=\"selected\" href=\"#/active\">Active</a></li><li><a class=\"\" href=\"#/completed\">Completed</a></li></ul><button class=\"clear-completed\" @click=clear>Clear completed</button></footer>"
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 57.041,
+          "total": {
+            "max_ms": 57.661,
+            "median_ms": 57.041,
+            "min_ms": 48.943,
+            "samples_ms": [
+              57.263,
+              57.041,
+              48.943,
+              54.008,
+              57.661
+            ]
+          }
+        }
+      },
+      "zena": {
+        "bytes": 67258,
+        "component": "$ZENA_DIR/todo-footer.wasm",
+        "instantiate": {
+          "max_ms": 7.491,
+          "median_ms": 0.496,
+          "min_ms": 0.38,
+          "samples_ms": [
+            7.491,
+            0.53,
+            0.496,
+            0.406,
+            0.441,
+            0.38,
+            0.585,
+            0.459,
+            0.512,
+            0.725,
+            0.471
+          ]
+        },
+        "parse": {
+          "max_ms": 247.007,
+          "median_ms": 172.871,
+          "min_ms": 129.727,
+          "samples_ms": [
+            180.999,
+            129.727,
+            172.871,
+            247.007,
+            141.554,
+            135.625,
+            180.333
+          ]
+        },
+        "sanity": {
+          "failures": [],
+          "last_render": "<footer class=\"footer\"><span class=\"todo-count\"><strong>999</strong> items left</span><ul class=\"filters\"><li><a href=\"#/\" class=\"selected\">All</a></li><li><a href=\"#/active\" class=\"\">Active</a></li><li><a href=\"#/completed\" class=\"\">Completed</a></li></ul></footer>",
+          "nodes_rendered": 16332,
+          "second_render": "<footer class=\"footer\"><span class=\"todo-count\"><strong>1</strong> item left</span><ul class=\"filters\"><li><a href=\"#/\" class=\"\">All</a></li><li><a href=\"#/active\" class=\"selected\">Active</a></li><li><a href=\"#/completed\" class=\"\">Completed</a></li></ul><button class=\"clear-completed\" @click=clear>Clear completed</button></footer>"
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 113.636,
+          "total": {
+            "max_ms": 139.759,
+            "median_ms": 113.636,
+            "min_ms": 103.011,
+            "samples_ms": [
+              139.759,
+              111.48,
+              127.56,
+              103.011,
+              113.636
+            ]
+          }
+        }
+      }
+    },
+    "todo-input": {
+      "conduct": {
+        "bytes": 26333,
+        "component": "../examples/todo-input.cdt, compiled by conduct::service::compile",
+        "instantiate": {
+          "max_ms": 3.406,
+          "median_ms": 0.033,
+          "min_ms": 0.029,
+          "samples_ms": [
+            3.406,
+            0.072,
+            0.052,
+            0.089,
+            0.044,
+            0.033,
+            0.032,
+            0.03,
+            0.029,
+            0.029,
+            0.029
+          ]
+        },
+        "parse": {
+          "max_ms": 31.021,
+          "median_ms": 25.003,
+          "min_ms": 21.68,
+          "samples_ms": [
+            27.987,
+            23.024,
+            23.145,
+            28.649,
+            31.021,
+            21.68,
+            25.003
+          ]
+        },
+        "sanity": {
+          "emitted": 1000,
+          "failures": [],
+          "last_render": "<div class=\"row\"><input #toggle-all aria-label=\"Mark all as complete\" class=\"toggle-all\" id=\"toggle-all\" type=\"checkbox\" .checked=false @change=toggle-all></input><input #new-todo autofocus=\"\" class=\"new-todo\" placeholder=\"What needs to be done?\" .value=\"\" @keydown=keydown></input></div>",
+          "nodes_rendered": 3000
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 38.443,
+          "total": {
+            "max_ms": 43.794,
+            "median_ms": 38.443,
+            "min_ms": 37.827,
+            "samples_ms": [
+              41.564,
+              38.443,
+              38.236,
+              37.827,
+              43.794
+            ]
+          }
+        }
+      },
+      "rust-s": {
+        "bytes": 56458,
+        "component": "rust/out/todo-input.wasm",
+        "instantiate": {
+          "max_ms": 4.741,
+          "median_ms": 0.066,
+          "min_ms": 0.054,
+          "samples_ms": [
+            4.741,
+            0.095,
+            0.064,
+            0.058,
+            0.054,
+            0.054,
+            0.055,
+            0.129,
+            0.103,
+            0.069,
+            0.066
+          ]
+        },
+        "parse": {
+          "max_ms": 54.673,
+          "median_ms": 43.662,
+          "min_ms": 40.129,
+          "samples_ms": [
+            40.129,
+            43.662,
+            49.862,
+            52.672,
+            41.487,
+            43.275,
+            54.673
+          ]
+        },
+        "sanity": {
+          "emitted": 1000,
+          "failures": [],
+          "last_render": "<div class=\"row\"><input #toggle-all aria-label=\"Mark all as complete\" class=\"toggle-all\" id=\"toggle-all\" type=\"checkbox\" .checked=false @change=toggle-all></input><input #new-todo autofocus=\"\" class=\"new-todo\" placeholder=\"What needs to be done?\" .value=\"\" @keydown=keydown></input></div>",
+          "nodes_rendered": 3000
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 52.776,
+          "total": {
+            "max_ms": 58.556,
+            "median_ms": 52.776,
+            "min_ms": 35.137,
+            "samples_ms": [
+              52.776,
+              58.556,
+              57.909,
+              39.783,
+              35.137
+            ]
+          }
+        }
+      },
+      "rust-z": {
+        "bytes": 55255,
+        "component": "rust/out/opt-z/todo-input.wasm",
+        "instantiate": {
+          "max_ms": 3.904,
+          "median_ms": 0.055,
+          "min_ms": 0.05,
+          "samples_ms": [
+            3.904,
+            0.111,
+            0.092,
+            0.06,
+            0.055,
+            0.055,
+            0.052,
+            0.076,
+            0.054,
+            0.052,
+            0.05
+          ]
+        },
+        "parse": {
+          "max_ms": 51.83,
+          "median_ms": 43.658,
+          "min_ms": 41.225,
+          "samples_ms": [
+            41.225,
+            42.54,
+            41.42,
+            51.83,
+            50.343,
+            43.658,
+            44.21
+          ]
+        },
+        "sanity": {
+          "emitted": 1000,
+          "failures": [],
+          "last_render": "<div class=\"row\"><input #toggle-all aria-label=\"Mark all as complete\" class=\"toggle-all\" id=\"toggle-all\" type=\"checkbox\" .checked=false @change=toggle-all></input><input #new-todo autofocus=\"\" class=\"new-todo\" placeholder=\"What needs to be done?\" .value=\"\" @keydown=keydown></input></div>",
+          "nodes_rendered": 3000
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 37.759,
+          "total": {
+            "max_ms": 42.175,
+            "median_ms": 37.759,
+            "min_ms": 37.263,
+            "samples_ms": [
+              42.175,
+              41.728,
+              37.263,
+              37.759,
+              37.676
+            ]
+          }
+        }
+      },
+      "zena": {
+        "bytes": 64308,
+        "component": "$ZENA_DIR/todo-input.wasm",
+        "instantiate": {
+          "max_ms": 8.111,
+          "median_ms": 0.571,
+          "min_ms": 0.432,
+          "samples_ms": [
+            8.111,
+            0.633,
+            0.649,
+            0.559,
+            1.023,
+            0.525,
+            0.442,
+            0.432,
+            0.681,
+            0.571,
+            0.446
+          ]
+        },
+        "parse": {
+          "max_ms": 197.483,
+          "median_ms": 153.753,
+          "min_ms": 127.709,
+          "samples_ms": [
+            153.753,
+            160.82,
+            132.765,
+            127.709,
+            150.128,
+            183.115,
+            197.483
+          ]
+        },
+        "sanity": {
+          "emitted": 1000,
+          "failures": [],
+          "last_render": "<div class=\"row\"><input id=\"toggle-all\" aria-label=\"Mark all as complete\" type=\"checkbox\" class=\"toggle-all\" .checked=false @change=toggleAll></input><input autofocus=\"\" placeholder=\"What needs to be done?\" class=\"new-todo\" .value=\"\" @keydown=key></input></div>",
+          "nodes_rendered": 3000
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 74.278,
+          "total": {
+            "max_ms": 90.257,
+            "median_ms": 74.278,
+            "min_ms": 67.202,
+            "samples_ms": [
+              90.257,
+              85.906,
+              74.278,
+              67.202,
+              68.27
+            ]
+          }
+        }
+      }
+    },
+    "todo-item": {
+      "conduct": {
+        "bytes": 28966,
+        "component": "../examples/todo-item.cdt, compiled by conduct::service::compile",
+        "instantiate": {
+          "max_ms": 4.058,
+          "median_ms": 0.041,
+          "min_ms": 0.029,
+          "samples_ms": [
+            4.058,
+            0.091,
+            0.042,
+            0.054,
+            0.041,
+            0.032,
+            0.03,
+            0.053,
+            0.032,
+            0.029,
+            0.029
+          ]
+        },
+        "parse": {
+          "max_ms": 34.655,
+          "median_ms": 25.844,
+          "min_ms": 23.289,
+          "samples_ms": [
+            25.277,
+            34.655,
+            23.289,
+            24.741,
+            28.87,
+            25.844,
+            32.101
+          ]
+        },
+        "sanity": {
+          "emitted": 1000,
+          "failures": [],
+          "first_render": "<li class=\"completed\"><input #toggle aria-label=\"Toggle the todo\" class=\"toggle\" type=\"checkbox\" .checked=true @change=toggle></input><label @dblclick=edit>Buy milk</label><button aria-label=\"Delete the todo\" class=\"destroy\" @click=destroy>×</button></li>",
+          "last_render": "<li class=\"\"><input #toggle aria-label=\"Toggle the todo\" class=\"toggle\" type=\"checkbox\" .checked=false @change=toggle></input><label @dblclick=edit>Buy milk</label><button aria-label=\"Delete the todo\" class=\"destroy\" @click=destroy>×</button></li>",
+          "nodes_rendered": 6000
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 36.691,
+          "total": {
+            "max_ms": 45.446,
+            "median_ms": 36.691,
+            "min_ms": 35.669,
+            "samples_ms": [
+              45.446,
+              39.405,
+              36.691,
+              36.517,
+              35.669
+            ]
+          }
+        }
+      },
+      "rust-s": {
+        "bytes": 59476,
+        "component": "rust/out/todo-item.wasm",
+        "instantiate": {
+          "max_ms": 3.006,
+          "median_ms": 0.058,
+          "min_ms": 0.048,
+          "samples_ms": [
+            3.006,
+            0.106,
+            0.065,
+            0.058,
+            0.054,
+            0.101,
+            0.06,
+            0.051,
+            0.049,
+            0.048,
+            0.05
+          ]
+        },
+        "parse": {
+          "max_ms": 50.379,
+          "median_ms": 41.96,
+          "min_ms": 38.516,
+          "samples_ms": [
+            43.784,
+            43.105,
+            39.686,
+            41.96,
+            38.516,
+            50.379,
+            38.98
+          ]
+        },
+        "sanity": {
+          "emitted": 1000,
+          "failures": [],
+          "first_render": "<li class=\"completed\"><input #toggle aria-label=\"Toggle the todo\" class=\"toggle\" type=\"checkbox\" .checked=true @change=toggle></input><label @dblclick=edit>Buy milk</label><button aria-label=\"Delete the todo\" class=\"destroy\" @click=destroy>×</button></li>",
+          "last_render": "<li class=\"\"><input #toggle aria-label=\"Toggle the todo\" class=\"toggle\" type=\"checkbox\" .checked=false @change=toggle></input><label @dblclick=edit>Buy milk</label><button aria-label=\"Delete the todo\" class=\"destroy\" @click=destroy>×</button></li>",
+          "nodes_rendered": 6000
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 37.345,
+          "total": {
+            "max_ms": 39.177,
+            "median_ms": 37.345,
+            "min_ms": 34.65,
+            "samples_ms": [
+              38.235,
+              34.65,
+              39.177,
+              35.481,
+              37.345
+            ]
+          }
+        }
+      },
+      "rust-z": {
+        "bytes": 58159,
+        "component": "rust/out/opt-z/todo-item.wasm",
+        "instantiate": {
+          "max_ms": 3.434,
+          "median_ms": 0.054,
+          "min_ms": 0.045,
+          "samples_ms": [
+            3.434,
+            0.088,
+            0.058,
+            0.054,
+            0.049,
+            0.099,
+            0.061,
+            0.049,
+            0.048,
+            0.046,
+            0.045
+          ]
+        },
+        "parse": {
+          "max_ms": 62.638,
+          "median_ms": 44.658,
+          "min_ms": 36.27,
+          "samples_ms": [
+            50.73,
+            62.638,
+            43.642,
+            39.304,
+            44.658,
+            47.279,
+            36.27
+          ]
+        },
+        "sanity": {
+          "emitted": 1000,
+          "failures": [],
+          "first_render": "<li class=\"completed\"><input #toggle aria-label=\"Toggle the todo\" class=\"toggle\" type=\"checkbox\" .checked=true @change=toggle></input><label @dblclick=edit>Buy milk</label><button aria-label=\"Delete the todo\" class=\"destroy\" @click=destroy>×</button></li>",
+          "last_render": "<li class=\"\"><input #toggle aria-label=\"Toggle the todo\" class=\"toggle\" type=\"checkbox\" .checked=false @change=toggle></input><label @dblclick=edit>Buy milk</label><button aria-label=\"Delete the todo\" class=\"destroy\" @click=destroy>×</button></li>",
+          "nodes_rendered": 6000
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 33.945,
+          "total": {
+            "max_ms": 48.267,
+            "median_ms": 33.945,
+            "min_ms": 30.657,
+            "samples_ms": [
+              33.945,
+              30.657,
+              32.524,
+              40.709,
+              48.267
+            ]
+          }
+        }
+      },
+      "zena": {
+        "bytes": 67902,
+        "component": "$ZENA_DIR/todo-item.wasm",
+        "instantiate": {
+          "max_ms": 6.853,
+          "median_ms": 0.429,
+          "min_ms": 0.369,
+          "samples_ms": [
+            6.853,
+            0.526,
+            0.444,
+            0.396,
+            0.429,
+            0.394,
+            0.459,
+            0.415,
+            0.422,
+            0.369,
+            0.542
+          ]
+        },
+        "parse": {
+          "max_ms": 164.84,
+          "median_ms": 153.351,
+          "min_ms": 145.129,
+          "samples_ms": [
+            153.351,
+            152.367,
+            162.412,
+            154.204,
+            164.84,
+            146.051,
+            145.129
+          ]
+        },
+        "sanity": {
+          "emitted": 1000,
+          "failures": [],
+          "first_render": "<li class=\"completed\"><input #toggle aria-label=\"Toggle the todo\" type=\"checkbox\" class=\"toggle\" .checked=true @change=toggle></input><label @dblclick=edit>Buy milk</label><button aria-label=\"Delete the todo\" class=\"destroy\" @click=destroy>×</button></li>",
+          "last_render": "<li class=\"\"><input #toggle aria-label=\"Toggle the todo\" type=\"checkbox\" class=\"toggle\" .checked=false @change=toggle></input><label @dblclick=edit>Buy milk</label><button aria-label=\"Delete the todo\" class=\"destroy\" @click=destroy>×</button></li>",
+          "nodes_rendered": 6000
+        },
+        "sanity_failures": [],
+        "sanity_ok": true,
+        "workload": {
+          "n": 1000,
+          "per_iteration_us": 84.631,
+          "total": {
+            "max_ms": 85.427,
+            "median_ms": 84.631,
+            "min_ms": 81.178,
+            "samples_ms": [
+              81.178,
+              85.427,
+              83.153,
+              84.631,
+              84.877
+            ]
+          }
+        }
+      }
+    }
+  },
+  "guest_output": {
+    "first": [],
+    "lines": 0
+  },
+  "meta": {
+    "conduct_commit": "7d76b9b",
+    "cpus": 2,
+    "host": "native, release build of this harness (opt-level 3), tokio current-thread runtime",
+    "n": 1000,
+    "n_app": 100,
+    "polyfill": "dialog-db/wasm-component-model-polyfill eedcd22766b35cc34b3b81b4c753ab4f08a7c09a, Wasmtime core backend",
+    "runs": {
+      "compiler": 5,
+      "instantiate": 11,
+      "parse": 7,
+      "workload": 5
+    },
+    "wasmtime": "49.0.0-rc.1"
+  }
+}
