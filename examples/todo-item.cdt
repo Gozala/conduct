@@ -78,18 +78,24 @@
 
 (define (stay model) {model: model, effects: []})
 
-(define (update model handler event attrs)
-  (let [id (get :todo-id of: attrs or: "")]
-    (cond
-      (= handler "toggle") {model: model, effects: [(emit "todo-toggle" id)]}
-      (= handler "destroy") {model: model, effects: [(emit "todo-destroy" id)]}
-      (= handler "edit") (stay {editing: true})
-      (and (= handler "key") (= (key event "") "Escape")) (stay {editing: false})
-      (and (editing model)
-           (or (and (= handler "key") (= (key event "") "Enter")) (= handler "save")))
-        {model: {editing: false}
-         effects: [(emit "todo-edit" (str id "\n" (value event "")))]}
-      :else (stay model))))
+(define (id-of attrs) (get :todo-id of: attrs or: ""))
+
+(define (save title attrs)
+  {model: {editing: false}
+   effects: [(emit "todo-edit" (str (id-of attrs) "\n" title))]})
+
+;; `update` is defined by clauses: a call takes the narrowest one that
+;; matches it, so the last, which matches anything, is what any other
+;; event does.
+(define (update model handler: "toggle" event attrs)
+  {model: model, effects: [(emit "todo-toggle" (id-of attrs))]})
+(define (update model handler: "destroy" event attrs)
+  {model: model, effects: [(emit "todo-destroy" (id-of attrs))]})
+(define (update model handler: "edit" event attrs) (stay {editing: true}))
+(define (update model handler: "key" event: {key: "Escape"} attrs) (stay {editing: false}))
+(define (update {editing: true} handler: "key" event: {key: "Enter" value: title} attrs) (save title attrs: attrs))
+(define (update {editing: true} handler: "save" event attrs) (save (value event "") attrs: attrs))
+(define (update model handler event attrs) (stay model))
 
 (define (view model attrs)
   (let [done (= (get :completed of: attrs or: "") "true")

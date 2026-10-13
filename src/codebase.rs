@@ -889,6 +889,7 @@ impl Names<'_> {
             Pat::Keyword(k) => (Pattern::Keyword(k.clone()), None),
             Pat::Str(s) => (Pattern::Str(s.clone()), None),
             Pat::Int(n) => (Pattern::Int(*n), None),
+            Pat::Bool(b) => (Pattern::Bool(*b), None),
             Pat::Any => (Pattern::Any, None),
             Pat::Name(n) if self.claims.record(bare(n)).is_some() => {
                 (self.constructor(bare(n), &[])?, Some(bare(n).to_string()))
@@ -1798,6 +1799,7 @@ fn pat_text(p: &Pat) -> String {
         Pat::Keyword(k) => format!(":{k}"),
         Pat::Str(s) => format!("{s:?}"),
         Pat::Int(n) => n.to_string(),
+        Pat::Bool(b) => b.to_string(),
         Pat::Any => "_".into(),
         Pat::Name(n) => bare(n).to_string(),
         Pat::Record(fields) => {

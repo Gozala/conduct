@@ -64,18 +64,28 @@ $ cargo run -- check examples/todo-item.cdt
 #f7a2cda090 styles : String
 #2ac3bbe7d7 init : (Any) -> {editing: Bool}
 #a65931f7a3 stay : (a) -> {effects: List[Nothing], model: a}
-#e86f1e95f6 update : ({editing: Bool}, attrs: Dict[String], event: Any, handler: Any) -> {effects: List[Effect], model: {editing: Bool}}
+#0d487b5d59 id-of : (Dict[a]) -> a | String
+#60dab6ec0c save : (Any, attrs: Dict[Any]) -> {effects: List[Effect], model: {editing: Bool}}
+#b7ffd47bd1 update : (a, attrs: Dict[String], event: Any, handler: Any) -> {effects: List[Effect], model: a | {editing: Bool}}
 #22d915a618 view : ({editing: Bool}, attrs: Dict[String]) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (25411 bytes)
+wrote todo-item.wasm (27467 bytes)
 
 $ cargo run -- route examples/todos-route.cdt -o todos.wasm
-wrote todos.wasm (30320 bytes)
+wrote todos.wasm (30409 bytes)
 ```
 
 Every type above is inferred; `editing` is the attribute the element
-declares.
+declares. `update` is defined by clauses, one per event it handles:
+
+```clojure
+(define (update model handler: "edit" event attrs) (stay {editing: true}))
+(define (update model handler: "key" event: {key: "Escape"} attrs) (stay {editing: false}))
+(define (update {editing: true} handler: "key" event: {key: "Enter" value: title} attrs)
+  (save title attrs: attrs))
+(define (update model handler event attrs) (stay model))
+```
 
 `cargo test` runs everything: the reader, inference, hashing, the code
 generator on Wasmtime, the elements and routes on the polyfill, and the
@@ -371,6 +381,8 @@ Racket's occurrence typing, inferred without annotations.
 
 Equality and `str` work on any value, so there is no type class
 machinery: `=` takes `(Any, Any)`.
+
+`true` and `false` are patterns too, and the two cover a `Bool`.
 
 A list pattern matches a list's items: `[]`, `[x y]`, and `[first rest
 ...]`, whose `rest` binds the list of the items after the first, as
