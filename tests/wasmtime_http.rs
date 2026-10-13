@@ -62,19 +62,20 @@ impl WasiHttpView for State {
 /// It posts a body to each URL but `/big`, which it gets with none.
 const FETCHER: &str = r#"
 (type n : (t/n integer))
+(type urls : (t/urls text))
 (define attributes ["urls"])
-(define (init attrs) {n: 0})
+(define (init attrs) {n: 0, urls: (get :urls of: attrs or: "")})
 (define (ask url)
   (if (= (count (split url "/big")) 1)
     (fetch "POST" url (str "{\"url\":\"" url "\"}") :answer)
     (fetch "GET" url "" :answer)))
-(define (update {action: :connected} model: m attrs)
+(define (update {action: :connected} model: m)
   {model: m
-   effects: (map (filter (split (get :urls of: attrs or: "") "\n") where: (fn [u] (not (= u "")))) each: ask)})
-(define (update {action: :answer status: code value: body} model: m attrs)
-  {model: {n: (+ (n m) 1)}, effects: [(emit "answered" (str code " " body))]})
-(define (update command model: m attrs) {model: m, effects: []})
-(define (view m attrs) (h "p" {} [(str (n m))] {}))
+   effects: (map (filter (split (urls m) "\n") where: (fn [u] (not (= u "")))) each: ask)})
+(define (update {action: :answer status: code value: body} model: m)
+  {model: (assoc m n: (+ (n m) 1)), effects: [(emit "answered" (str code " " body))]})
+(define (update command model: m) {model: m, effects: []})
+(define (view m) (h "p" {} [(str (n m))] {}))
 "#;
 
 async fn run(urls: &[&str]) -> (Vec<String>, Vec<String>) {

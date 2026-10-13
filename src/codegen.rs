@@ -1094,6 +1094,7 @@ fn pattern_test(value: Term, pattern: &Pattern) -> Term {
         Pattern::Int(n) => Term::Prim(Op::Eq, vec![value, Term::Int(*n)]),
         Pattern::Bool(b) => Term::Prim(Op::Eq, vec![value, Term::Bool(*b)]),
         Pattern::Any | Pattern::Bind(_) => Term::Bool(true),
+        Pattern::As(_, p) => pattern_test(value, p),
         Pattern::List(items, rest) => {
             // The length first, then each item, read only once it is
             // known to be there.

@@ -3,6 +3,34 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Two arguments: the command and the model
+
+- **`update` takes the command and the model; `view` takes the model.**
+  The attributes were a third argument to both. They are now what Elm
+  makes of a program's inputs: `init` sees the first ones, and each
+  change is a command, `{action: :attribute-changed attribute: :title
+  value: "Buy milk"}` (the attribute a keyword, the value absent when it
+  was removed). The model keeps what the element needs of them, typed:
+  `todo-item`'s `done` is a `Bool`, where the attribute is the string
+  `"true"`.
+- **The cost is a copy:** the attribute lives in the host's element and
+  again in the model, and an element that forgets a clause for an
+  attribute shows a stale value. Every element here has one clause per
+  observed attribute. Putting the attributes in the command instead
+  would have kept one copy, but `view`, which hears no command, would
+  still have needed them as an argument.
+- **A record pattern can name the whole record:** `{action: :toggle-all
+  command ...}`, as `rest ...` names the rest of a list. In a record the
+  rest is the record itself: records are open, so the fields matched are
+  still there, and taking them out would need a record restriction type
+  that Simple-sub does not have. It is the pattern that binds a value
+  and tests it, which clauses kept needing: `model: {editing: true model
+  ...}` both tests the model and keeps it. Its binder has the type the
+  pattern narrowed the record to.
+- **`update`'s type is now hard to read.** Each clause's `assoc` gives a
+  record update type of its own, `(c with editing: Bool)`, and display
+  does not merge updates of variables that are bounded alike.
+
 ## Commands with keyword actions
 
 - **`update` hears a command: `(update command model: m attrs: a)`.**

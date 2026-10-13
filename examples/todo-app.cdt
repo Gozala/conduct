@@ -154,16 +154,20 @@
 (type title : (demo.todo/title text))
 (type completed : (demo.todo/completed boolean))
 
-(define (filter-of attrs)
-  (let [f (get :filter of: attrs or: "")] (if (= f "") "all" f)))
+(type showing : (demo.app/filter text))
+
+;; The filter the `filter` attribute names, or all of them.
+(define (filter-of "") "all")
+(define (filter-of name) name)
 
 (define (init attrs)
-  {todos: [], active-count: 0, completed-count: 0, phase: "measuring", height: "", about-open: false})
+  {todos: [], active-count: 0, completed-count: 0, phase: "measuring", height: "", about-open: false
+   showing: (filter-of (get :filter of: attrs or: ""))})
 
 ;; Requests
 
-(define (load attrs)
-  (fetch "GET" (str "/api/todos?filter=" (filter-of attrs)) "" :loaded))
+(define (load model)
+  (fetch "GET" (str "/api/todos?filter=" (showing model)) "" :loaded))
 
 (define (change method path body)
   (fetch method path body :changed))
@@ -194,37 +198,38 @@
 (define (next model effects) {model: model, effects: effects})
 
 ;; Loading the list.
-(define (update {action: :connected} model attrs) (next model effects: [(load attrs)]))
-(define (update {action: :attribute-changed value: "filter"} model attrs) (next model effects: [(load attrs)]))
-(define (update {action: :loaded value: body} model attrs) (next (loaded model body: body) effects: []))
-(define (update {action: :changed} model attrs) (next model effects: [(load attrs)]))
+(define (update {action: :connected} model) (next model effects: [(load model)]))
+(define (update {action: :attribute-changed attribute: :filter value: name} model)
+  (let [model (assoc model showing: (filter-of name))] (next model effects: [(load model)])))
+(define (update {action: :loaded value: body} model) (next (loaded model body: body) effects: []))
+(define (update {action: :changed} model) (next model effects: [(load model)]))
 ;; The steps of the reveal, which call no route.
-(define (update {action: :measured value: height} model attrs)
+(define (update {action: :measured value: height} model)
   (next (assoc model
           height: height
           phase: (if (= (phase model) "measuring") "revealing" (phase model)))
         effects: []))
-(define (update {action: :revealed} model attrs)
+(define (update {action: :revealed} model)
   (next (assoc model phase: (if (= (phase model) "revealing") "shown" (phase model))) effects: []))
-(define (update {action: :about} model attrs) (next (assoc model about-open: (not (about-open model))) effects: []))
+(define (update {action: :about} model) (next (assoc model about-open: (not (about-open model))) effects: []))
 ;; What a person did.
-(define (update {action: :add value: title} model attrs)
+(define (update {action: :add value: title} model)
   (next model effects: [(change "POST" path: "/api/todos" body: (to-json {:title title}))]))
-(define (update {action: :toggle-all value: all} model attrs)
+(define (update {action: :toggle-all value: all} model)
   (next model effects: [(change "PATCH" path: "/api/todos" body: (to-json {:completed (= all "true")}))]))
 ;; The todo with that id, if there is one, flips.
-(define (update {action: :toggle value: which} model attrs)
+(define (update {action: :toggle value: which} model)
   (next model
     effects: (map (filter (todos model) where: (fn [todo] (= (id todo) which)))
                   each: (fn [todo] (change "PATCH"
                                            path: (str "/api/todos/" (id todo))
                                            body: (to-json {:completed (not (completed todo))}))))))
-(define (update {action: :destroy value: which} model attrs)
+(define (update {action: :destroy value: which} model)
   (next model effects: [(change "DELETE" path: (str "/api/todos/" which) body: "")]))
-(define (update {action: :edit value: detail} model attrs) (next model effects: [(edit detail)]))
-(define (update {action: :clear} model attrs) (next model effects: [(change "DELETE" path: "/api/todos" body: "")]))
+(define (update {action: :edit value: detail} model) (next model effects: [(edit detail)]))
+(define (update {action: :clear} model) (next model effects: [(change "DELETE" path: "/api/todos" body: "")]))
 ;; Any other command, or another attribute changing, changes nothing.
-(define (update command model attrs) (next model effects: []))
+(define (update command model) (next model effects: []))
 
 ;; The view
 
@@ -273,7 +278,7 @@
       (assoc base :style (str "height: " (height model) "px"))
       base)))
 
-(define (view model attrs)
+(define (view model)
   (let [total (+ (active-count model) (completed-count model))
         header (h "header" {:class "header"}
                  [(h "h1" {} ["todos"])
@@ -285,7 +290,7 @@
                [(h "section" {:class "main"} [(h "ul" {:class "todo-list"} (map (todos model) each: item))])
                 (h "todo-footer" {:active (str (active-count model))
                                   :completed (str (completed-count model))
-                                  :filter (filter-of attrs)}
+                                  :filter (showing model)}
                    []
                    {:todo-clear :clear})]
                [])

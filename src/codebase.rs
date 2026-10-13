@@ -908,6 +908,10 @@ impl Names<'_> {
                 (Pattern::Fields(out), None)
             }
             Pat::Ctor(name, args) => (self.constructor(name, args)?, Some(name.clone())),
+            Pat::As(name, p) => {
+                let (inner, ctor) = self.pattern(p)?;
+                (Pattern::As(name.clone(), Box::new(inner)), ctor)
+            }
             Pat::List(items, rest) => {
                 let items = items.iter().map(|p| Ok(self.pattern(p)?.0)).collect::<Result<_, ResolveError>>()?;
                 let rest = rest.as_ref().map(|r| {
@@ -1811,6 +1815,10 @@ fn pat_text(p: &Pat) -> String {
                 None => format!(" {}", pat_text(p)),
             });
             format!("({name}{})", args.collect::<String>())
+        }
+        Pat::As(name, p) => {
+            let inner = pat_text(p);
+            format!("{} {} ...}}", &inner[..inner.len() - 1], bare(name))
         }
         Pat::List(items, rest) => {
             let mut parts: Vec<String> = items.iter().map(pat_text).collect();

@@ -287,6 +287,13 @@ impl Infer<'_> {
             Pattern::Bool(_) => (Ty::bool(), vec![]),
             Pattern::Any => (t, vec![]),
             Pattern::Bind(_) => (t.clone(), vec![t]),
+            // The whole value, as the pattern it is bound beside narrows
+            // it.
+            Pattern::As(_, p) => {
+                let (narrowed, mut binders) = self.narrow(t, &[], p, level)?;
+                binders.insert(0, narrowed.clone());
+                (narrowed, binders)
+            }
             Pattern::List(items, rest) => {
                 // Every item is one type, so a list's patterns narrow
                 // what is bound, not the list.
@@ -435,6 +442,7 @@ fn json() -> Ty {
 /// the variants named, each with what its payload patterns cover, or a
 /// record with the fields a pattern of `_`s names.
 fn cover_type(patterns: &[&Pattern]) -> Option<Ty> {
+    let patterns: &[&Pattern] = &patterns.iter().map(|p| p.core()).collect::<Vec<_>>();
     // A function's clauses: each argument holds only what its column's
     // patterns name, which is what deciding they cover assumed.
     if let Some(keys) = crate::term::argument_columns(patterns) {

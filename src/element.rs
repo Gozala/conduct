@@ -7,13 +7,13 @@
 //! attributes : List[String]          the attributes it observes
 //! styles     : String                the CSS of its shadow root
 //! init       : (Dict[String]) -> m   its first model, from its attributes
-//! update     : (Command, model: m, attrs: Dict[String])
-//!                -> {model: m, effects: List[Effect]}
-//! view       : (m, attrs: Dict[String]) -> View
+//! update     : (Command, model: m) -> {model: m, effects: List[Effect]}
+//! view       : (m) -> View
 //! ```
 //!
 //! where `Command` is `{action: Keyword, kind: String, value?: String,
-//! checked?: Bool, key?: String, status?: Int}`: an action, and the
+//! checked?: Bool, key?: String, status?: Int, attribute?: Keyword}`:
+//! an action, and the
 //! attributes of its event that apply to it, matched by a clause,
 //! `{action: :keydown key: "Enter"}`. The element prelude ([`PRELUDE`])
 //! declares these attributes.
@@ -21,8 +21,9 @@
 //! `update` hears everything that happens to the element, by action:
 //! the actions the view's events name, `{:click :toggle}`, `:connected`
 //! when the element joins the document, and `:attribute-changed` (with
-//! the attribute's name as the value) after an observed attribute
-//! changes. It performs nothing itself. It returns effects as values,
+//! the attribute as a keyword, and its new value) after an observed
+//! attribute changes: `init` sees the first attributes, and the model
+//! keeps what the element needs of them. It performs nothing itself. It returns effects as values,
 //! `(emit name detail)` for a custom event and
 //! `(fetch method url body action)` for an HTTP request whose response
 //! comes back to `update` as `action`, with the body as the command's
@@ -147,6 +148,7 @@ const KIND: &str = "conduct.event/kind";
 const VALUE: &str = "conduct.event/value";
 const CHECKED: &str = "conduct.event/checked";
 const KEY: &str = "conduct.event/key";
+const ATTRIBUTE: &str = "conduct.event/attribute";
 const STATUS: &str = "conduct.event/status";
 
 /// The command `update` receives: its action, its event's kind, and
@@ -159,6 +161,7 @@ pub fn event_type() -> Ty {
         (CHECKED.to_string(), Ty::opt(Ty::bool())),
         (KEY.to_string(), Ty::opt(Ty::str())),
         (STATUS.to_string(), Ty::opt(Ty::int())),
+        (ATTRIBUTE.to_string(), Ty::opt(Ty::Prim(crate::types::Prim::Keyword))),
     ])
 }
 
@@ -197,12 +200,12 @@ pub fn check(cb: &Codebase) -> Result<ElementDefs, ElementError> {
         "update",
         defs.update,
         Ty::func(
-            vec![event_type(), attrs(), model.clone()],
+            vec![event_type(), model.clone()],
             Ty::record([(MODEL.to_string(), model.clone()), (EFFECTS.to_string(), Ty::list(Ty::Effect))]),
-            &["attrs", "model"],
+            &["model"],
         ),
     )?;
-    fits("view", Some(defs.view), Ty::func(vec![model, attrs()], Ty::View, &["attrs"]))?;
+    fits("view", Some(defs.view), Ty::func(vec![model], Ty::View, &[]))?;
     Ok(defs)
 }
 
@@ -256,23 +259,10 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     // `update` takes the model out of the table and gives the next one
     // back; the table keeps the attributes, so `update` gets a copy.
     let update = match defs.update {
-        Some(h) => b.call(
-            h,
-            &[
-                "(local.get $command)".into(),
-                "(call $dup (i64.load offset=8 (call $slot (local.get $id))))".into(),
-                "(local.get $model)".into(),
-            ],
-        )?,
+        Some(h) => b.call(h, &["(local.get $command)".into(), "(local.get $model)".into()])?,
         None => String::new(),
     };
-    let view = b.call(
-        defs.view,
-        &[
-            "(call $dup (i64.load (call $slot (local.get $id))))".into(),
-            "(call $dup (i64.load offset=8 (call $slot (local.get $id))))".into(),
-        ],
-    )?;
+    let view = b.call(defs.view, &["(call $dup (i64.load (call $slot (local.get $id))))".into()])?;
     let key = b.static_str("key");
     let checked = b.static_str("checked");
     let value = b.static_str("value");
@@ -530,7 +520,7 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     (global.set $which (i32.const 0))
     (call $dispatch (local.get $id)
       (call $event_new (call $lit_owned (i64.const {connected_action})) (call $lit_owned (i64.const {connected}))
-        (i64.const 2) (i64.const 2) (i64.const 2) (i64.const 2)))
+        (i64.const 2) (i64.const 2) (i64.const 2) (i64.const 2) (i64.const 2)))
     (call $task_end))
   (func (export "{iface}#disconnected") (param $id i32)
     (call $release)
@@ -550,11 +540,13 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
         (then (call $dict_assoc (local.get $attrs) (local.get $name) (local.get $val)))
         (else (call $dict_dissoc (local.get $attrs) (local.get $name)))))
     (call $drop (local.get $attrs))
-    (call $drop (local.get $val))
-    ;; Tell `update`, with the attribute's name as the event's value.
+    ;; Tell `update`: the attribute, by its name as a keyword, and its
+    ;; new value, if it still has one.
     (call $dispatch (local.get $id)
       (call $event_new (call $lit_owned (i64.const {changed_action})) (call $lit_owned (i64.const {changed}))
-        (local.get $name) (i64.const 2) (i64.const 2) (i64.const 2)))
+        (local.get $val) (i64.const 2) (i64.const 2) (i64.const 2)
+        (call $keyword_of (call $str_new (call $str_data (local.get $name)) (call $len (local.get $name))))))
+    (call $drop (local.get $name))
     (call $task_end))
   (func (export "{iface}#render") (param $id i32) (result i32)
     (local $v i64) (local $n i32) (local $arr i32)
@@ -575,6 +567,7 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     // argument is consumed. An attribute the event does not have comes
     // as the glue's internal "absent" (2), and the record leaves it out.
     let mut fields = [
+        (field_id(ATTRIBUTE), "attribute"),
         (field_id(ACTION), "action"),
         (field_id(KIND), "kind"),
         (field_id(VALUE), "value"),
@@ -598,7 +591,7 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     let keyword = crate::codegen::KIND_KEYWORD;
     let _ = write!(
         x,
-        r#"  (func $event_new (param $action i64) (param $kind i64) (param $value i64) (param $checked i64) (param $key i64) (param $status i64) (result i64)
+        r#"  (func $event_new (param $action i64) (param $kind i64) (param $value i64) (param $checked i64) (param $key i64) (param $status i64) (param $attribute i64) (result i64)
     (local $w i32) (local $n i32) (local $at i32){count}
     (local.set $w (call $obj (i32.const 3) (local.get $n) (i32.shl (local.get $n) (i32.const 4))))
     (local.set $at (local.get $w)){stores}
@@ -667,7 +660,7 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
         (call $opt_str (local.get $vd) (local.get $vp) (local.get $vn))
         (if (result i64) (local.get $cd) (then (call $bool (local.get $cv))) (else (i64.const 2)))
         (call $opt_str (local.get $yd) (local.get $yp) (local.get $yn))
-        (i64.const 2)))
+        (i64.const 2) (i64.const 2)))
     (call $task_end))"#
     );
     b.add_func(x);
