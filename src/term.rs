@@ -288,6 +288,9 @@ pub enum Pattern {
     /// (a name or `_`) for the list of the rest. Without one, the list
     /// has exactly as many items as there are patterns.
     List(Vec<Pattern>, Option<Box<Pattern>>),
+    /// A pattern that also binds the whole value it matches: a record
+    /// pattern's `rest ...`, `{action: :toggle command ...}`.
+    As(String, Box<Pattern>),
 }
 
 /// One step of the way to what a pattern binds: a record's field, a
@@ -332,6 +335,10 @@ impl Pattern {
                     p.encode(out);
                 }
             }
+            Pattern::As(_, p) => {
+                out.push(9);
+                p.encode(out);
+            }
             Pattern::List(items, rest) => {
                 out.push(8);
                 out.extend_from_slice(&(items.len() as u32).to_le_bytes());
@@ -347,15 +354,23 @@ impl Pattern {
         }
     }
 
+    /// What the pattern tests, without a name for the whole value.
+    pub fn core(&self) -> &Pattern {
+        match self {
+            Pattern::As(_, p) => p.core(),
+            p => p,
+        }
+    }
+
     /// Whether the pattern matches every value: `_` or a name.
     pub fn irrefutable(&self) -> bool {
-        matches!(self, Pattern::Any | Pattern::Bind(_))
+        matches!(self.core(), Pattern::Any | Pattern::Bind(_))
     }
 
     /// Whether the pattern matches every record that has its fields: a
     /// record pattern of irrefutable fields.
     pub fn fields_only(&self) -> bool {
-        matches!(self, Pattern::Fields(fields) if fields.iter().all(|(_, p)| p.irrefutable()))
+        matches!(self.core(), Pattern::Fields(fields) if fields.iter().all(|(_, p)| p.irrefutable()))
     }
 
     /// The names the pattern binds, in order: the last is local 0 in the
@@ -365,6 +380,10 @@ impl Pattern {
         fn go(p: &Pattern, out: &mut Vec<String>) {
             match p {
                 Pattern::Bind(name) => out.push(name.clone()),
+                Pattern::As(name, p) => {
+                    out.push(name.clone());
+                    go(p, out);
+                }
                 Pattern::Fields(fields) => fields.iter().for_each(|(_, p)| go(p, out)),
                 Pattern::List(items, rest) => {
                     items.iter().for_each(|p| go(p, out));
@@ -391,6 +410,10 @@ impl Pattern {
             };
             match p {
                 Pattern::Bind(_) => out.push(path.clone()),
+                Pattern::As(_, p) => {
+                    out.push(path.clone());
+                    go(p, path, out);
+                }
                 Pattern::Fields(fields) => {
                     for (name, p) in fields {
                         at(Step::Field(name.clone()), p, path, out);
@@ -414,7 +437,7 @@ impl Pattern {
     /// A variant pattern's key and payload pattern: a keyword, or a
     /// record pattern of one field.
     pub fn variant(&self) -> Option<(&str, Option<&Pattern>)> {
-        match self {
+        match self.core() {
             Pattern::Keyword(k) => Some((k, None)),
             Pattern::Fields(fs) if fs.len() == 1 => Some((&fs[0].0, Some(&fs[0].1))),
             _ => None,
@@ -428,6 +451,7 @@ impl Pattern {
     /// same one field, that is a field of a record as much as a variant,
     /// and the same test holds.
     pub fn cover(patterns: &[&Pattern]) -> bool {
+        let patterns: &[&Pattern] = &patterns.iter().map(|p| p.core()).collect::<Vec<_>>();
         if patterns.iter().any(|p| p.irrefutable()) {
             return true;
         }
@@ -515,6 +539,7 @@ impl Sig {
     }
 
     pub fn of(patterns: &[&Pattern]) -> Sig {
+        let patterns: &[&Pattern] = &patterns.iter().map(|p| p.core()).collect::<Vec<_>>();
         if patterns.is_empty() || patterns.iter().any(|p| p.irrefutable()) {
             return Sig::Open;
         }
@@ -563,6 +588,16 @@ impl Pattern {
     /// type checker requires of a function's arguments (see `cover_type`),
     /// or anything.
     pub fn exhaustive(rows: Vec<Vec<Pattern>>, sigs: Vec<Sig>) -> bool {
+        // A name for the whole value tests nothing.
+        let rows: Vec<Vec<Pattern>> = rows
+            .into_iter()
+            .map(|mut r| {
+                if let Some(head) = r.first_mut() {
+                    *head = head.core().clone();
+                }
+                r
+            })
+            .collect();
         let Some(first) = rows.first() else { return false };
         if first.is_empty() {
             return true;
@@ -675,7 +710,7 @@ impl Pattern {
     /// Whether every value `self` matches, `other` matches too.
     pub fn narrower(&self, other: &Pattern) -> bool {
         use Pattern::*;
-        match (self, other) {
+        match (self.core(), other.core()) {
             (_, Any | Bind(_)) => true,
             (Any | Bind(_), _) => false,
             (Keyword(a), Keyword(b)) | (Str(a), Str(b)) => a == b,
@@ -711,7 +746,7 @@ impl Pattern {
             Sig::Tags(tags) => tags.get(k).and_then(|p| p.as_ref()).unwrap_or(&open),
             Sig::Open | Sig::Bool => &open,
         };
-        match (self, other) {
+        match (self.core(), other.core()) {
             (Any | Bind(_), _) | (_, Any | Bind(_)) => true,
             (Keyword(a), Keyword(b)) | (Str(a), Str(b)) => a == b,
             (Int(a), Int(b)) => a == b,

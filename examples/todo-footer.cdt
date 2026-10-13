@@ -55,24 +55,38 @@
       }
     ")
 
-(define (update {action: :clear} model attrs) {model: model, effects: [(emit "todo-clear" "")]})
-(define (update command model attrs) {model: model, effects: []})
+(type active : (demo.todo-footer/active text))
+(type done : (demo.todo-footer/completed text))
+(type selected : (demo.todo-footer/filter text))
 
-(define (link filter label href attrs)
+(define (init attrs)
+  {active: (get :active of: attrs or: "")
+   done: (get :completed of: attrs or: "")
+   selected: (get :filter of: attrs or: "")})
+
+(define (stay model) {model: model, effects: []})
+
+(define (update {action: :attribute-changed attribute: :active value: v} model) (stay (assoc model active: v)))
+(define (update {action: :attribute-changed attribute: :completed value: v} model) (stay (assoc model done: v)))
+(define (update {action: :attribute-changed attribute: :filter value: v} model) (stay (assoc model selected: v)))
+(define (update {action: :clear} model) {model: model, effects: [(emit "todo-clear" "")]})
+(define (update command model) (stay model))
+
+(define (link filter label href model)
   (h "li" {}
-    [(h "a" {:href href :class (if (= (get :filter of: attrs or: "") filter) "selected" "")} [label])]))
+    [(h "a" {:href href :class (if (= (selected model) filter) "selected" "")} [label])]))
 
-(define (view model attrs)
-  (let [active (get :active of: attrs or: "")
-        completed (get :completed of: attrs or: "")]
+(define (view model)
+  (let [active (active model)
+        completed (done model)]
     (h "footer" {:class "footer"}
       [(h "span" {:class "todo-count"}
          [(h "strong" {} [active])
           (if (= active "1") " item left" " items left")])
        (h "ul" {:class "filters"}
-         [(link "all" label: "All" href: "#/" attrs: attrs)
-          (link "active" label: "Active" href: "#/active" attrs: attrs)
-          (link "completed" label: "Completed" href: "#/completed" attrs: attrs)])
+         [(link "all" label: "All" href: "#/" model: model)
+          (link "active" label: "Active" href: "#/active" model: model)
+          (link "completed" label: "Completed" href: "#/completed" model: model)])
        (if (and (not= completed "0") (not= completed ""))
          (h "button" {:class "clear-completed"} ["Clear completed"] {:click :clear})
          [])])))

@@ -62,31 +62,34 @@ memory nor the routes' grows over 120 more requests.
 $ cargo run -- check examples/todo-item.cdt
 #2b845adc8c attributes : List[String]
 #f7a2cda090 styles : String
-#2ac3bbe7d7 init : (Any) -> {editing: Bool}
+#4747ea7b44 init : (Dict[String]) -> {done: Bool, editing: Bool, title: String, todo-id: String}
 #a65931f7a3 stay : (a) -> {effects: List[Nothing], model: a}
-#0d487b5d59 id-of : (Dict[a]) -> a | String
-#60dab6ec0c save : (Any, attrs: Dict[Any]) -> {effects: List[Effect], model: {editing: Bool}}
-#2f0237dbd5 update : (Any, attrs: Dict[String], model: a) -> {effects: List[Effect], model: a | {editing: Bool}}
-#9726cb5fab view : ({editing: Bool}, attrs: Dict[String]) -> View
+#6716c18e6a save : (Any, model: a & {todo-id: Any}) -> {effects: List[Effect], model: (a with editing: Bool)}
+#a2b4128baf update : ({action?: Any, attribute?: Any, key?: Any, value?: a & b & String}, model: c & d & e & f & g & h & i & j & {editing?: Any, todo-id: String}) -> {effects: List[Effect], model: j | (c with editing: Bool) | (d with editing: Bool) | (e with title: a) | (f with todo-id: b) | (g with done: Bool) | ((h with editing: Bool) with editing: Bool) | ((i with editing: Bool) with editing: Bool)}
+#e670df2d1f view : ({done: Bool, editing: Bool, title: String}) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (27624 bytes)
+wrote todo-item.wasm (28571 bytes)
 
 $ cargo run -- route examples/todos-route.cdt -o todos.wasm
 wrote todos.wasm (30409 bytes)
 ```
 
-Every type above is inferred; `editing` is the attribute the element
-declares. `update` is defined by clauses on the command it hears, by
-its `action`, the keyword the view named it by:
+Every type above is inferred. `update` is defined by clauses on the
+command it hears, by its `action`, the keyword the view named it by,
+and on the model, which holds the attributes the element shows:
 
 ```clojure
-(define (update {action: :edit} model attrs) (stay {editing: true}))
-(define (update {action: :keydown key: "Escape"} model attrs) (stay {editing: false}))
-(define (update {action: :keydown key: "Enter" value: title} model: {editing: true} attrs)
-  (save title attrs: attrs))
-(define (update command model attrs) (stay model))
+(define (update {action: :attribute-changed attribute: :title value: title} model)
+  (stay (assoc model title: title)))
+(define (update {action: :edit} model) (stay (assoc model editing: true)))
+(define (update {action: :keydown key: "Enter" command ...} model: {editing: true model ...})
+  (save (value command "") model: model))
+(define (update command model) (stay model))
 ```
+
+`update`'s type shows what is left to do: each clause's `assoc` is a
+record update of its own, and nothing yet merges them for display.
 
 `cargo test` runs everything: the reader, inference, hashing, the code
 generator on Wasmtime, the elements and routes on the polyfill, and the
@@ -571,12 +574,19 @@ An element is pure definitions in the Elm architecture's shape:
 attributes : List[String]          the attributes it observes
 styles     : String                the CSS of its shadow root
 init       : (Dict[String]) -> m   its first model
-update     : (Command, model: m, attrs: Dict[String]) -> {model: m, effects: List[Effect]}
-view       : (m, attrs: Dict[String]) -> View
+update     : (Command, model: m) -> {model: m, effects: List[Effect]}
+view       : (m) -> View
 
 Command = {action: Keyword, kind: String, value?: String,
-           checked?: Bool, key?: String, status?: Int}
+           checked?: Bool, key?: String, status?: Int,
+           attribute?: Keyword}
 ```
+
+`init` sees the attributes the element starts with; after that each
+change comes to `update` as a command, `{action: :attribute-changed
+attribute: :title value: "Buy milk"}`, and the model keeps what the
+element shows. So `update` and `view` see only the command and the
+model, as in Elm.
 
 A command is what happened, by the `action` the code named it by: a
 view names the action each of a node's events stands for, `{:click
@@ -591,8 +601,8 @@ body and an action, and its response comes back to `update` as that
 action, of kind `"response"`, with the body and status. So element code stays pure, and the glue is the only code with
 effects. The element's lifecycle goes through `update` too: the glue
 dispatches `:connected` when an element is created and
-`:attribute-changed`, with the attribute's name as the value, when an
-observed attribute changes. `element::check`
+`:attribute-changed`, with the attribute as a keyword and its new
+value, when an observed attribute changes. `element::check`
 checks the definitions against this contract by subtyping, with the
 model type being whatever `init` returns.
 

@@ -73,33 +73,42 @@
 ")
 
 (type editing : (demo.todo-item/editing boolean))
+(type todo-id : (demo.todo-item/id text))
+(type title : (demo.todo-item/title text))
+(type done : (demo.todo-item/done boolean))
 
-(define (init attrs) {editing: false})
+;; The model holds the attributes the element shows, as they change.
+(define (init attrs)
+  {editing: false
+   todo-id: (get :todo-id of: attrs or: "")
+   title: (get :title of: attrs or: "")
+   done: (= (get :completed of: attrs or: "") "true")})
 
 (define (stay model) {model: model, effects: []})
 
-(define (id-of attrs) (get :todo-id of: attrs or: ""))
-
-(define (save title attrs)
-  {model: {editing: false}
-   effects: [(emit "todo-edit" (str (id-of attrs) "\n" title))]})
+(define (save title model)
+  {model: (assoc model editing: false)
+   effects: [(emit "todo-edit" (str (todo-id model) "\n" title))]})
 
 ;; `update` is defined by clauses on the command it hears: a call takes
 ;; the narrowest one that matches, so the last, which matches anything,
 ;; is what any other command does.
-(define (update {action: :toggle} model attrs)
-  {model: model, effects: [(emit "todo-toggle" (id-of attrs))]})
-(define (update {action: :destroy} model attrs)
-  {model: model, effects: [(emit "todo-destroy" (id-of attrs))]})
-(define (update {action: :edit} model attrs) (stay {editing: true}))
-(define (update {action: :keydown key: "Escape"} model attrs) (stay {editing: false}))
-(define (update {action: :keydown key: "Enter" value: title} model: {editing: true} attrs) (save title attrs: attrs))
-(define (update {action: :save value: title} model: {editing: true} attrs) (save title attrs: attrs))
-(define (update command model attrs) (stay model))
+(define (update {action: :attribute-changed attribute: :todo-id value: id} model) (stay (assoc model todo-id: id)))
+(define (update {action: :attribute-changed attribute: :title value: title} model) (stay (assoc model title: title)))
+(define (update {action: :attribute-changed attribute: :completed value: v} model) (stay (assoc model done: (= v "true"))))
+(define (update {action: :toggle} model)
+  {model: model, effects: [(emit "todo-toggle" (todo-id model))]})
+(define (update {action: :destroy} model)
+  {model: model, effects: [(emit "todo-destroy" (todo-id model))]})
+(define (update {action: :edit} model) (stay (assoc model editing: true)))
+(define (update {action: :keydown key: "Escape"} model) (stay (assoc model editing: false)))
+(define (update {action: :keydown key: "Enter" command ...} model: {editing: true model ...}) (save (value command "") model: model))
+(define (update {action: :save command ...} model: {editing: true model ...}) (save (value command "") model: model))
+(define (update command model) (stay model))
 
-(define (view model attrs)
-  (let [done (= (get :completed of: attrs or: "") "true")
-        title (get :title of: attrs or: "")]
+(define (view model)
+  (let [done (done model)
+        title (title model)]
     (if (editing model)
       (h "li" {:class "editing"}
         [(h "input" {:key "edit"

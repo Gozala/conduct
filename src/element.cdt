@@ -12,3 +12,4 @@
 (type checked : (conduct.event/checked boolean))
 (type key : (conduct.event/key text))
 (type status : (conduct.event/status integer))
+(type attribute : (conduct.event/attribute keyword))

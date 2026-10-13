@@ -279,7 +279,8 @@ pub fn funcs(s: &Statics) -> String {
     (i32.store offset=108 (local.get $r) (i32.const 1))
     (call $dispatch (i32.load offset=4 (local.get $r))
       (call $event_new (local.get $handler) (call $lit_owned (i64.const {response})) (local.get $body) (i64.const 2) (i64.const 2)
-        (i64.or (i64.shl (i64.extend_i32_u (i32.load offset=40 (local.get $r))) (i64.const 1)) (i64.const 1)))))
+        (i64.or (i64.shl (i64.extend_i32_u (i32.load offset=40 (local.get $r))) (i64.const 1)) (i64.const 1))
+        (i64.const 2))))
   (func $settle (param $r i32)
     ;; Free a request once it has answered and holds no handles.
     (local $at i32)

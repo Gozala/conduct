@@ -50,31 +50,40 @@
     ")
 
 (type clear : (demo.todo-input/clear boolean))
+(type has-todos : (demo.todo-input/has-todos boolean))
+(type all-completed : (demo.todo-input/all-completed boolean))
 
-(define (init attrs) {clear: false})
+(define (init attrs)
+  {clear: false
+   has-todos: (= (get :has-todos of: attrs or: "") "true")
+   all-completed: (= (get :all-completed of: attrs or: "") "true")})
 
-(define (add model title: "") {model: model, effects: []})
+(define (stay model) {model: model, effects: []})
+
+(define (add model title: "") (stay model))
 (define (add model title) {model: (assoc model clear: true), effects: [(emit "todo-add" title)]})
 
-(define (update {action: :keydown key: "Enter" value: text} model attrs) (add model title: (trim text)))
-(define (update {action: :keydown} model attrs) {model: (assoc model clear: false), effects: []})
-(define (update {action: :toggle-all checked: true} model attrs)
-  {model: model, effects: [(emit "todo-toggle-all" "true")]})
-(define (update {action: :toggle-all} model attrs)
-  {model: model, effects: [(emit "todo-toggle-all" "false")]})
-(define (update command model attrs) {model: model, effects: []})
+(define (update {action: :attribute-changed attribute: :has-todos value: v} model)
+  (stay (assoc model has-todos: (= v "true"))))
+(define (update {action: :attribute-changed attribute: :all-completed value: v} model)
+  (stay (assoc model all-completed: (= v "true"))))
+(define (update {action: :keydown key: "Enter" value: text} model) (add model title: (trim text)))
+(define (update {action: :keydown} model) (stay (assoc model clear: false)))
+(define (update {action: :toggle-all command ...} model)
+  {model: model, effects: [(emit "todo-toggle-all" (if (checked command false) "true" "false"))]})
+(define (update command model) (stay model))
 
 (define (field model)
   (let [base {:class "new-todo" :placeholder "What needs to be done?" :autofocus ""}]
     (if (clear model) (assoc base :value "") base)))
 
-(define (view model attrs)
+(define (view model)
   (h "div" {:class "row"}
-    [(if (= (get :has-todos of: attrs or: "") "true")
+    [(if (has-todos model)
        (h "input" {:id "toggle-all"
                    :class "toggle-all"
                    :type "checkbox"
-                   :checked (get :all-completed of: attrs or: "")
+                   :checked (if (all-completed model) "true" "false")
                    :aria-label "Mark all as complete"}
           []
           {:change :toggle-all})

@@ -226,3 +226,20 @@ fn boolean_patterns() {
     let cb = check("(define (w b) (match b true 1 false 0))");
     assert_eq!(cb.type_of("w").unwrap(), "(Bool) -> Int");
 }
+
+#[test]
+fn a_record_pattern_binds_the_whole_record() {
+    let cb = check(
+        "(type action : (t/action keyword)) (type value : (t/value text))
+         (define (act {action: :shout command ...}) (str (value command \"\") \"!\"))
+         (define (act {action: :whisper value: v}) v)
+         (define (act command) \"\")
+         (define r [(act {action: :shout, value: \"hi\"}) (act {action: :whisper, value: \"psst\"}) (act {action: :nap})])
+         (define (kind c) (match c {action: :shout whole ...} (action whole) _ :other))",
+    );
+    let strs = |v: &[&str]| Value::List(v.iter().map(|s| Value::Str(s.to_string())).collect());
+    assert_eq!(run(&cb, "r"), strs(&["hi!", "psst", ""]));
+    // The whole record is as narrow as its pattern made it.
+    assert_eq!(cb.type_of("kind").unwrap(), "(Any) -> :other | :shout");
+    assert!(error("(define (f {a: 1 [x] ...}) 1)").contains("ends with a name for the whole record"));
+}
