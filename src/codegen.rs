@@ -1092,6 +1092,7 @@ fn pattern_test(value: Term, pattern: &Pattern) -> Term {
         Pattern::Keyword(k) => Term::Prim(Op::Eq, vec![value, Term::Keyword(k.clone())]),
         Pattern::Str(s) => Term::Prim(Op::Eq, vec![value, Term::Str(s.clone())]),
         Pattern::Int(n) => Term::Prim(Op::Eq, vec![value, Term::Int(*n)]),
+        Pattern::Bool(b) => Term::Prim(Op::Eq, vec![value, Term::Bool(*b)]),
         Pattern::Any | Pattern::Bind(_) => Term::Bool(true),
         Pattern::List(items, rest) => {
             // The length first, then each item, read only once it is

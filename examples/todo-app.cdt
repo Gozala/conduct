@@ -193,39 +193,40 @@
 
 (define (next model effects) {model: model, effects: effects})
 
-(define (update model handler event attrs)
-  (let [value (value event "")]
-    (match handler
-      ;; Loading the list.
-      "connected" (next model effects: [(load attrs)])
-      "attribute-changed" (next model effects: (if (= value "filter") [(load attrs)] []))
-      "loaded" (next (loaded model body: value) effects: [])
-      "changed" (next model effects: [(load attrs)])
-      ;; The steps of the reveal, which call no route.
-      "measured"
-        (next (assoc model
-                height: value
-                phase: (if (= (phase model) "measuring") "revealing" (phase model)))
-              effects: [])
-      "revealed"
-        (next (assoc model phase: (if (= (phase model) "revealing") "shown" (phase model))) effects: [])
-      "about" (next (assoc model about-open: (not (about-open model))) effects: [])
-      ;; What a person did.
-      "add" (next model effects: [(change "POST" path: "/api/todos" body: (to-json {:title value}))])
-      "toggleAll"
-        (next model effects: [(change "PATCH" path: "/api/todos" body: (to-json {:completed (= value "true")}))])
-      ;; The todo with that id, if there is one, flips.
-      "toggle"
-        (next model
-          effects: (map (filter (todos model) where: (fn [todo] (= (id todo) value)))
-                        each: (fn [todo] (change "PATCH"
-                                                 path: (str "/api/todos/" (id todo))
-                                                 body: (to-json {:completed (not (completed todo))})))))
-      "destroy" (next model effects: [(change "DELETE" path: (str "/api/todos/" value) body: "")])
-      "edit" (next model effects: [(edit value)])
-      "clear" (next model effects: [(change "DELETE" path: "/api/todos" body: "")])
-      ;; A handler the element does not know changes nothing.
-      _ (next model effects: []))))
+(define (text event) (value event ""))
+
+;; Loading the list.
+(define (update model handler: "connected" event attrs) (next model effects: [(load attrs)]))
+(define (update model handler: "attribute-changed" event: {value: "filter"} attrs) (next model effects: [(load attrs)]))
+(define (update model handler: "loaded" event attrs) (next (loaded model body: (text event)) effects: []))
+(define (update model handler: "changed" event attrs) (next model effects: [(load attrs)]))
+;; The steps of the reveal, which call no route.
+(define (update model handler: "measured" event attrs)
+  (next (assoc model
+          height: (text event)
+          phase: (if (= (phase model) "measuring") "revealing" (phase model)))
+        effects: []))
+(define (update model handler: "revealed" event attrs)
+  (next (assoc model phase: (if (= (phase model) "revealing") "shown" (phase model))) effects: []))
+(define (update model handler: "about" event attrs) (next (assoc model about-open: (not (about-open model))) effects: []))
+;; What a person did.
+(define (update model handler: "add" event attrs)
+  (next model effects: [(change "POST" path: "/api/todos" body: (to-json {:title (text event)}))]))
+(define (update model handler: "toggleAll" event attrs)
+  (next model effects: [(change "PATCH" path: "/api/todos" body: (to-json {:completed (= (text event) "true")}))]))
+;; The todo with that id, if there is one, flips.
+(define (update model handler: "toggle" event attrs)
+  (next model
+    effects: (map (filter (todos model) where: (fn [todo] (= (id todo) (text event))))
+                  each: (fn [todo] (change "PATCH"
+                                           path: (str "/api/todos/" (id todo))
+                                           body: (to-json {:completed (not (completed todo))}))))))
+(define (update model handler: "destroy" event attrs)
+  (next model effects: [(change "DELETE" path: (str "/api/todos/" (text event)) body: "")]))
+(define (update model handler: "edit" event attrs) (next model effects: [(edit (text event))]))
+(define (update model handler: "clear" event attrs) (next model effects: [(change "DELETE" path: "/api/todos" body: "")]))
+;; Any other handler, or another attribute changing, changes nothing.
+(define (update model handler event attrs) (next model effects: []))
 
 ;; The view
 

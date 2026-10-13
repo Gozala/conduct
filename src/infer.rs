@@ -284,6 +284,7 @@ impl Infer<'_> {
             Pattern::Keyword(k) => (Ty::keys([k.clone()]), vec![]),
             Pattern::Str(_) => (Ty::str(), vec![]),
             Pattern::Int(_) => (Ty::int(), vec![]),
+            Pattern::Bool(_) => (Ty::bool(), vec![]),
             Pattern::Any => (t, vec![]),
             Pattern::Bind(_) => (t.clone(), vec![t]),
             Pattern::List(items, rest) => {
@@ -456,6 +457,9 @@ fn cover_type(patterns: &[&Pattern]) -> Option<Ty> {
     if patterns.iter().all(|p| matches!(p, Pattern::List(..))) {
         return Some(Ty::list(Ty::Top));
     }
+    if patterns.iter().all(|p| matches!(p, Pattern::Bool(_))) {
+        return Some(Ty::bool());
+    }
     let Some(variants) = patterns.iter().map(|p| p.variant()).collect::<Option<Vec<_>>>() else {
         // A record pattern of `_`s: the value must have its fields. Of
         // several, the one that asks least, which the others narrow.
@@ -488,6 +492,7 @@ fn column_type(patterns: &[&Pattern]) -> Ty {
     fn ty(sig: &crate::term::Sig) -> Ty {
         match sig {
             crate::term::Sig::Open | crate::term::Sig::Fields(_) => Ty::Top,
+            crate::term::Sig::Bool => Ty::bool(),
             // One variant with a payload is as much a record's field.
             crate::term::Sig::Tags(tags) if tags.len() == 1 && tags.values().all(Option::is_some) => {
                 let (k, p) = tags.iter().next().unwrap();

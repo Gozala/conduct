@@ -206,3 +206,23 @@ fn review_findings() {
     );
     assert_eq!(run(&cb, "r"), Value::Str("Done: x".into()));
 }
+
+#[test]
+fn boolean_patterns() {
+    let cb = check(
+        "(define (word true) \"yes\")
+         (define (word false) \"no\")
+         (define (both true b: true) :both)
+         (define (both a b) :not-both)
+         (define r [(word true) (word false)])
+         (define s (match (= 1 1) true 1 false 0))",
+    );
+    assert_eq!(cb.type_of("word").unwrap(), "(Bool) -> String");
+    assert_eq!(run(&cb, "r"), Value::List(vec![Value::Str("yes".into()), Value::Str("no".into())]));
+    assert_eq!(run(&cb, "s"), Value::Int(1));
+    assert!(error("(define (w true) 1)").contains("do not cover every call"));
+    // Covering both, a Bool is all a parameter may be.
+    assert!(error("(define (word true) 1) (define (word false) 0) (define x (word 5))").contains("Bool"));
+    let cb = check("(define (w b) (match b true 1 false 0))");
+    assert_eq!(cb.type_of("w").unwrap(), "(Bool) -> Int");
+}

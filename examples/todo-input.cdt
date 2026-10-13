@@ -53,18 +53,16 @@
 
 (define (init attrs) {clear: false})
 
-(define (update model handler event attrs)
-  (cond
-    (and (= handler "key") (= (key event "") "Enter"))
-      (let [title (trim (value event ""))]
-        (if (= title "")
-          {model: model, effects: []}
-          {model: (assoc model clear: true), effects: [(emit "todo-add" title)]}))
-    (= handler "key") {model: (assoc model clear: false), effects: []}
-    (= handler "toggleAll")
-      {model: model
-       effects: [(emit "todo-toggle-all" (if (checked event false) "true" "false"))]}
-    :else {model: model, effects: []}))
+(define (add model title: "") {model: model, effects: []})
+(define (add model title) {model: (assoc model clear: true), effects: [(emit "todo-add" title)]})
+
+(define (update model handler: "key" event: {key: "Enter" value: text} attrs)
+  (add model title: (trim text)))
+(define (update model handler: "key" event attrs) {model: (assoc model clear: false), effects: []})
+(define (update model handler: "toggleAll" event attrs)
+  {model: model
+   effects: [(emit "todo-toggle-all" (if (checked event false) "true" "false"))]})
+(define (update model handler event attrs) {model: model, effects: []})
 
 (define (field model)
   (let [base {:class "new-todo" :placeholder "What needs to be done?" :autofocus ""}]

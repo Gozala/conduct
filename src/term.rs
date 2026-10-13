@@ -274,6 +274,7 @@ pub enum Pattern {
     Keyword(String),
     Str(String),
     Int(i64),
+    Bool(bool),
     /// Any value: `_`. At the top of a clause it is the last clause; in
     /// a record pattern it only asks that the field be there.
     Any,
@@ -316,6 +317,10 @@ impl Pattern {
             Pattern::Int(n) => {
                 out.push(2);
                 out.extend_from_slice(&n.to_le_bytes());
+            }
+            Pattern::Bool(b) => {
+                out.push(3);
+                out.push(*b as u8);
             }
             Pattern::Any => out.push(6),
             Pattern::Bind(_) => out.push(7),
@@ -429,6 +434,9 @@ impl Pattern {
         if patterns.iter().all(|p| matches!(p, Pattern::List(..))) {
             return Pattern::cover_lists(patterns);
         }
+        if patterns.iter().all(|p| matches!(p, Pattern::Bool(_))) {
+            return [true, false].iter().all(|b| patterns.contains(&&Pattern::Bool(*b)));
+        }
         if let Some(keys) = argument_columns(patterns) {
             let rows = patterns
                 .iter()
@@ -482,6 +490,8 @@ pub enum Sig {
     Tags(BTreeMap<String, Option<Sig>>),
     /// A function's arguments: each parameter's.
     Fields(BTreeMap<String, Sig>),
+    /// `true` or `false`.
+    Bool,
 }
 
 impl Sig {
@@ -507,6 +517,9 @@ impl Sig {
     pub fn of(patterns: &[&Pattern]) -> Sig {
         if patterns.is_empty() || patterns.iter().any(|p| p.irrefutable()) {
             return Sig::Open;
+        }
+        if patterns.iter().all(|p| matches!(p, Pattern::Bool(_))) {
+            return Sig::Bool;
         }
         let Some(variants) = patterns.iter().map(|p| p.variant()).collect::<Option<Vec<_>>>() else {
             return Sig::Open;
@@ -590,6 +603,16 @@ impl Pattern {
         if refutable.is_empty() {
             return default();
         }
+        if refutable.iter().all(|p| matches!(p, Pattern::Bool(_))) {
+            // A Bool is one of two; where the column may hold anything,
+            // the rows that match anything cover the rest.
+            let bools = [true, false].iter().all(|b| {
+                let rows =
+                    rows.iter().filter(|r| r[0].irrefutable() || r[0] == Pattern::Bool(*b)).map(|r| tail(r)).collect();
+                Pattern::exhaustive(rows, sigs[1..].to_vec())
+            });
+            return bools && (sigs[0] == Sig::Bool || default());
+        }
         if refutable.iter().all(|p| matches!(p, Pattern::List(..))) {
             // Every length up to one past the longest pattern, and those
             // past it behave as it does. Items may be anything.
@@ -657,6 +680,7 @@ impl Pattern {
             (Any | Bind(_), _) => false,
             (Keyword(a), Keyword(b)) | (Str(a), Str(b)) => a == b,
             (Int(a), Int(b)) => a == b,
+            (Bool(a), Bool(b)) => a == b,
             // A record pattern asks for its fields: one that asks for
             // more, each as narrowly, is narrower.
             (Fields(a), Fields(b)) => b.iter().all(|(k, pb)| a.iter().any(|(l, pa)| l == k && pa.narrower(pb))),
@@ -685,12 +709,13 @@ impl Pattern {
         let field = |k: &str| match sig {
             Sig::Fields(fields) => fields.get(k).unwrap_or(&open),
             Sig::Tags(tags) => tags.get(k).and_then(|p| p.as_ref()).unwrap_or(&open),
-            Sig::Open => &open,
+            Sig::Open | Sig::Bool => &open,
         };
         match (self, other) {
             (Any | Bind(_), _) | (_, Any | Bind(_)) => true,
             (Keyword(a), Keyword(b)) | (Str(a), Str(b)) => a == b,
             (Int(a), Int(b)) => a == b,
+            (Bool(a), Bool(b)) => a == b,
             // Where only the variants named may come, variants with
             // different keys are different values; anywhere else a record
             // may have both fields.

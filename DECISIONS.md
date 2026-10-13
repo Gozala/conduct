@@ -3,6 +3,32 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Elements' `update` by clauses
+
+- **Every element's `update` is now clauses,** one per handler, with the
+  model and the event matched where that says something: `{editing:
+  true}`, `event: {key: "Enter" value: title}`. The trial was whether
+  the no-overlap rule gets in the way. It did not: dispatch on a handler
+  string makes clauses disjoint, and the catch-all is wider than all of
+  them.
+- **What the trial cost:**
+  - Each clause repeats the whole head, `(define (update model handler:
+    "x" event attrs) ..)`; `todo-app` has fifteen.
+  - Four parameters are matched as one record, allocated per call:
+    `todo-item.wasm` grew from 25411 to 27467 bytes.
+  - `update`'s inferred model type is wider: `{editing: true}` reads the
+    field only where it is there, so the parameter is `a`, not
+    `{editing: Bool}`.
+- **What it found missing:**
+  - `true` and `false` were not patterns; they are now, and the two
+    cover a `Bool` (and a parameter where clauses name only them must
+    be one).
+  - There is no pattern that both tests a value and binds it whole
+    (Haskell's `x@p`, core.match's `:as`). A clause that matched
+    `event: {key: "Enter"}` could not then pass `event` on, so it binds
+    the field it needs, `{key: "Enter" value: title}`. A key event
+    without a value now takes the next clause rather than reading `""`.
+
 ## Functions by clauses
 
 - **Every `define` of a name in a compilation is a clause of one

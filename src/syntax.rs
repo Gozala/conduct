@@ -85,6 +85,8 @@ pub enum Pat {
     Keyword(String),
     Str(String),
     Int(i64),
+    /// `true` or `false`.
+    Bool(bool),
     /// `_`.
     Any,
     /// A name: it binds the value, unless it names a record type, which
@@ -405,7 +407,8 @@ fn define(args: &[Sexp], span: Span) -> Result<Def> {
             }
             // Names alone make a function; any pattern makes a clause of
             // one.
-            let plain = params.iter().all(|p| matches!(p, Sexp::Symbol(..) | Sexp::Label(..)));
+            let literal = |p: &Sexp| matches!(p.as_symbol(), Some("true" | "false"));
+            let plain = params.iter().all(|p| matches!(p, Sexp::Symbol(..) | Sexp::Label(..)) && !literal(p));
             if plain {
                 let params = parameters(params, *hspan)?;
                 return Ok(Def { name, body: Expr::Fn(params, Box::new(body)), span });
@@ -989,6 +992,7 @@ fn pattern(form: &Sexp) -> Result<Pat> {
         Sexp::Str(s, _) => Pat::Str(s.clone()),
         Sexp::Int(n, _) => Pat::Int(*n),
         Sexp::Symbol(s, _) if bare(s) == "_" => Pat::Any,
+        Sexp::Symbol(s, _) if bare(s) == "true" || bare(s) == "false" => Pat::Bool(bare(s) == "true"),
         Sexp::Symbol(s, sspan) => {
             if let Some(why) = retired(bare(s)) {
                 return err(why, *sspan);
