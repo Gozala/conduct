@@ -79,7 +79,8 @@ Every type above is inferred, and shown as a `type` or `claim` writes
 types: `[A B]` for a union, `(list A)`, `?a` for a variable, `((\
 params) : result)` for a function, and `{todo-id: text ?a ...}` for an
 open record, the record `?a`, which has `todo-id`, as a record pattern's
-`rest ...` names the rest of a record. `update` is defined by clauses on the
+`rest ...` names the rest of a record. Each of these types can be pasted
+into a `claim` for its definition, and checks. `update` is defined by clauses on the
 command it hears, by its `action`, the keyword the view named it by,
 and on the model, which holds the attributes the element shows:
 

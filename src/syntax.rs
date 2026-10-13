@@ -164,6 +164,14 @@ pub enum TypeExpr {
     Fn(Vec<(Option<String>, TypeExpr)>, Option<Box<TypeExpr>>, Box<TypeExpr>),
     /// `{print model}` after `with:`: capabilities.
     Caps(Vec<String>),
+    /// `(& ?a {done: boolean})`, or `{done: boolean ?a ...}`: all of
+    /// several types.
+    Inter(Vec<TypeExpr>),
+    /// `(?a with done: boolean without title)`: a record with attributes
+    /// set, and taken out (`None`).
+    Update(Box<TypeExpr>, Vec<(String, Option<TypeExpr>)>),
+    /// `(rec ?a T)`: the type `T` where `?a` is `T` again.
+    Rec(String, Box<TypeExpr>),
 }
 
 /// A member of a record type: an attribute by its local name, or one
@@ -172,6 +180,9 @@ pub enum TypeExpr {
 pub enum Member {
     Name(String, Span),
     Inline(String, TypeExpr),
+    /// `done: boolean` or `title?: text`: an attribute by its label, with
+    /// the type of its values here, and whether it may be absent.
+    Field(String, TypeExpr, bool),
 }
 
 impl fmt::Display for Member {
@@ -179,6 +190,8 @@ impl fmt::Display for Member {
         match self {
             Member::Name(n, _) => write!(f, "{n}"),
             Member::Inline(g, t) => write!(f, "({g} {t})"),
+            Member::Field(l, t, false) => write!(f, "{l}: {t}"),
+            Member::Field(l, t, true) => write!(f, "{l}?: {t}"),
         }
     }
 }
@@ -219,6 +232,22 @@ impl fmt::Display for TypeExpr {
                 write!(f, " : {ret})")
             }
             TypeExpr::Caps(caps) => write!(f, "{{{}}}", caps.join(" ")),
+            TypeExpr::Inter(ts) => {
+                write!(f, "(&")?;
+                ts.iter().try_for_each(|t| write!(f, " {t}"))?;
+                write!(f, ")")
+            }
+            TypeExpr::Update(base, steps) => {
+                write!(f, "({base}")?;
+                for (k, v) in steps {
+                    match v {
+                        Some(v) => write!(f, " with {k}: {v}")?,
+                        None => write!(f, " without {k}")?,
+                    }
+                }
+                write!(f, ")")
+            }
+            TypeExpr::Rec(v, t) => write!(f, "(rec ?{v} {t})"),
         }
     }
 }
@@ -635,6 +664,13 @@ fn type_expr(form: &Sexp) -> Result<TypeExpr> {
             [Sexp::Symbol(global, _), value] if global.contains('/') => {
                 TypeExpr::Attribute(global.clone(), Box::new(type_expr(value)?), *span)
             }
+            [Sexp::Symbol(amp, _), parts @ ..] if amp == "&" && parts.len() >= 2 => {
+                TypeExpr::Inter(parts.iter().map(type_expr).collect::<Result<_>>()?)
+            }
+            [Sexp::Symbol(rec, _), Sexp::Symbol(v, _), body] if rec == "rec" && v.starts_with('?') && v.len() > 1 => {
+                TypeExpr::Rec(v[1..].to_string(), Box::new(type_expr(body)?))
+            }
+            [base, Sexp::Symbol(w, _), ..] if w == "with" || w == "without" => update_type(base, &items[1..], *span)?,
             [Sexp::Symbol(head, _), args @ ..] if !args.is_empty() => {
                 TypeExpr::App(head.clone(), type_args(args, *span)?, *span)
             }
@@ -653,14 +689,39 @@ fn type_expr(form: &Sexp) -> Result<TypeExpr> {
                         }
                         optional = Some(members.len());
                     }
+                    // `{done: boolean ?a ...}`: the record `?a`, which has
+                    // the attributes before it.
+                    Sexp::Symbol(v, vspan) if v.starts_with('?') => {
+                        if rest.next().and_then(Sexp::as_symbol) != Some("...") || rest.next().is_some() {
+                            return err(format!("a record type ends with `{v} ...`, the rest of the record"), *vspan);
+                        }
+                        if optional.is_some() {
+                            return err("a record type with a rest labels its attributes, `title?: text`", *vspan);
+                        }
+                        let required = members.len();
+                        let record = TypeExpr::Record(members, required);
+                        return Ok(TypeExpr::Inter(vec![TypeExpr::Var(v[1..].to_string()), record]));
+                    }
                     Sexp::Symbol(s, sspan) => members.push(Member::Name(s.clone(), *sspan)),
                     // `io.gozala.point/x: integer`, as a record writes its
                     // value.
-                    Sexp::Label(global, lspan) if global.contains('/') => {
+                    Sexp::Label(global, lspan) if global.contains('/') && !global.ends_with('?') => {
                         let Some(value) = rest.next() else {
                             return err(format!("the attribute `{global}:` needs the type of its values"), *lspan);
                         };
                         members.push(Member::Inline(global.clone(), type_expr(value)?))
+                    }
+                    // `done: boolean`, `title?: text`: a declared attribute
+                    // by its label, and the type of its values here.
+                    Sexp::Label(label, lspan) if !label.is_empty() => {
+                        let Some(value) = rest.next() else {
+                            return err(format!("the attribute `{label}:` needs the type of its values"), *lspan);
+                        };
+                        let (label, optional) = match label.strip_suffix('?') {
+                            Some(l) => (l.to_string(), true),
+                            None => (label.clone(), false),
+                        };
+                        members.push(Member::Field(label, type_expr(value)?, optional))
                     }
                     Sexp::List(parts, pspan) => match parts.as_slice() {
                         [Sexp::Symbol(global, _), value] if global.contains('/') => {
@@ -678,6 +739,31 @@ fn type_expr(form: &Sexp) -> Result<TypeExpr> {
         }
         other => return err(format!("expected a type, found `{other}`"), other.span()),
     })
+}
+
+/// `?a with done: boolean, title: text without editing`: a record type
+/// with attributes set and taken out.
+fn update_type(base: &Sexp, items: &[Sexp], span: Span) -> Result<TypeExpr> {
+    let mut steps = Vec::new();
+    let mut setting = None;
+    let mut rest = items.iter();
+    while let Some(item) = rest.next() {
+        match item {
+            Sexp::Symbol(w, _) if w == "with" => setting = Some(true),
+            Sexp::Symbol(w, _) if w == "without" => setting = Some(false),
+            Sexp::Label(k, lspan) if setting == Some(true) && !k.is_empty() => {
+                let Some(value) = rest.next() else {
+                    return err(format!("the attribute `{k}:` needs the type of its values"), *lspan);
+                };
+                steps.push((k.clone(), Some(type_expr(value)?)));
+            }
+            Sexp::Symbol(k, _) if setting == Some(false) => steps.push((k.clone(), None)),
+            _ => {
+                return err("a record type's update is `(?a with name: type .. without name ..)`", span);
+            }
+        }
+    }
+    Ok(TypeExpr::Update(Box::new(type_expr(base)?), steps))
 }
 
 /// A name a form binds, with the mark of the expansion that wrote it,

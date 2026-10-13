@@ -112,7 +112,7 @@ fn record_update() {
         assert!(e.contains("`assoc` sets an attribute of a record"), "{not_a_record}: {e}");
     }
     // `{}` is a record with no attributes too.
-    assert_eq!(ty(&format!("{claims} (define r (assoc {{}} a: 1))"), "r"), "({} with a: integer)");
+    assert_eq!(ty(&format!("{claims} (define r (assoc {{}} a: 1))"), "r"), "{a: integer}");
 }
 
 #[test]
