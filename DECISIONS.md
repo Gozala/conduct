@@ -3,6 +3,63 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Functions by clauses
+
+- **Every `define` of a name in a compilation is a clause of one
+  function,** a set as a macro's rules are: the narrowest clause that
+  matches a call is taken, overlap with neither narrower is an error,
+  and the function's hash does not depend on the clauses' order (they
+  are sorted by their encoding, then ordered narrowest first). Defining
+  a value twice is an error, where the later used to replace the
+  earlier.
+- **A set has no first, so clauses that agree must still not overlap.**
+  `(zip [] ys)` and `(zip xs ys: [])` both match `(zip [] ys: [])` and
+  would answer the same, but neither is narrower, so it is an error;
+  `(zip [x xs ...] ys: [])` says it. This is the cost of order meaning
+  nothing; deciding that two bodies agree is not decidable in general.
+- **List patterns use the macros' `...`.** `[x rest ...]` binds `rest`
+  to the list of the rest. In a value pattern `...` follows a name or
+  `_` only: a repeated pattern such as `[(ok v) ...]` needs a loop in
+  the compiled test, and is left for later.
+- **Several parameters are matched as one record** of the arguments,
+  keyed `conduct.argument/000` and on, so `match` and its narrowing
+  needed nothing new. It allocates a record per call; a decision tree
+  would not, and is an optimization for later.
+- **Coverage is Maranget's usefulness over the parameters together.** A
+  column (a parameter) in which no clause matches anything is taken to
+  hold only the variants it names, and the type checker requires that of
+  the argument; any other column may hold anything, so the clauses that
+  match anything there must cover the rest. Lists are enumerated by
+  length; strings, integers and records need a clause that matches
+  anything.
+- **A parameter's name binds,** even one naming a record type, unlike a
+  bare name in a `match`, which tests for the type. A function's
+  parameter called `person` should not stop matching anything.
+- **The first parameter's label** is the name the clauses that name it
+  give it, and they must agree; with none, it is `value`.
+- **A variant's rank orders the record types it ranks,** in clauses as
+  in a `match`: `(report (done ..))`, `(report (pending ..))` and
+  `(report (idle ..))` overlap, neither narrower, but `job` ranks them.
+- **What a review found, and these fix:**
+  - A keyword and a variant of the same key in one parameter were taken
+    for one case, so clauses could pass as covering and leave a call
+    unmatched. They are now different cases.
+  - Records with different fields were taken as disjoint, as variants
+    are, even where an argument may be any record; clauses could then be
+    ambiguous with no error. They are disjoint only in a parameter that
+    holds just the variants its clauses name.
+  - A field every clause names in one parameter forced the argument to
+    be that variant, where a single parameter accepts any record with
+    the field. Now both accept it.
+- **A list pattern in a list pattern makes every item a list.** Items
+  share one type, and the compiled test reads items without checking
+  what kind of value they are, so `[x [y] z]` beside `["a" b]` is a type
+  error; telling kinds apart at run time would allow it.
+- **`rec a. a & T` is shown as `T`.** Recursion through a clause's `rest`
+  left a variable bounded by itself; an unguarded occurrence of a
+  recursive type's variable says nothing, so it is dropped when the type
+  is shown.
+
 ## Macros
 
 - **Rules, not functions, first.** A rule is a pattern and a template,

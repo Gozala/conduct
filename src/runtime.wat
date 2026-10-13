@@ -384,6 +384,14 @@
   (func $list_get (param $v i64) (param $i i32) (result i64)
     ;; Borrowed: the element stays the list's.
     (i64.load offset=8 (i32.add (call $ptr (local.get $v)) (i32.shl (local.get $i) (i32.const 3)))))
+  (func $list_nth (param $v i64) (param $i i64) (result i64)
+    ;; The item at the Int `i`, owned.
+    (call $dup (call $list_get (local.get $v) (i32.wrap_i64 (i64.shr_s (local.get $i) (i64.const 1))))))
+  (func $list_drop (param $v i64) (param $n i64) (result i64)
+    ;; A new list of the items after the first Int `n` of them.
+    (local $k i32)
+    (local.set $k (i32.wrap_i64 (i64.shr_s (local.get $n) (i64.const 1))))
+    (call $slice (local.get $v) (local.get $k) (i32.sub (call $len (local.get $v)) (local.get $k))))
   (func $list_set (param $p i32) (param $i i32) (param $x i64)
     ;; Moves `x` into the list under construction.
     (i64.store offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 3))) (local.get $x)))

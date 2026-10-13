@@ -768,7 +768,24 @@ fn vacuous(ty: Type, pol: bool) -> Type {
         Type::Opt(t) => Type::Opt(Box::new(vacuous(*t, pol))),
         Type::Union(ts) => normalize(Type::Union(ts.into_iter().map(|t| vacuous(t, pol)).collect())),
         Type::Inter(ts) => normalize(Type::Inter(ts.into_iter().map(|t| vacuous(t, pol)).collect())),
-        Type::Rec(v, body) => Type::Rec(v, Box::new(vacuous(*body, pol))),
+        Type::Rec(v, body) => {
+            // `rec a. a & T` is `T`: an occurrence of the variable that no
+            // constructor guards says nothing. Bare, it is anything going
+            // in and nothing coming out.
+            let body = vacuous(*body, pol);
+            let unguarded = |t: &Type| *t == Type::Var(v);
+            let body = match body {
+                Type::Var(x) if x == v => return if pol { Type::Bot } else { Type::Top },
+                Type::Union(ts) if ts.iter().any(unguarded) => {
+                    normalize(Type::Union(ts.into_iter().filter(|t| !unguarded(t)).collect()))
+                }
+                Type::Inter(ts) if ts.iter().any(unguarded) => {
+                    normalize(Type::Inter(ts.into_iter().filter(|t| !unguarded(t)).collect()))
+                }
+                other => other,
+            };
+            if mentions(&body, v) { Type::Rec(v, Box::new(body)) } else { body }
+        }
         other => other,
     }
 }

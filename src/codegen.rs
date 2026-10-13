@@ -38,7 +38,7 @@
 //! at compile time.
 
 use crate::codebase::Codebase;
-use crate::term::{Hash, Op, Pattern, Term};
+use crate::term::{Hash, Op, Pattern, Step, Term};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
@@ -616,7 +616,11 @@ impl<'a> Builder<'a> {
                     let n = paths.len() as u32;
                     let mut body = shift(result, 1, n);
                     for (j, path) in paths.iter().enumerate().rev() {
-                        let read = path.iter().fold(Term::Local(j as u32), |v, k| Term::Field(k.clone(), Box::new(v)));
+                        let read = path.iter().fold(Term::Local(j as u32), |v, step| match step {
+                            Step::Field(k) => Term::Field(k.clone(), Box::new(v)),
+                            Step::Item(i) => Term::Prim(Op::Nth, vec![v, Term::Int(*i as i64)]),
+                            Step::Drop(n) => Term::Prim(Op::Drop, vec![v, Term::Int(*n as i64)]),
+                        });
                         body = Term::Let(Box::new(read), Box::new(body));
                     }
                     chain = Term::If(Box::new(test), Box::new(body), Box::new(chain));
@@ -998,6 +1002,8 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
             out
         }
         Op::Count => format!("(call $count {})", a[0]),
+        Op::Nth => format!("(call $list_nth {} {})", a[0], a[1]),
+        Op::Drop => format!("(call $list_drop {} {})", a[0], a[1]),
         Op::First => format!("(call $first {} {})", a[0], a[1]),
         Op::Rest => format!("(call $rest {})", a[0]),
         Op::Concat => format!("(call $concat {} {})", a[0], a[1]),
@@ -1087,6 +1093,20 @@ fn pattern_test(value: Term, pattern: &Pattern) -> Term {
         Pattern::Str(s) => Term::Prim(Op::Eq, vec![value, Term::Str(s.clone())]),
         Pattern::Int(n) => Term::Prim(Op::Eq, vec![value, Term::Int(*n)]),
         Pattern::Any | Pattern::Bind(_) => Term::Bool(true),
+        Pattern::List(items, rest) => {
+            // The length first, then each item, read only once it is
+            // known to be there.
+            let count = Term::Prim(Op::Count, vec![value.clone()]);
+            let n = Term::Int(items.len() as i64);
+            let mut test = Term::Prim(if rest.is_some() { Op::Ge } else { Op::Eq }, vec![count, n]);
+            for (i, p) in items.iter().enumerate() {
+                match pattern_test(Term::Prim(Op::Nth, vec![value.clone(), Term::Int(i as i64)]), p) {
+                    Term::Bool(true) => {}
+                    t => test = Term::And(Box::new(test), Box::new(t)),
+                }
+            }
+            test
+        }
         Pattern::Fields(fields) => {
             // The value may be a keyword or a variant with another key,
             // so a field is read only once it is known to be there.

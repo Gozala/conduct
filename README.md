@@ -372,6 +372,40 @@ Racket's occurrence typing, inferred without annotations.
 Equality and `str` work on any value, so there is no type class
 machinery: `=` takes `(Any, Any)`.
 
+A list pattern matches a list's items: `[]`, `[x y]`, and `[first rest
+...]`, whose `rest` binds the list of the items after the first, as
+`...` repeats in a macro's pattern. Lists of every length are covered
+when each length below the shortest `...` pattern has a pattern of its
+own: `[]` and `[x rest ...]` cover every list.
+
+### Functions by clauses
+
+A function may be defined by several `define`s, each with patterns for
+its parameters, as a macro is by several rules:
+
+```clojure
+(define (len []) 0)
+(define (len [_ rest ...]) (+ 1 (len rest)))
+
+(define (take [] n) [])
+(define (take [_ _ ...] n: 0) [])
+(define (take [x rest ...] n) (concat [x] (take rest n: (- n 1))))
+```
+
+Every `define` of a name in a compilation is a clause of one function,
+and their order means nothing: a call takes the narrowest clause that
+matches it, so `(take [1] n: 0)` takes the second. Two clauses that
+overlap with neither narrower are an error, even where they would
+answer the same; so are clauses that leave a call unmatched, decided
+over all the parameters together (Maranget's usefulness). A parameter's
+name alone binds the argument, even one that names a record type; the
+clauses that name the first parameter agree on its name, since callers
+may pass it by that label, and every clause takes the same labels.
+Where no clause matches anything in a parameter, the argument must be
+one of the variants the clauses name there, and calls are checked for
+it. A function written with names alone is one clause, and compiles and
+hashes as before.
+
 ### Effects: tasks
 
 Calls are pure. A definition marked `!` makes a **task**, a value

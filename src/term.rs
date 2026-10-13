@@ -3,6 +3,7 @@
 //! its term's canonical encoding, so renaming a definition or any of
 //! its locals leaves its hash unchanged.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// The identity of a definition: the BLAKE3 hash of its canonical
@@ -96,6 +97,10 @@ pub enum Op {
     /// Perform a task with an environment on top of the others: what
     /// `(perform t with: env)` compiles to. Not in source either.
     WithEnv,
+    /// A list's item at an index, and a list without its first items:
+    /// what a list pattern reads. Not in source.
+    Nth,
+    Drop,
 }
 
 impl Op {
@@ -178,6 +183,8 @@ impl Op {
             Op::JsonType => "json-type",
             Op::HasField => "has-field?",
             Op::WithEnv => "with-env",
+            Op::Nth => "nth",
+            Op::Drop => "drop",
         }
     }
 
@@ -276,6 +283,19 @@ pub enum Pattern {
     /// Any value, bound to a name in the clause's result. The name is
     /// not part of the hash, as a parameter's is not.
     Bind(String),
+    /// A list: patterns for its first items and, after `...`, a pattern
+    /// (a name or `_`) for the list of the rest. Without one, the list
+    /// has exactly as many items as there are patterns.
+    List(Vec<Pattern>, Option<Box<Pattern>>),
+}
+
+/// One step of the way to what a pattern binds: a record's field, a
+/// list's item, or a list without its first items.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Step {
+    Field(String),
+    Item(usize),
+    Drop(usize),
 }
 
 impl Pattern {
@@ -307,6 +327,18 @@ impl Pattern {
                     p.encode(out);
                 }
             }
+            Pattern::List(items, rest) => {
+                out.push(8);
+                out.extend_from_slice(&(items.len() as u32).to_le_bytes());
+                items.iter().for_each(|p| p.encode(out));
+                match rest {
+                    Some(r) => {
+                        out.push(1);
+                        r.encode(out);
+                    }
+                    None => out.push(0),
+                }
+            }
         }
     }
 
@@ -329,6 +361,12 @@ impl Pattern {
             match p {
                 Pattern::Bind(name) => out.push(name.clone()),
                 Pattern::Fields(fields) => fields.iter().for_each(|(_, p)| go(p, out)),
+                Pattern::List(items, rest) => {
+                    items.iter().for_each(|p| go(p, out));
+                    if let Some(r) = rest {
+                        go(r, out);
+                    }
+                }
                 _ => {}
             }
         }
@@ -336,18 +374,29 @@ impl Pattern {
         out
     }
 
-    /// The field path each binder reads its value from, in the order of
+    /// The way to each binder's value, in the order of
     /// [`Pattern::binders`].
-    pub fn binder_paths(&self) -> Vec<Vec<String>> {
+    pub fn binder_paths(&self) -> Vec<Vec<Step>> {
         let mut out = Vec::new();
-        fn go(p: &Pattern, path: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+        fn go(p: &Pattern, path: &mut Vec<Step>, out: &mut Vec<Vec<Step>>) {
+            let at = |step: Step, p: &Pattern, path: &mut Vec<Step>, out: &mut Vec<Vec<Step>>| {
+                path.push(step);
+                go(p, path, out);
+                path.pop();
+            };
             match p {
                 Pattern::Bind(_) => out.push(path.clone()),
                 Pattern::Fields(fields) => {
                     for (name, p) in fields {
-                        path.push(name.clone());
-                        go(p, path, out);
-                        path.pop();
+                        at(Step::Field(name.clone()), p, path, out);
+                    }
+                }
+                Pattern::List(items, rest) => {
+                    for (i, p) in items.iter().enumerate() {
+                        at(Step::Item(i), p, path, out);
+                    }
+                    if let Some(r) = rest {
+                        at(Step::Drop(items.len()), r, path, out);
                     }
                 }
                 _ => {}
@@ -377,6 +426,34 @@ impl Pattern {
         if patterns.iter().any(|p| p.irrefutable()) {
             return true;
         }
+        if patterns.iter().all(|p| matches!(p, Pattern::List(..))) {
+            return Pattern::cover_lists(patterns);
+        }
+        if let Some(keys) = argument_columns(patterns) {
+            let rows = patterns
+                .iter()
+                .map(|p| match p {
+                    Pattern::Fields(f) => {
+                        keys.iter().map(|k| f.iter().find(|(l, _)| l == k).unwrap().1.clone()).collect()
+                    }
+                    _ => unreachable!(),
+                })
+                .collect();
+            let sigs = keys
+                .iter()
+                .map(|k| {
+                    let column: Vec<&Pattern> = patterns
+                        .iter()
+                        .filter_map(|p| match p {
+                            Pattern::Fields(f) => f.iter().find(|(l, _)| l == k).map(|(_, p)| p),
+                            _ => None,
+                        })
+                        .collect();
+                    Sig::of(&column)
+                })
+                .collect();
+            return Pattern::exhaustive(rows, sigs);
+        }
         // Otherwise a record pattern of `_`s covers what has its fields,
         // which the type checker then requires of every value.
         let Some(variants) = patterns.iter().map(|p| p.variant()).collect::<Option<Vec<_>>>() else {
@@ -393,6 +470,249 @@ impl Pattern {
                 None => payloads.iter().all(|p| p.is_none()),
             }
         })
+    }
+}
+
+/// What a column of patterns lets a value be, when it decides whether
+/// they cover: the variants they name, when none of them matches
+/// anything, each with what its payload may be; or anything.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Sig {
+    Open,
+    Tags(BTreeMap<String, Option<Sig>>),
+    /// A function's arguments: each parameter's.
+    Fields(BTreeMap<String, Sig>),
+}
+
+impl Sig {
+    /// What the arguments of a function with these clauses may be.
+    pub fn of_clauses(patterns: &[&Pattern]) -> Sig {
+        let Some(keys) = argument_columns(patterns) else { return Sig::of(patterns) };
+        Sig::Fields(
+            keys.iter()
+                .map(|k| {
+                    let column: Vec<&Pattern> = patterns
+                        .iter()
+                        .filter_map(|p| match p {
+                            Pattern::Fields(f) => f.iter().find(|(l, _)| l == k).map(|(_, p)| p),
+                            _ => None,
+                        })
+                        .collect();
+                    (k.clone(), Sig::of(&column))
+                })
+                .collect(),
+        )
+    }
+
+    pub fn of(patterns: &[&Pattern]) -> Sig {
+        if patterns.is_empty() || patterns.iter().any(|p| p.irrefutable()) {
+            return Sig::Open;
+        }
+        let Some(variants) = patterns.iter().map(|p| p.variant()).collect::<Option<Vec<_>>>() else {
+            return Sig::Open;
+        };
+        let mut tags = BTreeMap::new();
+        for (k, _) in &variants {
+            let payloads: Vec<&Pattern> = variants.iter().filter(|v| v.0 == *k).filter_map(|v| v.1).collect();
+            let keyword = variants.iter().any(|v| v.0 == *k && v.1.is_none());
+            // A keyword and a variant of one key are different values.
+            if keyword && !payloads.is_empty() {
+                return Sig::Open;
+            }
+            tags.insert(k.to_string(), (!keyword).then(|| Sig::of(&payloads)));
+        }
+        Sig::Tags(tags)
+    }
+}
+
+/// The key of a function's `i`th argument in the record its clauses
+/// match.
+pub fn argument_key(i: usize) -> String {
+    format!("conduct.argument/{i:03}")
+}
+
+/// Whether patterns all read a function's arguments: the record its
+/// clauses match, when it takes more than one.
+pub fn argument_columns(patterns: &[&Pattern]) -> Option<Vec<String>> {
+    let Some(Pattern::Fields(first)) = patterns.first() else { return None };
+    let keys: Vec<String> = first.iter().map(|(k, _)| k.clone()).collect();
+    if keys.len() < 2 || !keys.iter().all(|k| k.starts_with("conduct.argument/")) {
+        return None;
+    }
+    let same = |p: &&Pattern| matches!(p, Pattern::Fields(f) if f.iter().map(|(k, _)| k).eq(keys.iter()));
+    patterns.iter().all(same).then_some(keys)
+}
+
+impl Pattern {
+    /// Whether rows of patterns, one per column, leave no values
+    /// unmatched (Maranget's usefulness, for exhaustiveness), each column
+    /// holding what its [`Sig`] says: the variants of `Tags`, which the
+    /// type checker requires of a function's arguments (see `cover_type`),
+    /// or anything.
+    pub fn exhaustive(rows: Vec<Vec<Pattern>>, sigs: Vec<Sig>) -> bool {
+        let Some(first) = rows.first() else { return false };
+        if first.is_empty() {
+            return true;
+        }
+        let tail = |row: &[Pattern]| row[1..].to_vec();
+        let heads: Vec<&Pattern> = rows.iter().map(|r| &r[0]).collect();
+        let default = || {
+            Pattern::exhaustive(
+                rows.iter().filter(|r| r[0].irrefutable()).map(|r| tail(r)).collect(),
+                sigs[1..].to_vec(),
+            )
+        };
+        let refutable: Vec<&&Pattern> = heads.iter().filter(|p| !p.irrefutable()).collect();
+        if let Sig::Tags(tags) = &sigs[0] {
+            // Every variant the column may hold, whether a row names it
+            // or not.
+            return tags.iter().all(|(k, payload)| {
+                let rows = rows
+                    .iter()
+                    .filter_map(|r| {
+                        let p = match r[0].variant() {
+                            // A keyword row matches the keyword, a variant
+                            // row the variant.
+                            Some((key, p)) if key == k && p.is_some() == payload.is_some() => {
+                                p.cloned().unwrap_or(Pattern::Any)
+                            }
+                            Some(_) => return None,
+                            None if r[0].irrefutable() => Pattern::Any,
+                            None => return None,
+                        };
+                        Some(std::iter::once(p).chain(tail(r)).collect())
+                    })
+                    .collect();
+                let inner = payload.clone().unwrap_or(Sig::Open);
+                Pattern::exhaustive(rows, std::iter::once(inner).chain(sigs[1..].iter().cloned()).collect())
+            });
+        }
+        if refutable.is_empty() {
+            return default();
+        }
+        if refutable.iter().all(|p| matches!(p, Pattern::List(..))) {
+            // Every length up to one past the longest pattern, and those
+            // past it behave as it does. Items may be anything.
+            let longest =
+                refutable.iter().map(|p| if let Pattern::List(i, _) = p { i.len() } else { 0 }).max().unwrap();
+            return (0..=longest + 1).all(|n| {
+                let rows = rows
+                    .iter()
+                    .filter_map(|r| {
+                        let items: Vec<Pattern> = match &r[0] {
+                            Pattern::List(items, rest) if items.len() == n || rest.is_some() && items.len() <= n => {
+                                items
+                                    .iter()
+                                    .cloned()
+                                    .chain(std::iter::repeat_n(Pattern::Any, n - items.len()))
+                                    .collect()
+                            }
+                            p if p.irrefutable() => vec![Pattern::Any; n],
+                            _ => return None,
+                        };
+                        Some(items.into_iter().chain(tail(r)).collect())
+                    })
+                    .collect();
+                Pattern::exhaustive(rows, std::iter::repeat_n(Sig::Open, n).chain(sigs[1..].iter().cloned()).collect())
+            });
+        }
+        if let Some(keys) = refutable.iter().map(|p| p.variant().map(|v| v.0.to_string())).collect::<Option<Vec<_>>>() {
+            // An open column: the variants named, and anything else
+            // through the rows that match anything.
+            let mut keys = keys;
+            keys.sort();
+            keys.dedup();
+            let open: BTreeMap<String, Option<Sig>> = keys.into_iter().map(|k| (k, Some(Sig::Open))).collect();
+            let mut with_named = sigs.clone();
+            with_named[0] = Sig::Tags(open);
+            return Pattern::exhaustive(rows.clone(), with_named) && default();
+        }
+        default()
+    }
+
+    /// Whether list patterns cover every list: every length has a
+    /// pattern whose items are all irrefutable, and so does every length
+    /// past the longest, through a `...`.
+    fn cover_lists(patterns: &[&Pattern]) -> bool {
+        let shapes: Vec<(usize, bool)> = patterns
+            .iter()
+            .filter_map(|p| match p {
+                Pattern::List(items, rest) if items.iter().all(Pattern::irrefutable) => {
+                    Some((items.len(), rest.is_some()))
+                }
+                _ => None,
+            })
+            .collect();
+        let Some(open) = shapes.iter().filter(|(_, r)| *r).map(|(n, _)| *n).min() else {
+            return false;
+        };
+        (0..open).all(|n| shapes.contains(&(n, false)))
+    }
+
+    /// Whether every value `self` matches, `other` matches too.
+    pub fn narrower(&self, other: &Pattern) -> bool {
+        use Pattern::*;
+        match (self, other) {
+            (_, Any | Bind(_)) => true,
+            (Any | Bind(_), _) => false,
+            (Keyword(a), Keyword(b)) | (Str(a), Str(b)) => a == b,
+            (Int(a), Int(b)) => a == b,
+            // A record pattern asks for its fields: one that asks for
+            // more, each as narrowly, is narrower.
+            (Fields(a), Fields(b)) => b.iter().all(|(k, pb)| a.iter().any(|(l, pa)| l == k && pa.narrower(pb))),
+            (List(ai, ar), List(bi, br)) => {
+                let bt = |i: usize| bi.get(i).or(br.as_deref());
+                match (ar, br) {
+                    (Some(_), Some(_)) => {
+                        bi.len() <= ai.len() && ai.iter().enumerate().all(|(i, p)| p.narrower(bt(i).unwrap()))
+                    }
+                    (Some(_), None) => false,
+                    (None, _) => {
+                        (br.is_some() && bi.len() <= ai.len() || bi.len() == ai.len())
+                            && ai.iter().enumerate().all(|(i, p)| p.narrower(bt(i).unwrap()))
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether some value matches both, where values are what `sig`
+    /// says.
+    pub fn overlaps(&self, other: &Pattern, sig: &Sig) -> bool {
+        use Pattern::*;
+        let open = Sig::Open;
+        let field = |k: &str| match sig {
+            Sig::Fields(fields) => fields.get(k).unwrap_or(&open),
+            Sig::Tags(tags) => tags.get(k).and_then(|p| p.as_ref()).unwrap_or(&open),
+            Sig::Open => &open,
+        };
+        match (self, other) {
+            (Any | Bind(_), _) | (_, Any | Bind(_)) => true,
+            (Keyword(a), Keyword(b)) | (Str(a), Str(b)) => a == b,
+            (Int(a), Int(b)) => a == b,
+            // Where only the variants named may come, variants with
+            // different keys are different values; anywhere else a record
+            // may have both fields.
+            (Fields(a), Fields(b)) if a.len() == 1 && b.len() == 1 && a[0].0 != b[0].0 => !matches!(sig, Sig::Tags(_)),
+            (Fields(a), Fields(b)) => {
+                a.iter().all(|(k, pa)| b.iter().find(|(l, _)| l == k).is_none_or(|(_, pb)| pa.overlaps(pb, field(k))))
+            }
+            (List(ai, ar), List(bi, br)) => {
+                let n = match (ar, br) {
+                    (None, None) if ai.len() != bi.len() => return false,
+                    (None, Some(_)) if ai.len() < bi.len() => return false,
+                    (Some(_), None) if bi.len() < ai.len() => return false,
+                    (None, _) => ai.len(),
+                    (_, None) => bi.len(),
+                    _ => ai.len().max(bi.len()),
+                };
+                let at = |i: usize| ai.get(i).or(ar.as_deref());
+                let bt = |i: usize| bi.get(i).or(br.as_deref());
+                (0..n).all(|i| at(i).unwrap().overlaps(bt(i).unwrap(), &Sig::Open))
+            }
+            _ => false,
+        }
     }
 }
 
