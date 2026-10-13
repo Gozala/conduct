@@ -66,7 +66,7 @@ each definition under the pointer, and its problems as you edit it.
 
 [`bench/`](bench) compares the demo's elements in conduct, in Zena, and
 in a Rust port, on the polyfill over Wasmtime. conduct's components are
-about half the size of Rust's and under half of Zena's, and run about
+half the size of Rust's or less and under half of Zena's, and run about
 as fast as Rust's and twice as fast as Zena's. Its compiler component
 compiles each source in 10 to 20 ms, where Zena's takes seconds.
 
