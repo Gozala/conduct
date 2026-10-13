@@ -1,0 +1,39 @@
+
+      :host {
+        display: block;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px 16px;
+      }
+      .new-todo {
+        flex: 1;
+        min-width: 0;
+        box-sizing: border-box;
+        padding: 16px;
+        border: 1px solid var(--md-sys-color-outline-variant);
+        border-radius: var(--md-sys-shape-corner-large);
+        background: var(--md-sys-color-surface-container-highest);
+        color: var(--md-sys-color-on-surface);
+        font: var(--md-sys-typescale-body-large);
+      }
+      .new-todo:focus {
+        outline: 2px solid var(--md-sys-color-primary);
+        outline-offset: -1px;
+      }
+      .toggle-all {
+        width: 24px;
+        height: 24px;
+        margin: 0;
+        accent-color: var(--md-sys-color-primary);
+      }
+      .label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+      }
+    

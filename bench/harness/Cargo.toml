@@ -1,0 +1,22 @@
+[package]
+name = "element-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Times the TodoMVC elements in conduct, Zena and Rust, and the conduct and Zena compiler components, on the Wasm Component Model Polyfill over Wasmtime"
+
+# Built for the host, so its own workspace.
+[workspace]
+
+[dependencies]
+# The conduct components are compiled from ../../examples by the library,
+# which returns the bytes the command writes.
+conduct = { path = "../.." }
+wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "eedcd22766b35cc34b3b81b4c753ab4f08a7c09a" }
+wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "eedcd22766b35cc34b3b81b4c753ab4f08a7c09a" }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+serde_json = "1"
+
+[profile.release]
+debug = 0
+incremental = false
