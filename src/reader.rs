@@ -42,12 +42,37 @@ impl Sexp {
         }
     }
 
+    /// A symbol's name, without the mark a macro's expansion gave it.
     pub fn as_symbol(&self) -> Option<&str> {
         match self {
-            Sexp::Symbol(name, _) => Some(name),
+            Sexp::Symbol(name, _) => Some(bare(name)),
             _ => None,
         }
     }
+}
+
+/// What separates a symbol's name from the mark of the expansion that
+/// wrote it. No symbol read from source has one, so a marked name is
+/// never one a person wrote.
+pub const MARK: char = '\u{1}';
+/// What separates a marked name from the hash it referred to where the
+/// macro that wrote it was defined.
+pub const PIN: char = '\u{3}';
+
+/// A symbol's name as written: without its mark and pin.
+pub fn bare(name: &str) -> &str {
+    name.split([MARK, PIN]).next().unwrap_or(name)
+}
+
+/// What follows a marked name's bare part: its mark and pin, or nothing.
+pub fn mark_of(name: &str) -> &str {
+    &name[bare(name).len()..]
+}
+
+/// The hash, in hex, a template symbol was pinned to where its macro
+/// was defined.
+pub fn pin_of(name: &str) -> Option<&str> {
+    name.split_once(PIN).map(|(_, hex)| hex)
 }
 
 impl fmt::Display for Sexp {
@@ -65,7 +90,8 @@ impl fmt::Display for Sexp {
         match self {
             Sexp::Int(n, _) => write!(f, "{n}"),
             Sexp::Str(s, _) => write!(f, "{s:?}"),
-            Sexp::Symbol(s, _) => write!(f, "{s}"),
+            // As a person wrote it: without an expansion's mark.
+            Sexp::Symbol(s, _) => write!(f, "{}", bare(s)),
             Sexp::Keyword(s, _) => write!(f, ":{s}"),
             Sexp::Label(s, _) => write!(f, "{s}:"),
             Sexp::List(items, _) => seq(f, "(", items, ")"),
@@ -205,6 +231,11 @@ impl Reader<'_> {
         }
         let text = &self.text[start..self.pos];
         let span = Span { start, end: self.pos };
+        // Marks and pins are the compiler's: a name a person writes has
+        // neither.
+        if text.chars().any(|c| c.is_control()) {
+            return self.error("a name cannot contain control characters", start);
+        }
         if text == ":" {
             return Ok(Sexp::Label(String::new(), span));
         }

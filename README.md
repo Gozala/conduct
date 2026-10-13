@@ -97,7 +97,7 @@ The design the language is heading for is in
 (let [a 1 b (inc a)] (* a b))           ; sequential bindings, polymorphic
 (do (log! a) b)                         ; in order; the last is the value
 (if test then else)                     ; the test must be a Bool
-(cond a x b y :else z)
+(cond a x b y :else z)                  ; macros: see below
 (and a b) (or a b) (not a)
 
 (type title : (demo.todo/title text))   ; an attribute: local name, global name, values
@@ -420,6 +420,48 @@ entry compiled for the definition, which runs its body directly, so the
 common case makes no task at all. A host call first looks for an
 implementation in the environments `perform ... with:` pushed, then
 calls the import.
+
+### Macros
+
+A macro is a set of rules, each with its pattern in the head and a
+template, as a Datalog predicate is a set of rules:
+
+```clojure
+(macro (cond :else result) result)
+(macro (cond test then rest ...) (if test then (cond rest ...)))
+```
+
+A call expands by the rule that matches it. Rules may overlap only when
+one is narrower than the other (every call it matches, the other
+matches too), and then the narrower wins: `(cond :else x)` fits both
+rules above and expands by the first. Two rules that overlap with
+neither narrower are an error, so the rules' order means nothing.
+
+A pattern is a name (any form, which the template uses by that name),
+`_`, a literal (a number, string, keyword or label), or a form of
+patterns; `p ...` at the end of a form matches any number of the rest,
+and the template repeats `t ...` once per match. A macro's name is the
+word its calls start with, so `(macro (twice! line) ..)` stands for a
+form that performs.
+
+A source is one compilation. Every rule of a name in it, with the rules
+the codebase already holds for that name, is closed into one macro
+before anything in the source expands, so a call may come before its
+rules. The closed set is hashed with its rules sorted. Code compiled
+earlier keeps what it expanded to: adding a rule later makes a new
+macro of the old rules and the new.
+
+Macros are hygienic. A symbol a template writes, other than a pattern
+variable, is the macro's own. Each expansion marks it, so a binder the
+template writes binds only what the same expansion writes, and a local
+of the call cannot capture a name the template refers to. When the
+macro is closed, each such symbol that names a definition is pinned to
+that definition's hash, so redefining the name later does not change
+what the macro's expansions call.
+
+`and`, `or` and `cond` are macros in `core.cdt` now, not forms of the
+language. Procedural macros, written as functions over forms, are
+next.
 
 ### Hashing
 

@@ -21,6 +21,7 @@ pub mod codegen;
 pub mod element;
 mod fetch;
 pub mod infer;
+pub mod macros;
 pub mod reader;
 pub mod route;
 pub mod syntax;

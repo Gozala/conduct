@@ -9,7 +9,8 @@
 
 use crate::claims::{self, Claims, Env, Mode, TypeDef};
 use crate::infer::{Binding, Globals, Infer};
-use crate::reader;
+use crate::macros::{self, Rule};
+use crate::reader::{self, Sexp, bare, pin_of};
 use crate::syntax::{self, Arg, Claim, Def, Expr, Item, Param, Pat, TypeExpr};
 use crate::term::{Hash, Op, Pattern, Term};
 use crate::types::{Scheme, Solver, Ty, TypeError, coalesce};
@@ -46,7 +47,15 @@ pub struct Codebase {
     /// Host functions by the capability they need: each one's name and
     /// hash.
     pub hosts: BTreeMap<String, BTreeMap<String, Hash>>,
+    /// Macros by name: each the closed set of its rules.
+    pub macros: BTreeMap<String, macros::Macro>,
+    /// The last mark an expansion gave its template's symbols.
+    marks: u64,
 }
+
+/// How many expansions deep one form may go: a macro whose expansion
+/// always calls it again is an error, not a hang.
+const EXPANSION_DEPTH: usize = 512;
 
 /// What adding a definition did.
 #[derive(Debug, Clone, PartialEq)]
@@ -157,9 +166,130 @@ impl Codebase {
 
     /// Parse, resolve, hash, and type check `source`, then point its
     /// names at the resulting hashes. Nothing changes on an error.
+    ///
+    /// A source is one compilation. Its macro rules come first: each
+    /// name's, with the rules the codebase already has for it, are
+    /// closed into one macro, which every form of the source then
+    /// expands by, wherever the rules are written.
     pub fn add_source(&mut self, source: &str) -> Result<Vec<Added>, Error> {
         let forms = reader::read(source).map_err(Error::Read)?;
-        let items = syntax::items(&forms).map_err(Error::Syntax)?;
+        let saved = (self.claims.clone(), self.names.clone(), self.macros.clone());
+        let out = self.add_forms(&forms);
+        if out.is_err() {
+            (self.claims, self.names, self.macros) = saved;
+        }
+        out
+    }
+
+    fn add_forms(&mut self, forms: &[Sexp]) -> Result<Vec<Added>, Error> {
+        let mut rules: BTreeMap<String, Vec<Rule>> = BTreeMap::new();
+        let mut rest = Vec::new();
+        for form in forms {
+            if let Sexp::List(items, _) = form
+                && items.first().and_then(Sexp::as_symbol) == Some("macro")
+            {
+                let Item::Macro(m) = syntax::item(form).map_err(Error::Syntax)? else { unreachable!() };
+                let rule = Rule::new(&m.name, &m.pattern, &m.template)
+                    .map_err(|message| Error::Resolve { def: format!("({} ..)", m.name), message })?;
+                rules.entry(m.name).or_default().push(rule);
+            } else {
+                rest.push(form);
+            }
+        }
+        let closed: Vec<String> = rules.keys().cloned().collect();
+        for (name, new) in rules {
+            let error = |message: String| Error::Resolve { def: format!("({name} ..)"), message };
+            let unbanged = name.strip_suffix('!').unwrap_or(&name);
+            if self.names.contains_key(unbanged) || self.claims.claims(unbanged) {
+                return Err(error(format!("`{name}` is already defined, so it cannot also name a macro")));
+            }
+            if Op::from_name(&name).is_some() || syntax::reserved(&name) {
+                return Err(error(format!("`{name}` is built in, so it cannot also name a macro")));
+            }
+            let mut all = self.macros.get(&name).map(|m| m.rules.clone()).unwrap_or_default();
+            all.extend(new);
+            self.macros.insert(name.clone(), macros::Macro::close(&name, all).map_err(error)?);
+        }
+        let mut items = Vec::new();
+        for form in rest {
+            let form = self.expand_top(form, 0)?;
+            items.push(syntax::item(&form).map_err(Error::Syntax)?);
+        }
+        let added = self.add_items(items)?;
+        // What a macro's template names, it names as of its closing.
+        for name in closed {
+            let mut m = self.macros.remove(&name).unwrap();
+            for rule in &mut m.rules {
+                rule.pin(&|s| self.names.get(s.strip_suffix('!').unwrap_or(s)).copied());
+            }
+            let m = macros::Macro::close(&name, m.rules).expect("pinning keeps the rules' patterns");
+            self.macros.insert(name, m);
+        }
+        Ok(added)
+    }
+
+    /// A top-level form with its macro calls expanded. A macro may write
+    /// a definition or a type.
+    fn expand_top(&mut self, form: &Sexp, depth: usize) -> Result<Sexp, Error> {
+        if let Sexp::List(items, span) = form
+            && let Some(head) = items.first().and_then(Sexp::as_symbol)
+        {
+            match head {
+                // A definition's head is not a call.
+                "define" if items.len() > 2 => {
+                    let mut out = items[..2].to_vec();
+                    for item in &items[2..] {
+                        out.push(self.expand(item, 0)?);
+                    }
+                    return Ok(Sexp::List(out, *span));
+                }
+                "define" | "claim" | "type" => return Ok(form.clone()),
+                "macro" => {
+                    return Err(Error::Resolve {
+                        def: "macro".into(),
+                        message: "a macro's expansion cannot write a macro rule yet".into(),
+                    });
+                }
+                name if self.macros.contains_key(name) => {
+                    let out = self.expand_call(name, &items[1..], *span, depth)?;
+                    return self.expand_top(&out, depth + 1);
+                }
+                _ => {}
+            }
+        }
+        self.expand(form, 0)
+    }
+
+    /// `form` with every call of a macro replaced by its expansion.
+    fn expand(&mut self, form: &Sexp, depth: usize) -> Result<Sexp, Error> {
+        let all =
+            |cb: &mut Self, items: &[Sexp]| items.iter().map(|i| cb.expand(i, depth)).collect::<Result<Vec<_>, _>>();
+        Ok(match form {
+            Sexp::List(items, span) => match items.first().and_then(Sexp::as_symbol) {
+                Some(name) if self.macros.contains_key(name) => {
+                    let out = self.expand_call(name, &items[1..], *span, depth)?;
+                    self.expand(&out, depth + 1)?
+                }
+                _ => Sexp::List(all(self, items)?, *span),
+            },
+            Sexp::Vector(items, span) => Sexp::Vector(all(self, items)?, *span),
+            Sexp::Map(items, span) => Sexp::Map(all(self, items)?, *span),
+            other => other.clone(),
+        })
+    }
+
+    fn expand_call(&mut self, name: &str, args: &[Sexp], span: reader::Span, depth: usize) -> Result<Sexp, Error> {
+        let error = |message: String| Error::Resolve { def: format!("({name} ..)"), message };
+        if depth >= EXPANSION_DEPTH {
+            return Err(error(format!(
+                "expands more than {EXPANSION_DEPTH} macro calls deep: does its expansion always call it again?"
+            )));
+        }
+        self.marks += 1;
+        self.macros[name].expand(name, args, self.marks, span).map_err(error)
+    }
+
+    fn add_items(&mut self, items: Vec<Item>) -> Result<Vec<Added>, Error> {
         let mut defs = Vec::new();
         let mut claims = Vec::new();
         let mut types = Vec::new();
@@ -168,6 +298,15 @@ impl Codebase {
                 Item::Def(d) => defs.push(d),
                 Item::Claim(c) => claims.push(c),
                 Item::Type(t) => types.push(t),
+                Item::Macro(_) => unreachable!("macro rules are closed before anything else"),
+            }
+        }
+        for name in defs.iter().map(|d| &d.name).chain(types.iter().map(|t| &t.name)) {
+            if self.macros.contains_key(name) || self.macros.contains_key(&format!("{name}!")) {
+                return Err(Error::Resolve {
+                    def: name.clone(),
+                    message: format!("`{name}` is a macro, so it cannot also name a definition or a type"),
+                });
             }
         }
         // A claim is the signature of a definition in the same source;
@@ -391,6 +530,16 @@ impl Codebase {
             let mut terms = Vec::new();
             for d in &members {
                 let lookup = |name: &str| -> Option<Target> {
+                    // A name a macro's template wrote may be pinned to the
+                    // definition it named there.
+                    if let Some(h) = pin_of(name).and_then(Hash::from_hex) {
+                        let labels = match self.defs.get(&h).map(|d| &d.term) {
+                            Some(Term::Fn(labels, _)) => Some(labels.clone()),
+                            _ => None,
+                        };
+                        return Some(Target::Hash(h, labels));
+                    }
+                    let name = bare(name);
                     if let Some(i) = names_in_cycle.iter().position(|n| *n == name)
                         && recursive
                     {
@@ -412,7 +561,7 @@ impl Codebase {
                     };
                     Some(Target::Hash(*h, labels))
                 };
-                let names = Names { lookup: &lookup, claims: &self.claims };
+                let names = Names { lookup: &lookup, claims: &self.claims, macros: &self.macros };
                 let term = resolve(&d.body, &mut Vec::new(), &names).map_err(|e| match e {
                     ResolveError::Unbound(name) => Error::Unbound { name, def: d.name.clone() },
                     ResolveError::Invalid(message) => Error::Resolve { def: d.name.clone(), message },
@@ -680,9 +829,20 @@ enum Target {
 struct Names<'a> {
     lookup: &'a dyn Fn(&str) -> Option<Target>,
     claims: &'a Claims,
+    macros: &'a BTreeMap<String, macros::Macro>,
 }
 
 impl Names<'_> {
+    /// A local may not take a macro's name: expansion does not see
+    /// locals, so a call of it would expand the macro.
+    fn local(&self, name: &str) -> Result<(), ResolveError> {
+        let name = bare(name);
+        if self.macros.contains_key(name) || self.macros.contains_key(&format!("{name}!")) {
+            return Err(ResolveError::Invalid(format!("`{name}` is a macro, so it cannot also name a local")));
+        }
+        Ok(())
+    }
+
     /// The global name of an attribute, written by its local name or its
     /// global one.
     fn attribute(&self, name: &str) -> Option<String> {
@@ -707,7 +867,9 @@ impl Names<'_> {
             Pat::Str(s) => (Pattern::Str(s.clone()), None),
             Pat::Int(n) => (Pattern::Int(*n), None),
             Pat::Any => (Pattern::Any, None),
-            Pat::Name(n) if self.claims.record(n).is_some() => (self.constructor(n, &[])?, Some(n.clone())),
+            Pat::Name(n) if self.claims.record(bare(n)).is_some() => {
+                (self.constructor(bare(n), &[])?, Some(bare(n).to_string()))
+            }
             Pat::Name(n) => (Pattern::Bind(n.clone()), None),
             Pat::Record(fields) => {
                 let mut out: Vec<(String, Pattern)> = Vec::new();
@@ -916,7 +1078,11 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
             if let Some(pos) = scope.iter().rposition(|n| n == name) {
                 Term::Local((scope.len() - 1 - pos) as u32)
             } else {
-                match lookup(name) {
+                // A marked name no local binds is the macro's: it is
+                // resolved as it was where the macro was closed.
+                let target = lookup(name);
+                let name = &bare(name).to_string();
+                match target {
                     Some(Target::Hash(h, _)) => Term::Ref(h),
                     Some(Target::Cycle(i, _)) => Term::CycleRef(i),
                     None if Op::from_name(name).is_some() => {
@@ -936,6 +1102,9 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
         }
         Expr::Fn(params, body) => {
             let params = canonical(params);
+            for p in &params {
+                names.local(&p.local)?;
+            }
             scope.extend(params.iter().map(|p| p.local.clone()));
             let body = resolve(body, scope, names);
             scope.truncate(scope.len() - params.len());
@@ -943,6 +1112,7 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
         }
         Expr::App(callee, args, _) => app(callee, args, scope, names)?,
         Expr::Let(name, value, body) => {
+            names.local(name)?;
             let value = b(value, scope)?;
             scope.push(name.clone());
             let body = resolve(body, scope, names);
@@ -950,8 +1120,6 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
             Term::Let(value, Box::new(body?))
         }
         Expr::If(c, t, e) => Term::If(b(c, scope)?, b(t, scope)?, b(e, scope)?),
-        Expr::And(x, y) => Term::And(b(x, scope)?, b(y, scope)?),
-        Expr::Or(x, y) => Term::Or(b(x, scope)?, b(y, scope)?),
         Expr::Record(fields, _) => {
             let mut out: Vec<(String, Term)> = Vec::new();
             for (k, v) in fields {
@@ -1015,6 +1183,9 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
             let mut arms: Vec<(Pattern, Term)> = Vec::new();
             for (p, _, r) in patterns {
                 let bound = p.binders();
+                for b in &bound {
+                    names.local(b)?;
+                }
                 scope.extend(bound.iter().cloned());
                 let r = resolve(r, scope, names);
                 scope.truncate(scope.len() - bound.len());
@@ -1070,7 +1241,7 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
 /// passed without its label and whose others go in label order.
 fn app(callee: &Expr, args: &[Arg], scope: &mut Vec<String>, names: &Names) -> Result<Term, ResolveError> {
     if let Expr::Var(name, _) = callee
-        && name == "get"
+        && bare(name) == "get"
         && !scope.contains(name)
         && (names.lookup)(name).is_none()
     {
@@ -1084,8 +1255,10 @@ fn app(callee: &Expr, args: &[Arg], scope: &mut Vec<String>, names: &Names) -> R
         Expr::Var(name, _) if !scope.contains(name) => Some(name.as_str()),
         _ => None,
     };
-    if let Some(name) = global {
-        match (names.lookup)(name) {
+    if let Some(full) = global {
+        let target = (names.lookup)(full);
+        let name = bare(full);
+        match target {
             Some(target) => {
                 let (callee, labels) = match target {
                     Target::Hash(h, labels) => (Term::Ref(h), labels),
@@ -1144,10 +1317,10 @@ fn get(args: &[Arg], scope: &mut Vec<String>, names: &Names) -> Result<Term, Res
     if let Expr::Var(name, _) = &first.value
         && !scope.contains(name)
         && (names.lookup)(name).is_none()
-        && let Some(attribute) = names.attribute(name)
+        && let Some(attribute) = names.attribute(bare(name))
     {
         let args = std::iter::once(of).chain(or).map(|t| (None, t)).collect();
-        return read(name, attribute, args);
+        return read(bare(name), attribute, args);
     }
     let key = resolve(&first.value, scope, names)?;
     let Some(or) = or else {
@@ -1248,8 +1421,9 @@ fn builtin(op: Op, args: Vec<(Option<String>, Term)>) -> Result<Term, ResolveErr
 fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
     match expr {
         Expr::Var(name, _) => {
-            if !scope.contains(name) && !out.contains(name) {
-                out.push(name.clone());
+            // A pinned name refers to a definition already added.
+            if !scope.contains(name) && pin_of(name).is_none() && !out.iter().any(|n| n == bare(name)) {
+                out.push(bare(name).to_string());
             }
         }
         Expr::Fn(params, body) => {
@@ -1271,10 +1445,6 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
             free_names(a, scope, out);
             free_names(b, scope, out);
             free_names(c, scope, out);
-        }
-        Expr::And(a, b) | Expr::Or(a, b) => {
-            free_names(a, scope, out);
-            free_names(b, scope, out);
         }
         Expr::Record(fields, _) | Expr::Dict(fields) => fields.iter().for_each(|(_, e)| free_names(e, scope, out)),
         Expr::Update(r, fields, _) => {

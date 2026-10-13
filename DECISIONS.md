@@ -3,6 +3,76 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Macros
+
+- **Rules, not functions, first.** A rule is a pattern and a template,
+  as Scheme's `syntax-rules` and Rust's `macro_rules!` are. Nothing runs
+  at compile time, so no interpreter, fuel or purity question; most of
+  what a macro needs (`cond`, `and`, `or`, `when`) is substitution.
+  Procedural macros, functions over a Lux-style variant of forms, come
+  when a macro needs to compute (a new name from an old one, say). A
+  draft of their interpreter is in this branch's history.
+- **Each rule is a form with its pattern in the head,** and a macro is
+  the set of its rules, as a Datalog predicate is. Racket's and Rust's
+  rules are a list tried in order; here order means nothing, so the
+  macro's hash is of its rules sorted.
+- **The narrowest rule wins; overlap without one is an error.** A set
+  needs a rule for two rules that both match. Datalog keeps every
+  match; an expansion needs one form. Narrower (every call it matches,
+  the other matches too) is decided on the patterns when the set is
+  closed, as a ranked variant's cases are checked. `...` comes last in
+  a form's patterns, which keeps that decision structural.
+- **A compilation closes a macro.** Every rule of a name in a source,
+  with the codebase's earlier rules for it, is one macro, closed before
+  anything in the source expands. Code compiled before keeps its
+  expansions: a hash-addressed codebase does not re-evaluate the whole
+  program as Datalog does, so a rule added later makes a new macro.
+- **Hygiene by marks and pins.** Every symbol a template writes, other
+  than a pattern variable, carries the expansion's mark, a character no
+  source can contain. A local the template binds is then distinct from
+  any the call binds, and a marked name no local binds is resolved
+  globally, skipping the call's locals. When the macro is closed, each
+  such symbol naming a definition is pinned to its hash, which is what
+  Clojure's syntax-quote does with namespaces. Racket's full sets of
+  scopes are not needed for rules macros; symbols a procedural macro
+  builds will need a decision.
+- **Patterns match labels as written, in order.** A call's labels may
+  come in any order; a macro's pattern says which order it takes.
+  Normalizing labels before matching is possible later.
+- **A macro is closed before the source's definitions are added,** so
+  a template's names are resolved by name in its own compilation and
+  pinned at its end.
+- **`and`, `or` and `cond` moved to `core.cdt`.** `Term::And` and
+  `Term::Or` are no longer produced; inference and code generation
+  still handle them, and they can go in a cleanup.
+- **A macro's expansion cannot write a macro rule yet;** that needs
+  closing rules to a fixpoint.
+- **A local may not take a macro's name.** Expansion runs before names
+  are resolved and does not see locals, so `(define (f sq) (sq 3))`
+  would expand the macro `sq`. Refusing the local keeps "a name is one
+  thing"; `and`, `or` and `cond` are no longer reserved words but are
+  macros, so they cannot name locals either.
+- **What a review found, and these fix:**
+  - A parameter a template wrote took its marked name as its label,
+    and labels are hashed, so a definition's hash depended on how many
+    expansions ran before it. Labels are now the bare name.
+  - The reader accepted the mark and pin characters, so source could
+    capture a template's binder or call a shadowed definition by hash.
+    A name with a control character is now a read error.
+  - Adding the same source again saw its pinned rule and its unpinned
+    copy as two rules matching the same calls. Rules are now told apart
+    as written, and the first, already pinned, is kept.
+  - A definition a template writes pinned its own recursive call to the
+    definition it replaced. The name a template defines is not pinned.
+  - A macro `foo!` and a definition `foo` could both exist, the macro
+    hiding the task. Each now refuses the other.
+  - Errors showed marks. Forms are shown as written.
+- **Expansion is at most 512 macro calls deep.** A recursive rule adds
+  one level per step, so `(and ..)` of hundreds of forms fails where the
+  old built-in did not. Rules cannot report errors of their own, so
+  `(cond :else 1 x 2)` says no rule matches `(cond)`, not that `:else`
+  must come last; procedural macros will be able to say so.
+
 ## Types and dictionaries
 
 - **`type` declares what a name is; `claim` is only a signature.** One
