@@ -1055,7 +1055,10 @@ fn pattern(form: &Sexp) -> Result<Pat> {
                     }
                 },
                 _ => {
-                    return err("a record pattern ends with a name for the rest of the record: `{.. rest ...}`", *mspan);
+                    return err(
+                        "a record pattern ends with a name for the rest of the record: `{.. rest ...}`",
+                        *mspan,
+                    );
                 }
             };
             let fields = pattern(&Sexp::Map(items[..n - 2].to_vec(), *mspan))?;
