@@ -41,7 +41,7 @@ pub struct Codebase {
     pub solver: Solver,
     pub defs: HashMap<Hash, Definition>,
     pub names: BTreeMap<String, Hash>,
-    /// The attributes and types claimed.
+    /// The attributes and types declared.
     pub claims: Claims,
     /// Host functions by the capability they need: each one's name and
     /// hash.
@@ -101,7 +101,7 @@ impl Codebase {
             .to_string()
     }
 
-    /// The local name an attribute's global name is claimed under, if
+    /// The local name an attribute's global name is declared under, if
     /// any.
     pub fn local_attribute(&self, global: &str) -> Option<String> {
         self.claims.local(global)
@@ -162,31 +162,55 @@ impl Codebase {
         let items = syntax::items(&forms).map_err(Error::Syntax)?;
         let mut defs = Vec::new();
         let mut claims = Vec::new();
+        let mut types = Vec::new();
         for item in items {
             match item {
                 Item::Def(d) => defs.push(d),
                 Item::Claim(c) => claims.push(c),
+                Item::Type(t) => types.push(t),
             }
         }
-        // A claim of a name the source defines is its signature; any
-        // other defines a type. Types come first: they declare what
-        // definitions use, and nothing about them depends on order.
+        // A claim is the signature of a definition in the same source;
+        // a type declares what a name is. Types come first: they declare
+        // what definitions use, and nothing about them depends on order.
         let mut signatures: HashMap<String, Claim> = HashMap::new();
-        let mut types = Vec::new();
         for c in claims {
-            if c.params.is_none() && matches!(c.ty, TypeExpr::Attribute(..)) && defs.iter().any(|d| d.name == c.name) {
-                return Err(Error::Resolve {
-                    def: c.name.clone(),
-                    message: format!("`{}` names a definition, so it cannot also name an attribute", c.name),
-                });
+            let error = |message: String| Err(Error::Resolve { def: c.name.clone(), message });
+            if !defs.iter().any(|d| d.name == c.name) {
+                let bang = if c.performs { "!" } else { "" };
+                return if self.names.contains_key(&c.name) {
+                    error(format!(
+                        "`{}{bang}` is defined in another source: a claim goes with its definition, in one source",
+                        c.name
+                    ))
+                } else if c.performs {
+                    error(format!("`{}!` claims a task, so it goes with a definition of `{}!`", c.name, c.name))
+                } else {
+                    let head = match &c.params {
+                        Some(_) => format!("({} ..)", c.name),
+                        None => c.name.clone(),
+                    };
+                    error(format!(
+                        "`{}` has no definition in this source: a claim is a signature; declare a type with \
+                         `(type {head} : ..)`",
+                        c.name
+                    ))
+                };
             }
-            if defs.iter().any(|d| d.name == c.name) {
-                if signatures.insert(c.name.clone(), c).is_some() {
-                    let name = signatures.keys().next().unwrap().clone();
-                    return Err(Error::Resolve { def: name, message: "a definition has one signature".into() });
-                }
-            } else {
-                types.push(c);
+            if signatures.contains_key(&c.name) {
+                return error("a definition has one signature".into());
+            }
+            signatures.insert(c.name.clone(), c);
+        }
+        for t in &types {
+            if defs.iter().any(|d| d.name == t.name) {
+                return Err(Error::Resolve {
+                    def: t.name.clone(),
+                    message: format!(
+                        "`{}` names a definition, so it cannot also name a type: its signature is `(claim {} : ..)`",
+                        t.name, t.name
+                    ),
+                });
             }
         }
         let saved = self.claims.clone();
@@ -198,24 +222,18 @@ impl Codebase {
     }
 
     /// Record type claims, after checking each agrees with what is
-    /// already claimed and every type they name is claimed.
+    /// already declared and every type they name is declared.
     fn claim(&mut self, claims: &[Claim], defs: &[Def]) -> Result<(), Error> {
         for c in claims {
             let error = |message: String| Err(Error::Resolve { def: c.name.clone(), message });
             if self.names.contains_key(&c.name) || defs.iter().any(|d| d.name == c.name) {
-                return error(format!(
-                    "`{}` names a definition, so a claim of it is its signature, in its source",
-                    c.name
-                ));
-            }
-            if c.performs {
-                return error(format!("`{}!` claims a task, so it goes with a definition of `{}!`", c.name, c.name));
+                return error(format!("`{}` names a definition, so it cannot also name a type", c.name));
             }
             match (&c.params, &c.ty) {
                 (None, TypeExpr::Attribute(global, value, _)) => self.claim_attribute(&c.name, global, value)?,
                 (params, body) => {
                     if self.claims.attributes.contains_key(&c.name) {
-                        return error(format!("`{}` is claimed as an attribute", c.name));
+                        return error(format!("`{}` is declared as an attribute", c.name));
                     }
                     let mut vars = Vec::new();
                     for (label, t) in params.iter().flatten() {
@@ -233,9 +251,9 @@ impl Codebase {
                     if let Some(before) = self.claims.types.get(&c.name)
                         && before.text != text
                     {
-                        return error(format!("`{}` is already claimed as `{}`", c.name, before.text));
+                        return error(format!("`{}` is already declared as `{}`", c.name, before.text));
                     }
-                    // An attribute written in place is claimed with it.
+                    // An attribute written in place is declared with it.
                     if let TypeExpr::Record(members, _) = body {
                         for m in members {
                             if let syntax::Member::Inline(global, value) = m {
@@ -247,7 +265,7 @@ impl Codebase {
                 }
             }
         }
-        // Every type now refers to claimed names, and a variant's ranks
+        // Every type now refers to declared names, and a variant's ranks
         // can each be chosen.
         for c in claims.iter().filter(|c| self.claims.types.contains_key(&c.name)) {
             let def = &self.claims.types[&c.name];
@@ -276,12 +294,12 @@ impl Codebase {
     fn claim_attribute(&mut self, name: &str, global: &str, value: &TypeExpr) -> Result<(), Error> {
         let error = |message: String| Err(Error::Resolve { def: name.to_string(), message });
         if self.claims.types.contains_key(name) {
-            return error(format!("`{name}` is claimed as a type"));
+            return error(format!("`{name}` is declared as a type"));
         }
         if let Some(before) = self.claims.attributes.get(name)
             && before != global
         {
-            return error(format!("`{name}` is already claimed as the attribute `{before}`"));
+            return error(format!("`{name}` is already declared as the attribute `{before}`"));
         }
         self.claim_global(name, global, value)?;
         self.claims.attributes.insert(name.to_string(), global.to_string());
@@ -299,7 +317,7 @@ impl Codebase {
         let written = value.to_string();
         if let Some((before, _)) = self.claims.attribute_types.get(global) {
             if *before != written {
-                return error(format!("`{global}` is already claimed with values `{before}`, not `{written}`"));
+                return error(format!("`{global}` is already declared with values `{before}`, not `{written}`"));
             }
             return Ok(());
         }
@@ -332,7 +350,7 @@ impl Codebase {
                 return Err(Error::Resolve {
                     def: d.name.clone(),
                     message: format!(
-                        "`{}` is claimed as an attribute or a type, so it cannot also name a definition",
+                        "`{}` is declared as an attribute or a type, so it cannot also name a definition",
                         d.name
                     ),
                 });
@@ -674,9 +692,9 @@ impl Names<'_> {
     fn key(&self, name: &str) -> Result<String, ResolveError> {
         self.attribute(name).ok_or_else(|| {
             ResolveError::Invalid(if name.contains('/') {
-                format!("no claim declares the attribute `{name}`")
+                format!("no type declares the attribute `{name}`")
             } else {
-                format!("`{name}:` is not a claimed attribute: claim it, `(claim {name} : (domain/{name} type))`")
+                format!("`{name}:` is not a declared attribute: declare it, `(type {name} : (domain/{name} type))`")
             })
         })
     }
@@ -711,7 +729,7 @@ impl Names<'_> {
     /// each matching the pattern given for it or anything.
     fn constructor(&self, name: &str, args: &[(Option<String>, Pat)]) -> Result<Pattern, ResolveError> {
         let fields = self.claims.record(name).ok_or_else(|| {
-            ResolveError::Invalid(format!("`({name} ..)` is not a pattern: `{name}` is not a claimed record type"))
+            ResolveError::Invalid(format!("`({name} ..)` is not a pattern: `{name}` is not a declared record type"))
         })?;
         let mut given: Vec<Option<Pattern>> = fields.iter().map(|_| None).collect();
         for (i, (label, p)) in args.iter().enumerate() {
@@ -822,8 +840,8 @@ impl Names<'_> {
             }
         }
         Err(ResolveError::Invalid(format!(
-            "a value may be more than one of {}, so matching them needs an order: claim a variant that ranks \
-             them, `(claim name : [{}])`",
+            "a value may be more than one of {}, so matching them needs an order: declare a variant that ranks \
+             them, `(type name : [{}])`",
             distinct.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", "),
             distinct.join(" ")
         )))

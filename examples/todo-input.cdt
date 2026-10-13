@@ -49,7 +49,7 @@
       }
     ")
 
-(claim clear : (demo.todo-input/clear boolean))
+(type clear : (demo.todo-input/clear boolean))
 
 (define (attr name of) (get of name ""))
 

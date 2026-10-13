@@ -1,6 +1,6 @@
 ;; What every codebase starts with: the types that say how something
 ;; went. `(ok todo)` and `(error :not-found)` build them and match them.
 
-(claim (ok ?value) : {(conduct.result/ok ?value)})
-(claim (error ?reason) : {(conduct.result/error ?reason)})
-(claim (result ?value error: ?reason) : [(ok ?value) (error ?reason)])
+(type (ok ?value) : {(conduct.result/ok ?value)})
+(type (error ?reason) : {(conduct.result/error ?reason)})
+(type (result ?value error: ?reason) : [(ok ?value) (error ?reason)])

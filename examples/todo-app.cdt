@@ -143,16 +143,16 @@
       }
     ")
 
-(claim todos : (demo.app/todos (list ?todo)))
-(claim active-count : (demo.app/active integer))
-(claim completed-count : (demo.app/completed integer))
-(claim phase : (demo.app/phase text))
-(claim height : (demo.app/height text))
-(claim about-open : (demo.app/about boolean))
+(type todos : (demo.app/todos (list ?todo)))
+(type active-count : (demo.app/active integer))
+(type completed-count : (demo.app/completed integer))
+(type phase : (demo.app/phase text))
+(type height : (demo.app/height text))
+(type about-open : (demo.app/about boolean))
 
-(claim id : (demo.todo/id text))
-(claim title : (demo.todo/title text))
-(claim completed : (demo.todo/completed boolean))
+(type id : (demo.todo/id text))
+(type title : (demo.todo/title text))
+(type completed : (demo.todo/completed boolean))
 
 (define (attr name of) (get of name ""))
 

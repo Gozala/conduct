@@ -266,7 +266,7 @@ fn contract_violations_are_type_errors() {
     // `update` must return the model `view` accepts.
     let mut cb = element::codebase();
     cb.add_source(
-        "(claim n : (t/n integer))
+        "(type n : (t/n integer))
          (define (init attrs) {n: 0})
          (define (update m handler event attrs) {model: 1, effects: []})
          (define (view m attrs) (h \"p\" {} [(n m)]))",

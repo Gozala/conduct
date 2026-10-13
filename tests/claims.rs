@@ -31,10 +31,10 @@ fn run(src: &str, entry: &str) -> Value {
 }
 
 const PERSON: &str = "
-(claim name : (io.gozala.person/name text))
-(claim age : (io.gozala.person/age integer))
-(claim phone : (io.gozala.contact/phone text))
-(claim person : {name age ? phone})";
+(type name : (io.gozala.person/name text))
+(type age : (io.gozala.person/age integer))
+(type phone : (io.gozala.contact/phone text))
+(type person : {name age ? phone})";
 
 #[test]
 fn a_record_type_constructs() {
@@ -53,7 +53,7 @@ fn a_record_type_constructs() {
         error(&format!("{PERSON} (define x (person \"Ada\" age: 3 email: \"\"))"))
             .contains("no attribute labeled `email:`")
     );
-    assert!(error(&format!("{PERSON} (define x (person \"Ada\" age: \"old\"))")).contains("holds what its claim says"));
+    assert!(error(&format!("{PERSON} (define x (person \"Ada\" age: \"old\"))")).contains("holds what its type says"));
 }
 
 #[test]
@@ -102,20 +102,20 @@ fn type_constructors_take_types() {
          (define (half n) (if (= (rem n 2) 0) (ok (quot n 2)) (error :uneven)))",
     );
     assert!(e.contains("does not fit its claim"), "{e}");
-    assert!(error("(claim (box ?a) : {(t/box ?b)})").contains("`?b` is not one of the type's parameters"));
+    assert!(error("(type (box ?a) : {(t/box ?b)})").contains("`?b` is not one of the type's parameters"));
     assert!(error("(claim (f text) : (result integer)) (define (f x) (ok 1))").contains("needs `error:`"));
-    assert!(error("(claim x : nothing)").contains("`nothing` is not a type"));
-    assert!(error("(claim (x ?a) : (list ?a)) (define y (x 1))").contains("only a record type constructs"));
-    assert!(error("(define (f x) (match x (nothing a) a _ 0))").contains("not a claimed record type"));
+    assert!(error("(type x : nothing)").contains("`nothing` is not a type"));
+    assert!(error("(type (x ?a) : (list ?a)) (define y (x 1))").contains("only a record type constructs"));
+    assert!(error("(define (f x) (match x (nothing a) a _ 0))").contains("not a declared record type"));
 }
 
 const JOB: &str = "
-(claim description : (io.gozala.job/description text))
-(claim started-at : (io.gozala.job/started-at integer))
-(claim completed-at : (io.gozala.job/completed-at integer))
-(claim idle : {description})
-(claim pending : {description started-at})
-(claim done : {description completed-at})";
+(type description : (io.gozala.job/description text))
+(type started-at : (io.gozala.job/started-at integer))
+(type completed-at : (io.gozala.job/completed-at integer))
+(type idle : {description})
+(type pending : {description started-at})
+(type done : {description completed-at})";
 
 #[test]
 fn a_variant_ranks_overlapping_records() {
@@ -123,7 +123,7 @@ fn a_variant_ranks_overlapping_records() {
     // finished is done, though it has also started.
     let src = format!(
         "{JOB}
-         (claim job : [done pending idle])
+         (type job : [done pending idle])
          (define (report job)
            (match job
              (idle description: d) (str \"Idle: \" d)
@@ -139,13 +139,13 @@ fn a_variant_ranks_overlapping_records() {
     // Covering every case is exhaustive: a value without a description
     // is not a job.
     let mut cb = check(&src);
-    let e = cb.add_source("(claim other : (t/other ?other)) (define b (report {other: 1}))").unwrap_err().to_string();
+    let e = cb.add_source("(type other : (t/other ?other)) (define b (report {other: 1}))").unwrap_err().to_string();
     assert!(e.contains("io.gozala.job/description"), "{e}");
 }
 
 #[test]
 fn a_wider_case_ranked_first_is_an_error() {
-    let e = error(&format!("{JOB} (claim job : [idle done pending])"));
+    let e = error(&format!("{JOB} (type job : [idle done pending])"));
     assert!(e.contains("`idle` is ranked above `done`, but every `done` also fits `idle`"), "{e}");
 }
 
@@ -153,7 +153,7 @@ fn a_wider_case_ranked_first_is_an_error() {
 fn overlapping_records_need_a_rank() {
     let e = error(&format!("{JOB} (define (r j) (match j (done description: d) d (idle description: d) d))"));
     assert!(e.contains("a value may be more than one of `done`, `idle`"), "{e}");
-    assert!(e.contains("(claim name : [done idle])"), "{e}");
+    assert!(e.contains("(type name : [done idle])"), "{e}");
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn capabilities_in_signatures() {
 fn constructors_are_values() {
     let cb = check(&format!(
         "{PERSON}
-         (claim pair : {{name age}})
+         (type pair : {{name age}})
          (define oks (map [1 2] each: ok))
          (define pairs (map [\"Ada\"] each: (fn [n] (pair n age: 1))))
          (define make pair)"
@@ -227,16 +227,62 @@ fn constructors_are_values() {
 
 #[test]
 fn a_ranked_match_names_every_case_or_ends_with_any() {
-    let job = format!("{JOB} (claim job : [done pending idle])");
+    let job = format!("{JOB} (type job : [done pending idle])");
     let e = error(&format!("{job} (define (r j) (match j (pending description: d) d (done description: d) d))"));
     assert!(e.contains("this `match` does not name `idle`: name every case of `job`, or end with `_`"), "{e}");
     check(&format!("{job} (define (r j) (match j (pending description: d) d (done description: d) d _ \"?\"))"));
     // Cases with no widest one may leave a value fitting none.
-    let src = "(claim x : (t/x integer)) (claim y : (t/y integer)) (claim z : (t/z integer))
-               (claim a : {x y}) (claim b : {x z}) (claim v : [a b])";
+    let src = "(type x : (t/x integer)) (type y : (t/y integer)) (type z : (t/z integer))
+               (type a : {x y}) (type b : {x z}) (type v : [a b])";
     let e = error(&format!("{src} (define (f q) (match q (a x: n) n (b x: n) n))"));
     assert!(e.contains("a value may fit no case of `v`"), "{e}");
     let cb =
         check(&format!("{src} (define (f q) (match q (a x: n) n (b x: n) (+ n 100) _ 0)) (define r (f (b 1 z: 2)))"));
     assert_eq!(cb.type_of("r").unwrap(), "Int");
+}
+
+#[test]
+fn a_type_declares_and_a_claim_signs() {
+    let cb = check(
+        "(type x : (io.gozala.point/x integer))
+         (type y : (io.gozala.point/y integer))
+         (type point : {x y})
+         (define origin (point 0 y: 0))
+         (define (shift p) (point (+ (x p) 1) y: (y p)))",
+    );
+    assert_eq!(cb.type_of("origin").unwrap(), "{x: Int, y: Int}");
+    assert_eq!(cb.type_of("shift").unwrap(), "({x: Int, y: a & Int}) -> {x: Int, y: a}");
+    // Attributes may be written in place, as a record writes its values.
+    check("(type point : {io.gozala.point/x: integer io.gozala.point/y: integer}) (define o (point 0 y: 0))");
+    check("(type point : {(io.gozala.point/x integer) (io.gozala.point/y integer)}) (define o (point 0 y: 0))");
+    let e = error("(claim pi : integer)");
+    assert!(e.contains("`pi` has no definition in this source"), "{e}");
+    assert!(e.contains("(type pi : ..)"), "{e}");
+    let e = error("(type pi : integer) (define pi 3)");
+    assert!(e.contains("cannot also name a type: its signature is `(claim pi : ..)`"), "{e}");
+    assert!(error("(type show! : integer)").contains("a type is not a task"));
+    assert!(error("(type (t ?a) with: {print} : ?a)").contains("a type needs no capabilities"));
+    let mut cb = check("(define pi 3)");
+    let e = cb.add_source("(claim pi : integer)").unwrap_err().to_string();
+    assert!(e.contains("a claim goes with its definition, in one source"), "{e}");
+}
+
+#[test]
+fn members_of_a_record_are_attributes() {
+    let point = "(type x : (io.gozala.point/x integer))
+                 (type y : (io.gozala.point/y integer))
+                 (type point : {x y})";
+    let e = error(&format!("{point} (type line : {{point}})"));
+    assert!(e.contains("`point` is a type; members of a record are attributes"), "{e}");
+    // An attribute holding a record type nests it.
+    let cb = check(&format!(
+        "{point}
+         (type start : (io.gozala.line/start point))
+         (type end : (io.gozala.line/end point))
+         (type line : {{start end}})
+         (define l (line (point 0 y: 0) end: (point 1 y: 1)))
+         (define (length l) (- (x (end l)) (x (start l))))"
+    ));
+    assert_eq!(cb.type_of("l").unwrap(), "{end: {x: Int, y: Int}, start: {x: Int, y: Int}}");
+    assert_eq!(cb.type_of("length").unwrap(), "({end: {x: Int}, start: {x: Int}}) -> Int");
 }

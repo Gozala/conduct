@@ -33,7 +33,7 @@ fn changing_behaviour_changes_the_hash() {
 
 #[test]
 fn record_field_order_does_not_matter() {
-    let claims = "(claim a : (t/a ?a)) (claim b : (t/b ?b))";
+    let claims = "(type a : (t/a ?a)) (type b : (t/b ?b))";
     assert_eq!(
         hash(&format!("{claims} (define r {{a: 1, b: 2}})"), "r"),
         hash(&format!("{claims} (define r {{b: 2, a: 1}})"), "r")
