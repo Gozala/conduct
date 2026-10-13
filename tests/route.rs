@@ -291,21 +291,21 @@ async fn the_list_route() {
         (
             200,
             json(),
-            r#"{"todos":[{"id":"t1","title":"Buy milk","completed":false},{"id":"t2","title":"Walk dog","completed":true}],"counts":{"active":1,"completed":1}}"#.into(),
+            r#"{"counts":{"active":1,"completed":1},"todos":[{"completed":false,"id":"t1","title":"Buy milk"},{"completed":true,"id":"t2","title":"Walk dog"}]}"#.into(),
         ),
-        (200, json(), r#"{"todos":[{"id":"t1","title":"Buy milk","completed":false}],"counts":{"active":1,"completed":1}}"#.into()),
-        (201, json(), r#"{"id":"t3","title":"Write tests","completed":false}"#.into()),
+        (200, json(), r#"{"counts":{"active":1,"completed":1},"todos":[{"completed":false,"id":"t1","title":"Buy milk"}]}"#.into()),
+        (201, json(), r#"{"completed":false,"id":"t3","title":"Write tests"}"#.into()),
         (422, empty(), String::new()),
         (204, empty(), String::new()),
         (400, empty(), String::new()),
         (
             200,
             json(),
-            r#"{"todos":[{"id":"t1","title":"Buy milk","completed":true},{"id":"t2","title":"Walk dog","completed":true},{"id":"t3","title":"Write tests","completed":true}],"counts":{"active":0,"completed":3}}"#.into(),
+            r#"{"counts":{"active":0,"completed":3},"todos":[{"completed":true,"id":"t1","title":"Buy milk"},{"completed":true,"id":"t2","title":"Walk dog"},{"completed":true,"id":"t3","title":"Write tests"}]}"#.into(),
         ),
         (204, empty(), String::new()),
         (405, empty(), String::new()),
-        (200, json(), r#"{"todos":[],"counts":{"active":0,"completed":0}}"#.into()),
+        (200, json(), r#"{"counts":{"active":0,"completed":0},"todos":[]}"#.into()),
     ];
     for (i, (got, want)) in answers.iter().zip(&expected).enumerate() {
         assert_eq!(got, want, "response {i}");
@@ -353,8 +353,8 @@ async fn the_item_route() {
     let json = || vec![("content-type".to_string(), "application/json".to_string()), route_header("/api/todos/:id")];
     let empty = || vec![route_header("/api/todos/:id")];
     let expected: Vec<Answer> = vec![
-        (200, json(), r#"{"id":"t1","title":"Buy milk","completed":true}"#.into()),
-        (200, json(), r#"{"id":"t2","title":"Walk the dog","completed":false}"#.into()),
+        (200, json(), r#"{"completed":true,"id":"t1","title":"Buy milk"}"#.into()),
+        (200, json(), r#"{"completed":false,"id":"t2","title":"Walk the dog"}"#.into()),
         (422, empty(), String::new()),
         (404, empty(), String::new()),
         (204, empty(), String::new()),
@@ -378,7 +378,7 @@ async fn nothing_from_the_model_is_the_empty_map() {
     let src = "(define pattern \"/x\")
                (define (handle! request)
                  (let [r (toggle-all! true)]
-                   (json {\"eq\" (= r {}) \"json\" (to-json r)} status: 200)))";
+                   (json {:eq (= r {}) :json (to-json r)} status: 200)))";
     let answers = serve(src, model(&[]), &[("GET", "/x", "")]).await;
     assert_eq!(answers[0].2, r#"{"eq":true,"json":"{}"}"#);
 }

@@ -49,9 +49,7 @@
       }
     ")
 
-(claim clear : (demo.todo-input/clear boolean))
-
-(define (attr name of) (get of name ""))
+(type clear : (demo.todo-input/clear boolean))
 
 (define (init attrs) {clear: false})
 
@@ -69,18 +67,18 @@
     :else {model: model, effects: []}))
 
 (define (field model)
-  (let [base {"class" "new-todo" "placeholder" "What needs to be done?" "autofocus" ""}]
-    (if (clear model) (assoc base "value" "") base)))
+  (let [base {:class "new-todo" :placeholder "What needs to be done?" :autofocus ""}]
+    (if (clear model) (assoc base :value "") base)))
 
 (define (view model attrs)
-  (h "div" {"class" "row"}
-    [(if (= (attr "has-todos" of: attrs) "true")
-       (h "input" {"id" "toggle-all"
-                   "class" "toggle-all"
-                   "type" "checkbox"
-                   "checked" (attr "all-completed" of: attrs)
-                   "aria-label" "Mark all as complete"}
+  (h "div" {:class "row"}
+    [(if (= (get :has-todos of: attrs or: "") "true")
+       (h "input" {:id "toggle-all"
+                   :class "toggle-all"
+                   :type "checkbox"
+                   :checked (get :all-completed of: attrs or: "")
+                   :aria-label "Mark all as complete"}
           []
-          {"change" "toggleAll"})
+          {:change "toggleAll"})
        [])
-     (h "input" (field model) [] {"keydown" "key"})]))
+     (h "input" (field model) [] {:keydown "key"})]))

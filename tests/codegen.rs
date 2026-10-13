@@ -59,12 +59,12 @@ fn closures_capture() {
 
 #[test]
 fn strings_and_defaults() {
-    let src = "(define d {\"title\" \"Buy milk\"})
-               (define t (str (get d \"title\" \"untitled\") \" / \" (get d \"nope\" \"none\") \" \" 42 \" \" true))";
+    let src = "(define d {:title \"Buy milk\"})
+               (define t (str (get :title of: d or: \"untitled\") \" / \" (get :nope of: d or: \"none\") \" \" 42 \" \" true))";
     assert_eq!(run(src, "t", &[]), Value::Str("Buy milk / none 42 true".into()));
     // An attribute read with a default, and a list's first with one.
-    let src = "(claim title : (t/title ?title))
-               (claim id : (t/id ?id))
+    let src = "(type title : (t/title ?title))
+               (type id : (t/id ?id))
                (define (title-of r) (title r \"untitled\"))
                (define n [(title-of {title: \"a\", id: 1}) (title-of {id: 2}) (first [] \"none\") (first [\"x\"] \"none\")])";
     let strs = |v: &[&str]| Value::List(v.iter().map(|s| Value::Str(s.to_string())).collect());
@@ -73,7 +73,7 @@ fn strings_and_defaults() {
 
 #[test]
 fn records_and_equality() {
-    let src = "(claim a : (t/a ?a)) (claim b : (t/b ?b))
+    let src = "(type a : (t/a ?a)) (type b : (t/b ?b))
                (define r {b: 2, a: \"x\"}) (define same (= r {a: \"x\", b: 2})) (define bv (b r))";
     assert_eq!(run(src, "same", &[]), Value::Bool(true));
     assert_eq!(run(src, "bv", &[]), Value::Int(2));
@@ -82,14 +82,14 @@ fn records_and_equality() {
     fields.sort_by(|x, y| x.0.cmp(&y.0));
     assert_eq!(fields, vec![("t/a".into(), Value::Str("x".into())), ("t/b".into(), Value::Int(2))]);
     assert_eq!(run("(define e (= [1 \"a\" :x] [1 \"a\" :x]))", "e", &[]), Value::Bool(true));
-    assert_eq!(run("(define e (= {\"a\" 1 \"b\" 2} {\"b\" 2 \"a\" 1}))", "e", &[]), Value::Bool(true));
+    assert_eq!(run("(define e (= {:a 1 :b 2} {:b 2 :a 1}))", "e", &[]), Value::Bool(true));
 }
 
 #[test]
 fn lists_and_dicts() {
     let src = "(define xs (filter (conj (concat [1 2] [3]) 4) where: (fn [x] (> x 1))))
                (define n (count (rest xs)))
-               (define d (dissoc (assoc (assoc {} \"a\" 1) \"b\" 2) \"a\"))";
+               (define d (dissoc (assoc (assoc {} :a 1) :b 2) :a))";
     assert_eq!(run(src, "xs", &[]), Value::List(vec![Value::Int(2), Value::Int(3), Value::Int(4)]));
     assert_eq!(run(src, "n", &[]), Value::Int(2));
     assert_eq!(run(src, "d", &[]), Value::Dict(vec![("b".into(), Value::Int(2))]));
@@ -97,7 +97,7 @@ fn lists_and_dicts() {
 
 #[test]
 fn views() {
-    let src = "(define v (h \"li\" {\"class\" \"done\"} [\"hi\" (h \"b\")] {\"click\" \"go\"}))";
+    let src = "(define v (h \"li\" {:class \"done\"} [\"hi\" (h \"b\")] {:click \"go\"}))";
     let Value::View { tag, attrs, children, events } = run(src, "v", &[]) else { panic!() };
     assert_eq!(tag, "li");
     assert_eq!(attrs, vec![("class".into(), Value::Str("done".into()))]);
@@ -126,11 +126,11 @@ fn ownership_edge_cases() {
 
     // Defaults: a default not taken is dropped, and a bound attribute
     // its arm ignores is dropped.
-    let src = "(claim k : (t/k ?k)) (claim n : (t/n ?n))
-               (define (f d fallback) (get d \"k\" (str fallback \"!\")))
+    let src = "(type k : (t/k ?k)) (type n : (t/n ?n))
+               (define (f d fallback) (get :k of: d or: (str fallback \"!\")))
                (define (g r) (match r {k: x} 1 _ 0))
                (define (h r fallback) (k r (str fallback \"!\")))
-               (define e (f {\"k\" \"v\"} fallback: \"unused\"))
+               (define e (f {:k \"v\"} fallback: \"unused\"))
                (define gk (g {k: [\"heap\"], n: 1}))
                (define m (h {k: \"v\", n: 1} fallback: \"unused\"))";
     assert_eq!(run(src, "e", &[]), Value::Str("v".into()));
@@ -150,8 +150,8 @@ fn ownership_edge_cases() {
 
 #[test]
 fn record_update_and_trim() {
-    let src = "(claim n : (t/n ?n)) (claim label : (t/label ?label))
-               (claim a : (t/a ?a)) (claim b : (t/b ?b))
+    let src = "(type n : (t/n ?n)) (type label : (t/label ?label))
+               (type a : (t/a ?a)) (type b : (t/b ?b))
                (define (bump m) (assoc m n: (+ (n m) 1)))
                (define r (bump (bump {n: 0, label: \"x\"})))
                (define added (assoc {b: 2} a: \"new\"))
@@ -178,7 +178,7 @@ fn json_round_trips() {
          (define completed (json-int (json-get (json-get doc \"counts\") \"completed\")))
          (define missing (json-int (json-get doc \"nope\")))
          (define bad (json-str (parse-json \"{{\\\"a\\\": }}\")))
-         (define encoded (to-json {{\"title\" \"say \\\"hi\\\"\\n\" \"completed\" false \"tags\" [1 (parse-json \"null\") true]}}))
+         (define encoded (to-json {{:title \"say \\\"hi\\\"\\n\" :completed false :tags [1 (parse-json \"null\") true]}}))
          (define again (json-str (json-get (parse-json encoded) \"title\")))"
     );
     assert_eq!(run(&src, "first-title", &[]), Value::Str("Buy \"oat\" milk é😀".into()));
@@ -189,7 +189,7 @@ fn json_round_trips() {
     assert_eq!(run(&src, "bad", &[]), Value::Str("".into()));
     assert_eq!(
         run(&src, "encoded", &[]),
-        Value::Str(r#"{"title":"say \"hi\"\u000a","completed":false,"tags":[1,null,true]}"#.into())
+        Value::Str(r#"{"completed":false,"tags":[1,null,true],"title":"say \"hi\"\u000a"}"#.into())
     );
     assert_eq!(run(&src, "again", &[]), Value::Str("say \"hi\"\n".into()));
 }
@@ -208,9 +208,9 @@ fn split_strings() {
 #[test]
 fn keywords_and_match() {
     let src = r#"
-(claim status : (t/status ?status))
-(claim since : (t/since ?since))
-(claim k : (t/k ?k))
+(type status : (t/status ?status))
+(type since : (t/since ?since))
+(type k : (t/k ?k))
 (define (label s) (match s :active "Active" :suspended "Paused"))
 (define (handle h n) (match h "inc" (+ n 1) "dec" (- n 1) _ n))
 (define labels [(label :active) (label :suspended)])
@@ -234,12 +234,12 @@ fn keywords_and_match() {
 #[test]
 fn matching_shapes() {
     let src = r#"
-(claim started-at : (t/started-at ?started-at))
-(claim id : (t/id ?id))
-(claim status : (t/status ?status))
-(claim since : (t/since ?since))
-(claim owner : (t/owner ?owner))
-(claim name : (t/name ?name))
+(type started-at : (t/started-at ?started-at))
+(type id : (t/id ?id))
+(type status : (t/status ?status))
+(type since : (t/since ?since))
+(type owner : (t/owner ?owner))
+(type name : (t/name ?name))
 (define (since-of job) (match job {started-at: at} (str "Since " at) _ "not started"))
 (define (describe job)
   (match job
@@ -282,7 +282,7 @@ fn run_counting(src: &str, entry: &str) -> (Value, i32) {
 fn unique_values_are_updated_in_place() {
     // A thousand updates of a record held by nothing else: the record is
     // changed in place, so the loop allocates nothing per step.
-    let src = "(claim n : (t/n ?n)) (claim tag : (t/tag ?tag))
+    let src = "(type n : (t/n ?n)) (type tag : (t/tag ?tag))
                (define (bump m times) (if (= times 0) m (bump (assoc m n: (+ (n m) 1)) times: (- times 1))))
                (define r (bump {n: 0, tag: \"x\"} times: 1000))";
     let (value, allocs) = run_counting(src, "r");
@@ -309,12 +309,12 @@ fn unique_values_are_updated_in_place() {
 #[test]
 fn shared_values_are_copied() {
     // The original is still used after the update, so it must not change.
-    let src = "(claim n : (t/n ?n))
+    let src = "(type n : (t/n ?n))
                (define (both m) [(assoc m n: 2) m]) (define r (both {n: 1}))
                (define (grow xs) [(conj xs 3) xs]) (define l (grow [1 2]))
                (define (dbl xs) [(map xs each: (fn [x] (* x 2))) xs]) (define m (dbl [1 2]))
                (define (keep xs) [(filter xs where: (fn [x] (> x 1))) xs]) (define f (keep [1 2]))
-               (define (put d) [(assoc d \"a\" 2) (dissoc d \"a\") d]) (define d (put {\"a\" 1}))";
+               (define (put d) [(assoc d :a 2) (dissoc d :a) d]) (define d (put {:a 1}))";
     let ints = |v: &[i64]| Value::List(v.iter().map(|n| Value::Int(*n)).collect());
     let Value::List(r) = run(src, "r", &[]) else { panic!() };
     assert_eq!(name_fields(r[1].clone(), &["t/n"]), [("t/n".into(), Value::Int(1))]);
@@ -331,7 +331,7 @@ fn shared_values_are_copied() {
 fn record_fields_are_evaluated_in_source_order() {
     // Fields are stored by id but evaluated in the order ownership was
     // worked out in; `j`'s last use must come last.
-    let src = r#"(claim id : (t/id ?id)) (claim t : (t/t ?t))
+    let src = r#"(type id : (t/id ?id)) (type t : (t/t ?t))
                  (define (f j) {id: (json-str (json-get j "id")), t: (json-str (json-get j "t"))})
                  (define r (f (parse-json "{\"id\":\"a\"}")))"#;
     run(src, "r", &[]);
@@ -340,8 +340,8 @@ fn record_fields_are_evaluated_in_source_order() {
 #[test]
 fn variants_match_and_bind() {
     let src = r#"
-(claim title : (t/title ?title))
-(claim n : (t/n ?n))
+(type title : (t/title ?title))
+(type n : (t/n ?n))
 (define (check t) (if (= t "") (error :empty-title) (ok {title: t, n: (count (split t " "))})))
 (define (find id) (if (= id "x") (error :not-found) (check id)))
 (define (show r)
@@ -361,9 +361,9 @@ fn variants_match_and_bind() {
 
 #[test]
 fn the_empty_map_is_an_empty_record_too() {
-    let src = "(claim a : (t/a ?a))
+    let src = "(type a : (t/a ?a))
                (define e (assoc {} a: 1))
-               (define same (= {} (dissoc (assoc {} \"k\" 1) \"k\")))
+               (define same (= {} (dissoc (assoc {} :k 1) :k)))
                (define text (to-json {}))";
     assert_eq!(run(src, "same", &[]), Value::Bool(true));
     assert_eq!(run(src, "text", &[]), Value::Str("{}".into()));

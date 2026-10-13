@@ -61,7 +61,7 @@ impl WasiHttpView for State {
 /// line, when it connects, and reports each response as a custom event.
 /// It posts a body to each URL but `/big`, which it gets with none.
 const FETCHER: &str = r#"
-(claim n : (t/n integer))
+(type n : (t/n integer))
 (define attributes ["urls"])
 (define (init attrs) {n: 0})
 (define (ask url)
@@ -72,7 +72,7 @@ const FETCHER: &str = r#"
   (cond
     (= handler "connected")
       {model: m
-       effects: (map (filter (split (get attrs "urls" "") "\n") where: (fn [u] (not (= u "")))) each: ask)}
+       effects: (map (filter (split (get :urls of: attrs or: "") "\n") where: (fn [u] (not (= u "")))) each: ask)}
     (= handler "answer")
       {model: {n: (+ (n m) 1)}
        effects: [(emit "answered" (str (status event 0) " " (value event "")))]}

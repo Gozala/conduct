@@ -12,7 +12,7 @@ pub enum Binding {
 pub trait Globals {
     /// The type scheme of another definition.
     fn scheme(&self, hash: &Hash) -> Option<Scheme>;
-    /// The value type claimed for an attribute, by its global name.
+    /// The value type declared for an attribute, by its global name.
     fn attribute(&self, global: &str) -> Option<Ty>;
     /// The host functions that need a capability: each one's name and
     /// type.
@@ -304,13 +304,13 @@ impl Infer<'_> {
     }
 
     /// The type of `value`, set as the attribute `global`: it must fit
-    /// the attribute's claimed type.
+    /// the attribute's declared type.
     fn attribute(&self, global: &str, value: &Term, env: &mut Vec<Binding>, level: u32) -> Result<Ty> {
         let t = self.term(value, env, level)?;
         if let Some(claimed) = self.globals.attribute(global) {
             self.solver
                 .constrain(&t, &claimed)
-                .map_err(|e| TypeError(format!("the attribute `{global}` holds what its claim says: {e}")))?;
+                .map_err(|e| TypeError(format!("the attribute `{global}` holds what its type says: {e}")))?;
         }
         Ok(t)
     }
@@ -372,15 +372,15 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         // The default comes back for a missing key.
         Op::Get => {
             let v = var();
-            (vec![Ty::dict(v.clone()), Ty::str(), v.clone()], v)
+            (vec![Ty::dict(v.clone()), keyword(), v.clone()], v)
         }
         Op::Assoc => {
             let v = var();
-            (vec![Ty::dict(v.clone()), Ty::str(), v.clone()], Ty::dict(v))
+            (vec![Ty::dict(v.clone()), keyword(), v.clone()], Ty::dict(v))
         }
         Op::Dissoc => {
             let v = var();
-            (vec![Ty::dict(v.clone()), Ty::str()], Ty::dict(v))
+            (vec![Ty::dict(v.clone()), keyword()], Ty::dict(v))
         }
         Op::H => (vec![Ty::str(), Ty::dict(Ty::str()), Ty::list(Ty::Top), Ty::dict(Ty::str())], Ty::View),
         Op::Emit => (vec![Ty::str(), Ty::str()], Ty::Effect),
@@ -398,6 +398,10 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         Op::HasField => (vec![Ty::Top, Ty::str()], Ty::bool()),
         Op::WithEnv => (vec![Ty::Top, Ty::Top], Ty::Top),
     }
+}
+
+fn keyword() -> Ty {
+    Ty::Prim(crate::types::Prim::Keyword)
 }
 
 fn json() -> Ty {

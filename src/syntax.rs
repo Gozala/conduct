@@ -33,7 +33,7 @@ pub enum Expr {
     If(Box<Expr>, Box<Expr>, Box<Expr>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
-    /// `{name: "Ada"}`: keys as written, a claimed attribute's local name
+    /// `{name: "Ada"}`: keys as written, a declared attribute's local name
     /// or a global one.
     Record(Vec<(String, Expr)>, Span),
     /// `(assoc record name: value ..)`: a copy of a record with
@@ -103,7 +103,7 @@ pub struct Def {
 /// A type, as a claim writes it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypeExpr {
-    /// `text`, `integer`, a claimed name.
+    /// `text`, `integer`, a declared name.
     Name(String, Span),
     /// `?a`.
     Var(String),
@@ -183,14 +183,15 @@ impl fmt::Display for TypeExpr {
     }
 }
 
-/// `(claim name : type)` or `(claim (name params ..) with: caps : type)`.
-/// With a `define` of the same name it is a signature; without one it
-/// defines a type: an attribute, a record, a variant, or a constructor
-/// of one of those.
+/// `(claim name : type)` or `(claim (name params ..) with: caps : type)`:
+/// the signature of a `define` of the same name in the same source. A
+/// `type` is written the same way, `(type name : type)` or
+/// `(type (name ?a ..) : type)`, and declares what a name is: an
+/// attribute, a record, a variant, or a constructor of one of those.
 #[derive(Clone, Debug)]
 pub struct Claim {
     pub name: String,
-    /// Whether the name is claimed marked `!`: a definition that makes a
+    /// Whether the name is written marked `!`: a definition that makes a
     /// task.
     pub performs: bool,
     /// The parameters, when the claim is written `(name params ..)`.
@@ -220,7 +221,11 @@ impl Claim {
 #[derive(Clone, Debug)]
 pub enum Item {
     Def(Def),
+    /// `(claim name : type)`: what type a definition has.
     Claim(Claim),
+    /// `(type name : type)`: what a name is, an attribute, a record type,
+    /// a variant, or a constructor of one, written as a claim is.
+    Type(Claim),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -245,7 +250,7 @@ fn err<T>(message: impl Into<String>, span: Span) -> Result<T> {
 
 /// Words that cannot name a definition or a local.
 const RESERVED: &[&str] =
-    &["define", "claim", "fn", "let", "do", "if", "and", "or", "cond", "match", "nil", "true", "false"];
+    &["define", "claim", "type", "fn", "let", "do", "if", "and", "or", "cond", "match", "nil", "true", "false"];
 
 /// What to write instead of the forms conduct no longer has.
 fn retired(name: &str) -> Option<&'static str> {
@@ -254,7 +259,9 @@ fn retired(name: &str) -> Option<&'static str> {
             "conduct has no `nil`: leave an attribute out of a record, return a variant such as \
              `{error: :not-found}`, or use `[]` for no children"
         }
-        "??" => "conduct has no `??`: read an attribute with a default, `(title todo \"\")`, or `(get d k default)`",
+        "??" => {
+            "conduct has no `??`: read an attribute with a default, `(title todo \"\")`, or `(get :key of: dictionary or: default)`"
+        }
         "if-some" => "conduct has no `if-some`: `match` the value, `(match r {title: t} .. _ ..)`",
         "nil?" | "some?" => "conduct has no `nil`: `match` on whether an attribute is there, `{title: t}`",
         "def" => "`def` is now `define`: `(define name value)`",
@@ -268,7 +275,8 @@ pub fn items(forms: &[Sexp]) -> Result<Vec<Item>> {
     forms.iter().map(item).collect()
 }
 
-const TOP: &str = "a top-level form is `(define name value)`, `(define (name params ..) body)`, or a `claim`";
+const TOP: &str =
+    "a top-level form is `(define name value)`, `(define (name params ..) body)`, a `claim` of one, or a `type`";
 
 fn item(form: &Sexp) -> Result<Item> {
     let Sexp::List(items, span) = form else {
@@ -276,7 +284,14 @@ fn item(form: &Sexp) -> Result<Item> {
     };
     match items.first().and_then(Sexp::as_symbol) {
         Some("define") => define(&items[1..], *span).map(Item::Def),
-        Some("claim") => claim(&items[1..], *span),
+        Some("claim") => claim(&items[1..], *span, false).map(Item::Claim),
+        Some("type") => {
+            let c = claim(&items[1..], *span, true)?;
+            if c.performs {
+                return err(format!("a type is not a task: write `{}`, not `{}!`", c.name, c.name), *span);
+            }
+            Ok(Item::Type(c))
+        }
         Some(name) if retired(name).is_some() => err(retired(name).unwrap(), *span),
         _ => err(TOP, *span),
     }
@@ -355,36 +370,44 @@ fn parameters(items: &[Sexp], span: Span) -> Result<Vec<Param>> {
     Ok(params)
 }
 
-fn claim(args: &[Sexp], span: Span) -> Result<Item> {
-    const FORM: &str = "a claim is `(claim name : type)` or `(claim (name params ..) with: capabilities : type)`";
+fn claim(args: &[Sexp], span: Span, is_type: bool) -> Result<Claim> {
+    let form = if is_type {
+        "a type is `(type name : type)` or `(type (name ?a ..) : type)`"
+    } else {
+        "a claim is `(claim name : type)` or `(claim (name params ..) with: capabilities : type)`"
+    };
+    let form = form.to_string();
     let Some((head, rest)) = args.split_first() else {
-        return err(FORM, span);
+        return err(form, span);
     };
     let ((name, performs), params) = match head {
         Sexp::Symbol(..) => (marked(head)?, None),
         Sexp::List(items, hspan) => {
             let Some((name, params)) = items.split_first() else {
-                return err(FORM, *hspan);
+                return err(form, *hspan);
             };
             let params = if params.is_empty() { None } else { Some(type_args(params, *hspan)?) };
             (marked(name)?, params)
         }
-        other => return err(FORM, other.span()),
+        other => return err(form, other.span()),
     };
     let (with, rest) = match rest {
+        [Sexp::Label(l, _), ..] if l == "with" && is_type => {
+            return err("a type needs no capabilities; only a task's signature says `with:`", span);
+        }
         [Sexp::Label(l, _), caps, rest @ ..] if l == "with" => (Some(capabilities(caps)?), rest),
         _ => (None, rest),
     };
     let [Sexp::Label(colon, _), ty] = rest else {
-        return err(FORM, span);
+        return err(form, span);
     };
     if !colon.is_empty() {
-        return err(format!("{FORM}, with `:` before the type"), span);
+        return err(format!("{form}, with `:` before the type"), span);
     }
     if with.is_some() && !performs {
         return err(format!("only a task needs capabilities: claim `{name}!` with them"), span);
     }
-    Ok(Item::Claim(Claim { name, performs, params, with, ty: type_expr(ty)?, span }))
+    Ok(Claim { name, performs, params, with, ty: type_expr(ty)?, span })
 }
 
 /// `?a error: ?e`: types, each but the first after its label.
@@ -464,7 +487,8 @@ fn type_expr(form: &Sexp) -> Result<TypeExpr> {
         Sexp::Map(items, _) => {
             let mut members = Vec::new();
             let mut optional = None;
-            for item in items {
+            let mut rest = items.iter();
+            while let Some(item) = rest.next() {
                 match item {
                     Sexp::Symbol(s, sspan) if s == "?" => {
                         if optional.is_some() {
@@ -473,6 +497,14 @@ fn type_expr(form: &Sexp) -> Result<TypeExpr> {
                         optional = Some(members.len());
                     }
                     Sexp::Symbol(s, sspan) => members.push(Member::Name(s.clone(), *sspan)),
+                    // `io.gozala.point/x: integer`, as a record writes its
+                    // value.
+                    Sexp::Label(global, lspan) if global.contains('/') => {
+                        let Some(value) = rest.next() else {
+                            return err(format!("the attribute `{global}:` needs the type of its values"), *lspan);
+                        };
+                        members.push(Member::Inline(global.clone(), type_expr(value)?))
+                    }
                     Sexp::List(parts, pspan) => match parts.as_slice() {
                         [Sexp::Symbol(global, _), value] if global.contains('/') => {
                             members.push(Member::Inline(global.clone(), type_expr(value)?))
@@ -557,20 +589,27 @@ fn map_literal(items: &[Sexp], span: Span) -> Result<Expr> {
         return err("a map needs an even number of forms", span);
     }
     let pairs: Vec<(&Sexp, &Sexp)> = items.chunks(2).map(|c| (&c[0], &c[1])).collect();
-    // An empty map is a dictionary: a record needs at least one field.
-    if pairs.is_empty() || matches!(pairs[0].0, Sexp::Str(..)) {
+    if let Some((Sexp::Str(key, kspan), _)) = pairs.first() {
+        return err(format!("a dictionary's keys are keywords: write `:{key}`, not `\"{key}\"`"), *kspan);
+    }
+    // `{}` is nothing at all, a dictionary or a record; keyword keys make
+    // a dictionary, its entries sorted by key.
+    if pairs.is_empty() || matches!(pairs[0].0, Sexp::Keyword(..)) {
         let mut entries: Vec<(String, Expr)> = Vec::new();
         for (k, v) in pairs {
-            let Sexp::Str(key, _) = k else {
-                return err("a dictionary's keys must all be strings", k.span());
+            let key = match k {
+                Sexp::Keyword(key, _) => key,
+                Sexp::Str(key, kspan) => {
+                    return err(format!("a dictionary's keys are keywords: write `:{key}`, not `\"{key}\"`"), *kspan);
+                }
+                other => return err("a dictionary's keys are all keywords, `:name`", other.span()),
             };
-            let value = expr(v)?;
-            if let Some(slot) = entries.iter_mut().find(|(name, _)| name == key) {
-                slot.1 = value;
-            } else {
-                entries.push((key.clone(), value));
+            if entries.iter().any(|(name, _)| name == key) {
+                return err(format!("the key `:{key}` appears twice"), k.span());
             }
+            entries.push((key.clone(), expr(v)?));
         }
+        entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
         return Ok(Expr::Dict(entries));
     }
     let mut fields: Vec<(String, Expr)> = Vec::new();
@@ -578,7 +617,10 @@ fn map_literal(items: &[Sexp], span: Span) -> Result<Expr> {
         let name = match k {
             Sexp::Label(name, _) if !name.is_empty() => name,
             Sexp::Keyword(name, kspan) => {
-                return err(format!("a record's keys are attributes: write `{name}:`, not `:{name}`"), *kspan);
+                return err(
+                    format!("a record's keys are attributes, a dictionary's keywords: write `{name}:`, not `:{name}`"),
+                    *kspan,
+                );
             }
             other => return err("a record's keys are attributes, `name:`", other.span()),
         };
@@ -640,7 +682,7 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
     if let Some(name) = head.as_symbol() {
         match name {
             n if retired(n).is_some() => return err(retired(n).unwrap(), span),
-            "define" | "claim" => return err(format!("`{name}` is only allowed at the top level"), span),
+            "define" | "claim" | "type" => return err(format!("`{name}` is only allowed at the top level"), span),
             "fn" | "fn!" => {
                 let [Sexp::Vector(params, pspan), body @ ..] = args else {
                     return err(format!("`{name}` takes a parameter vector and a body"), span);

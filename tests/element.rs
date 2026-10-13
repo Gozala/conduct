@@ -212,9 +212,9 @@ async fn todo_item_renders_and_reports_changes() {
     assert_eq!(
         el.render(id).await,
         "<li class=\"\">\
-         <input #toggle class=\"toggle\" type=\"checkbox\" aria-label=\"Toggle the todo\" .checked=false @change=toggle></input>\
+         <input #toggle aria-label=\"Toggle the todo\" class=\"toggle\" type=\"checkbox\" .checked=false @change=toggle></input>\
          <label @dblclick=edit>Buy milk</label>\
-         <button class=\"destroy\" aria-label=\"Delete the todo\" @click=destroy>×</button>\
+         <button aria-label=\"Delete the todo\" class=\"destroy\" @click=destroy>×</button>\
          </li>"
     );
 
@@ -233,7 +233,7 @@ async fn todo_item_renders_and_reports_changes() {
     assert_eq!(
         el.render(id).await,
         "<li class=\"editing\">\
-         <input #edit class=\"edit\" autofocus=\"\" aria-label=\"Edit the todo\" .value=\"Buy milk\" @keydown=key @blur=save></input>\
+         <input #edit aria-label=\"Edit the todo\" autofocus=\"\" class=\"edit\" .value=\"Buy milk\" @blur=save @keydown=key></input>\
          </li>"
     );
     el.handle(id, "key", event("keydown", Some("Buy oat milk"), Some("Enter"))).await;
@@ -266,7 +266,7 @@ fn contract_violations_are_type_errors() {
     // `update` must return the model `view` accepts.
     let mut cb = element::codebase();
     cb.add_source(
-        "(claim n : (t/n integer))
+        "(type n : (t/n integer))
          (define (init attrs) {n: 0})
          (define (update m handler event attrs) {model: 1, effects: []})
          (define (view m attrs) (h \"p\" {} [(n m)]))",
@@ -304,8 +304,8 @@ async fn todo_app_talks_to_the_api() {
     el.connect(id).await;
     assert_eq!(el.take_requests(), ["GET /api/todos?filter=all"]);
     let page = el.render(id).await;
-    assert!(page.contains("<todo-item #t1 todo-id=\"t1\" title=\"Buy milk\" completed=\"false\""), "{page}");
-    assert!(page.contains("<todo-item #t2 todo-id=\"t2\" title=\"Walk\" completed=\"true\""), "{page}");
+    assert!(page.contains("<todo-item #t1 completed=\"false\" title=\"Buy milk\" todo-id=\"t1\""), "{page}");
+    assert!(page.contains("<todo-item #t2 completed=\"true\" title=\"Walk\" todo-id=\"t2\""), "{page}");
     assert!(page.contains("<todo-footer active=\"1\" completed=\"1\" filter=\"all\""), "{page}");
 
     // A change goes out, and the list is loaded again before the
@@ -313,7 +313,7 @@ async fn todo_app_talks_to_the_api() {
     el.handle(id, "add", event("todo-add", Some("Read"), None)).await;
     assert_eq!(el.take_requests(), ["POST /api/todos {\"title\":\"Read\"}", "GET /api/todos?filter=all"]);
     let page = el.render(id).await;
-    assert!(page.contains("title=\"Read\" completed=\"false\""), "{page}");
+    assert!(page.contains("<todo-item #t3 completed=\"false\" title=\"Read\""), "{page}");
     assert!(page.contains("<todo-footer active=\"2\" completed=\"1\""), "{page}");
 
     el.handle(id, "toggle", event("todo-toggle", Some("t1"), None)).await;
@@ -353,7 +353,7 @@ const TODO_FOOTER: &str = include_str!("../examples/todo-footer.cdt");
 async fn todo_input_adds_and_clears() {
     let mut el = Element::load(TODO_INPUT).await;
     let id = el.create(&[("has-todos", "false"), ("all-completed", "false")]).await;
-    let field = "<input class=\"new-todo\" placeholder=\"What needs to be done?\" autofocus=\"\"";
+    let field = "<input autofocus=\"\" class=\"new-todo\" placeholder=\"What needs to be done?\"";
     assert_eq!(el.render(id).await, format!("<div class=\"row\">{field} @keydown=key></input></div>"));
 
     // Enter adds the trimmed title and clears the field once.
@@ -372,7 +372,7 @@ async fn todo_input_adds_and_clears() {
     el.set_attr(id, "all-completed", Some("true")).await;
     let html = el.render(id).await;
     assert!(
-        html.starts_with("<div class=\"row\"><input id=\"toggle-all\" class=\"toggle-all\" type=\"checkbox\""),
+        html.starts_with("<div class=\"row\"><input aria-label=\"Mark all as complete\" class=\"toggle-all\" id=\"toggle-all\" type=\"checkbox\""),
         "{html}"
     );
     assert!(html.contains(".checked=true @change=toggleAll"), "{html}");
@@ -389,9 +389,9 @@ async fn todo_footer_counts_filters_and_clears() {
         "<footer class=\"footer\">\
          <span class=\"todo-count\"><strong>1</strong> item left</span>\
          <ul class=\"filters\">\
-         <li><a href=\"#/\" class=\"\">All</a></li>\
-         <li><a href=\"#/active\" class=\"selected\">Active</a></li>\
-         <li><a href=\"#/completed\" class=\"\">Completed</a></li>\
+         <li><a class=\"\" href=\"#/\">All</a></li>\
+         <li><a class=\"selected\" href=\"#/active\">Active</a></li>\
+         <li><a class=\"\" href=\"#/completed\">Completed</a></li>\
          </ul>\
          </footer>"
     );
@@ -424,7 +424,7 @@ async fn todo_app_runs_on_conduct_routes() {
 
     el.connect(id).await;
     let page = el.render(id).await;
-    assert!(page.contains("<todo-item #t1 todo-id=\"t1\" title=\"Buy milk\" completed=\"false\""), "{page}");
+    assert!(page.contains("<todo-item #t1 completed=\"false\" title=\"Buy milk\" todo-id=\"t1\""), "{page}");
     assert!(page.contains("<todo-footer active=\"1\" completed=\"1\" filter=\"all\""), "{page}");
 
     el.handle(id, "add", event("todo-add", Some("Read"), None)).await;
@@ -446,7 +446,7 @@ async fn todo_app_runs_on_conduct_routes() {
         ]
     );
     let page = el.render(id).await;
-    assert!(page.contains("title=\"Read a book\" completed=\"false\""), "{page}");
+    assert!(page.contains("<todo-item #t3 completed=\"false\" title=\"Read a book\""), "{page}");
     assert!(!page.contains("Buy milk") && !page.contains("Walk"), "{page}");
     assert!(page.contains("<todo-footer active=\"1\" completed=\"0\""), "{page}");
     // Every change reached the model through a route.

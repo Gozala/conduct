@@ -22,6 +22,8 @@ pub enum Prim {
     Str,
     /// A parsed JSON value, read with the `json-` built-ins.
     Json,
+    /// Any keyword: what a dictionary's keys are.
+    Keyword,
     /// `{}`: nothing at all, which is both an empty dictionary and a
     /// record with no attributes.
     Empty,
@@ -34,6 +36,7 @@ impl Prim {
             Prim::Bool => "Bool",
             Prim::Str => "String",
             Prim::Json => "Json",
+            Prim::Keyword => "Keyword",
             Prim::Empty => "{}",
         }
     }
@@ -284,6 +287,11 @@ impl Solver {
                     Some((name, _)) => Err(TypeError(format!("`{{}}` has no attribute `{name}`"))),
                 }
             }
+            // Every keyword is a keyword; a variant with a payload is not.
+            (Ty::Tags(tags), Ty::Prim(Prim::Keyword)) => match tags.iter().find(|(_, p)| p.is_some()) {
+                None => Ok(()),
+                Some((k, _)) => Err(TypeError(format!("{} is not a Keyword", tag_text(k, true)))),
+            },
             (Ty::View, Ty::View) | (Ty::Effect, Ty::Effect) => Ok(()),
             (Ty::Rigid(a), Ty::Rigid(b)) if a == b => Ok(()),
             (Ty::Tags(a), Ty::Tags(b)) => {

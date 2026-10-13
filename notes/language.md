@@ -10,14 +10,14 @@ placeholder for a decision still open (listed at the end).
    keywords. There is no `nil`: what may be missing is an attribute,
    and failure is a variant that says why.
 2. **Data is declared; code is inferred.** Attributes, records and
-   variants are claimed by hand, because they are decisions (a global
+   variants are declared by hand, with `type`, because they are decisions (a global
    name, a shape, an order), not facts a checker could find. Functions,
    effects, local records and narrowing are inferred. A claim on code
    is optional; when given, it is checked, and it is what callers see.
 3. **Claims describe data; they never choose code.** Nothing decides
    which code runs from a type, so there are no type classes.
 4. **Data carries global names; programs use local ones.** A value
-   holds `io.gozala.person/name`; a claim gives it the local name
+   holds `io.gozala.person/name`; a `type` gives it the local name
    `name` that code uses.
 5. **Calls are pure; performing is marked.** A function that has
    effects returns a task. `!` after a name performs it, and only code
@@ -36,24 +36,31 @@ fresh at each use.
 ## 1. Values
 
 ```scheme
-{name: "Ada", age: 36}                 ; a record; name and age are claimed attributes
+{name: "Ada", age: 36}                 ; a record; name and age are declared attributes
 {io.gozala.person/name: "Ada"}         ; the same key, spelled out in full
 [1 2 3]                                ; a list
 :active                                ; a keyword, a value whose type is itself
+{:class "todo" :id "a"}                ; a dictionary: keyword keys, kept sorted
 "text" 42 true
 ```
 
-A record's keys are attributes. `name:` refers to the attribute claimed
+A record's keys are attributes. `name:` refers to the attribute declared
 with the local name `name`; the value holds its global name. A key no
-claim declares is an error, so a misspelled key is never a new key.
+type declares is an error, so a misspelled key is never a new key.
 Commas are whitespace.
+
+A dictionary's keys are keywords, and its entries are sorted by key
+however it was built, so equal dictionaries are one value. `(get key
+of: container or: default)` reads either: a key of a dictionary, which
+always needs `or:`, or, when `key` names an attribute, the attribute of
+a record, the same as `(name record)`. **(built)**
 
 `name:` and `:name` are distinct: `name:` is an attribute or a label,
 `:active` is a keyword value.
 
-The platform and the prelude claim the attributes their contracts use
+The platform and the prelude declare the attributes their contracts use
 (a response's `status`, a request's `method`, `ok`, `error`), so user
-code claims only its own domain.
+code declares only its own domain.
 
 ## 2. Absence and failure
 
@@ -70,75 +77,84 @@ There is no `nil`, after Roc's reasons for having no Maybe and Hickey's
 `get` and `first` take the value to give when there is none. A function
 with nothing to answer answers `{}`.
 
-## 3. Claims
+## 3. Types and claims
 
-One form, `claim`, says what a name is or what type it has:
+Two forms, written alike:
 
 ```scheme
-(claim NAME : TYPE)
+(type NAME : TYPE)                                   ; what a name is
+(type (NAME ?a ...) : TYPE)                          ; a type constructor
+(claim NAME : TYPE)                                  ; what type a definition has
 (claim (NAME PARAM ...) [with: CAPABILITIES] : TYPE)
 ```
 
-**A claim with a `define` of the same name is a signature** ("has this
-type"): it is checked against the definition, and callers see the
-claim, not the body. **A claim with no `define` defines a type** ("is
-this type"); what kind of type depends on its right-hand side.
+**`type` declares what a name is** ("is this type"): an attribute, a
+record type, a variant, or a constructor of one; which depends on its
+right-hand side. **`claim` is a signature** ("has this type"): it goes
+with a `define` of the same name in the same source, is checked against
+it, and callers see the claim, not the body. A claim with no definition
+is an error that suggests `type`. **(built)**
 
 ### Attributes
 
 ```scheme
-(claim name  : (io.gozala.person/name text))
-(claim age   : (io.gozala.person/age integer))
-(claim phone : (io.gozala.contact/phone text))
+(type name  : (io.gozala.person/name text))
+(type age   : (io.gozala.person/age integer))
+(type phone : (io.gozala.contact/phone text))
 ```
 
 An attribute is a global name (`domain/name`) applied to the type of
-its value. It gives the global name a local one. Every claim of one
+its value. It gives the global name a local one. Every declaration of one
 global name must agree on its type. An attribute is used three ways:
 as a key in records (`{name: "Ada"}`), as a member of record types
 (`{name age}`), and as an accessor (`(name person)`, or
 `(name person "anonymous")` with a default).
 
-Value types: `text`, `integer`, `boolean`, `json`, `{}`, `(list a)`,
+Value types: `text`, `integer`, `boolean`, `keyword`, `json`, `{}`, `(list a)`,
 `(dict a)`, keywords and unions of them (`[:active :completed]`), a
 record type, or a type variable.
 
 ### Records
 
 ```scheme
-(claim person : {name age ? phone})    ; name and age required, phone optional
+(type person : {name age ? phone})     ; name and age required, phone optional
 (person "Ada" age: 36)                 ; a constructor: checked, and builds {name: .., age: ..}
+(type point : {io.gozala.point/x: integer io.gozala.point/y: integer})  ; attributes in place
+(type start : (io.gozala.line/start point))  ; a record held by an attribute
+(type line : {start end})
 ```
 
 A record type lists attributes, by local name or inline
-(`{(io.gozala.person/name text)}`); those after `?` are optional. It
-contains only attributes, never other records. A record type is open:
+(`{io.gozala.person/name: text}` or `{(io.gozala.person/name text)}`);
+those after `?` are optional. It contains only attributes, never other
+records: `{point}` is an error, and a record holds another through an
+attribute whose values are that record type. **(built)** A record type is open:
 a value with more attributes is still a `person`. **(built)** A record
 type of one required attribute is a variant, told apart by its key, as
 a record literal of one attribute already was.
 
-A record claim is a type, a constructor and a pattern. The constructor
+A record type is a type, a constructor and a pattern. The constructor
 takes the attributes as labels, the first being the default label (the
 same rule as functions, section 4).
 
 ### Type variables and type constructors
 
 ```scheme
-(claim (ok ?a)    : {(conduct.result/ok ?a)})
-(claim (error ?e) : {(conduct.result/error ?e)})
+(type (ok ?a)    : {(conduct.result/ok ?a)})
+(type (error ?e) : {(conduct.result/error ?e)})
 (ok 5)                                  ; {conduct.result/ok: 5}
 ```
 
 `?a` is a type variable. A named variable ties its occurrences
 together. Every variable is named; there is no anonymous `?`, which
-would make `(ok ?) : {.. ?}` claim nothing. A claim with parameters is
+would make `(ok ?) : {.. ?}` say nothing. A type with parameters is
 a type constructor: `(ok integer)` is the type of `(ok 5)`.
 
 ### Variants
 
 ```scheme
-(claim (result ?ok error: ?error) : [(ok ?ok) (error ?error)])
-(claim pending-or-done : [done pending idle])
+(type (result ?ok error: ?error) : [(ok ?ok) (error ?error)])
+(type pending-or-done : [done pending idle])
 ```
 
 A variant lists record types in rank order. A value is the first case
@@ -158,8 +174,8 @@ function type is `((\ PARAM ...) : RESULT)`. `with:` belongs only on a
 claim for a performing name (`greet!`, section 6) and is an upper bound
 on the capabilities it may need; left out, they are inferred.
 
-**Compiler:** `claim` replaces type rules; attributes in a global
-key-type table checked across claims; record types as constructors and
+**Compiler:** `type` and `claim` replace type rules; attributes in a global
+key-type table checked across declarations; record types as constructors and
 patterns; type constructors with named variables; ranked variants;
 signatures checked by subsumption against the inferred type.
 
@@ -198,14 +214,14 @@ Records overlap: facts accrete, so a job that finishes still has its
 "is" therefore needs an order, and a variant declares it once:
 
 ```scheme
-(claim description  : (io.gozala.job/description text))
-(claim started-at   : (io.gozala.job/started-at integer))
-(claim completed-at : (io.gozala.job/completed-at integer))
+(type description  : (io.gozala.job/description text))
+(type started-at   : (io.gozala.job/started-at integer))
+(type completed-at : (io.gozala.job/completed-at integer))
 
-(claim idle    : {description})
-(claim pending : {description started-at})
-(claim done    : {description completed-at})
-(claim job     : [done pending idle])
+(type idle    : {description})
+(type pending : {description started-at})
+(type done    : {description completed-at})
+(type job     : [done pending idle])
 
 (define (report job)
   (match job
@@ -350,20 +366,22 @@ separate kind, not a mode of the same macros.
 Each step is a pull request with tests; each keeps the demo working.
 
 1. **Labels and attributes.** `define` with labels, `name:` tokens,
-   attribute claims, records keyed by attributes, accessors; the
-   prelude and platform claim theirs; every example rewritten.
+   attributes, records keyed by attributes, accessors; the prelude and
+   platform declare theirs; every example rewritten.
 2. **Claims.** Record types, constructors and patterns, type
    constructors and variables, variants with rank, signatures.
 3. **Tasks.** `!` as perform, task types, `perform` and environments,
    the routes as tasks.
-4. **Macros, tier 1.**
+4. **Types and dictionaries.** `type` split from `claim`; members are
+   attributes; keyword-keyed sorted dictionaries; one `get`.
+5. **Macros, tier 1.**
 
 The acceptance test: the demo's elements and routes, and the job
 example above, written as you would want to read them.
 
-Types are shown as a person reads them, not as a claim writes them:
+Types are shown as a person reads them, not as a declaration writes them:
 `(Int, with: Int) -> Int`, `List[a]`, `String`; tasks, records and
-variants are shown as claims write them, `(task {} with: {log})`,
+variants are shown as declarations write them, `(task {} with: {log})`,
 `{name: String}`, `(ok Int)`.
 
 ## Open decisions
@@ -373,7 +391,7 @@ variants are shown as claims write them, `(task {} with: {log})`,
 2. **`?` in record types.** `{name ? phone}` and `{name ?phone}` differ
    by one space; `{name (? phone)}` would not.
 3. **Record composition.** Spelling for "a person plus a phone", since
-   a record type lists only attributes.
+   a record type lists only attributes, never another record type.
 4. **Modules.** How a module is declared, and how its namespace relates
    to the attributes' global names.
 5. **Handlers that do not resume** (abort, retry), implementations that
@@ -384,11 +402,17 @@ variants are shown as claims write them, `(task {} with: {log})`,
 
 ## Decided in discussion
 
-- One `claim` form for attributes, records, variants and signatures; a
-  claim with a `define` is a signature, one without defines a type.
+- `type` declares attributes, records, variants and type constructors;
+  `claim` is only a definition's signature, in the definition's source.
+  (This replaced one `claim` form for both, whose meaning depended on
+  whether a `define` was nearby.)
+- A record type's members are attributes; a record holds another through
+  an attribute.
+- Dictionaries are keyed by keywords, sorted lexicographically; one
+  `get` reads attributes and keys.
 - An attribute is `(domain/name type)`, distinct from a record; a
   record lists attributes, required then optional after `?`.
-- No capitalization: a bare name in a claim is the type of that name.
+- No capitalization: a bare name in a type is the type of that name.
 - Type variables are named, `?a`; no anonymous `?`.
 - Function types are `((\ params) : result)`.
 - `define`, with the first parameter as the default label; no `of`.

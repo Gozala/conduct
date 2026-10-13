@@ -86,7 +86,7 @@ fn elements_stay_pure() {
     // An element's `update` returns effects as data; it cannot perform.
     let e = with_host(element::codebase())
         .add_source(
-            "(claim n : (t/n integer))
+            "(type n : (t/n integer))
              (define (init attrs) {n: 0})
              (define (update model handler event attrs) (do (log! handler) {model: model, effects: []}))
              (define (view model attrs) (h \"p\" {} [] {}))",
@@ -224,8 +224,8 @@ fn host_functions_take_optional_attributes() {
     );
     // The attributes are claimed with unconstrained values, so only the
     // host function's type constrains them.
-    let src = "(claim id : (t/id ?id))
-               (claim title : (t/title ?title))
+    let src = "(type id : (t/id ?id))
+               (type title : (t/title ?title))
                (define (a! i) (rename! {id: i, title: \"y\"}))
                (define (b! i) (rename! {id: i}))
                (define (c! t) (rename! (if (= t \"\") {id: \"x\"} (assoc {id: \"x\"} title: t))))";

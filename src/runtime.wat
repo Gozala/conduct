@@ -236,6 +236,24 @@
     (if (result i32) (i32.ne (call $len (local.get $a)) (call $len (local.get $b)))
       (then (i32.const 0))
       (else (call $bytes_eq (call $str_data (local.get $a)) (call $str_data (local.get $b)) (call $len (local.get $a))))))
+  (func $str_cmp (param $a i64) (param $b i64) (result i32)
+    ;; Compare two strings' bytes: -1, 0, or 1, a prefix first.
+    (local $pa i32) (local $pb i32) (local $la i32) (local $lb i32) (local $i i32) (local $x i32) (local $y i32)
+    (local.set $pa (call $str_data (local.get $a)))
+    (local.set $pb (call $str_data (local.get $b)))
+    (local.set $la (call $len (local.get $a)))
+    (local.set $lb (call $len (local.get $b)))
+    (block $done
+      (loop $next
+        (br_if $done (i32.or (i32.ge_u (local.get $i) (local.get $la)) (i32.ge_u (local.get $i) (local.get $lb))))
+        (local.set $x (i32.load8_u (i32.add (local.get $pa) (local.get $i))))
+        (local.set $y (i32.load8_u (i32.add (local.get $pb) (local.get $i))))
+        (if (i32.lt_u (local.get $x) (local.get $y)) (then (return (i32.const -1))))
+        (if (i32.gt_u (local.get $x) (local.get $y)) (then (return (i32.const 1))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))
+    (if (i32.lt_u (local.get $la) (local.get $lb)) (then (return (i32.const -1))))
+    (i32.gt_u (local.get $la) (local.get $lb)))
   (func $str_concat (param $a i64) (param $b i64) (result i64)
     (local $p i32) (local $la i32) (local $lb i32)
     (local.set $la (call $len (local.get $a)))
@@ -647,7 +665,8 @@
         (i64.store offset=16 (i32.add (local.get $q) (i32.shl (local.get $j) (i32.const 4))) (local.get $v))))
     (i64.extend_i32_u (local.get $q)))
 
-  ;; Dictionaries: string keys, entries in insertion order.
+  ;; Dictionaries: keys sorted by their bytes, so a dictionary's entries
+  ;; are in one order however it was built.
   (func $dict_find (param $d i64) (param $key i64) (result i32)
     ;; The index of `key`, or -1.
     (local $p i32) (local $n i32) (local $i i32)
@@ -698,10 +717,26 @@
         (call $drop (call $dict_val (i64.extend_i32_u (local.get $p)) (local.get $i)))
         (call $dict_put (local.get $p) (local.get $i) (call $dup (local.get $key)) (call $dup (local.get $val))))
       (else
+        ;; A new key goes before the first that sorts after it.
+        (local.set $i (i32.const 0))
+        (block $found
+          (loop $next
+            (br_if $found (i32.ge_u (local.get $i) (local.get $n)))
+            (br_if $found (i32.gt_s (call $str_cmp (call $dict_key (local.get $d) (local.get $i)) (local.get $key)) (i32.const 0)))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $next)))
         (local.set $p (call $dict_new (i32.add (local.get $n) (i32.const 1))))
-        (memory.copy (i32.add (local.get $p) (i32.const 8)) (i32.add (call $ptr (local.get $d)) (i32.const 8)) (i32.shl (local.get $n) (i32.const 4)))
-        (call $dup_values (i32.add (local.get $p) (i32.const 8)) (i32.shl (local.get $n) (i32.const 1)))
-        (call $dict_put (local.get $p) (local.get $n) (call $dup (local.get $key)) (call $dup (local.get $val)))))
+        (memory.copy (i32.add (local.get $p) (i32.const 8)) (i32.add (call $ptr (local.get $d)) (i32.const 8)) (i32.shl (local.get $i) (i32.const 4)))
+        (memory.copy
+          (i32.add (i32.add (local.get $p) (i32.const 8)) (i32.shl (i32.add (local.get $i) (i32.const 1)) (i32.const 4)))
+          (i32.add (i32.add (call $ptr (local.get $d)) (i32.const 8)) (i32.shl (local.get $i) (i32.const 4)))
+          (i32.shl (i32.sub (local.get $n) (local.get $i)) (i32.const 4)))
+        (call $dict_put (local.get $p) (local.get $i) (call $dup (local.get $key)) (call $dup (local.get $val)))
+        ;; Every other entry is now shared with `d`.
+        (call $dup_values (i32.add (local.get $p) (i32.const 8)) (i32.shl (local.get $i) (i32.const 1)))
+        (call $dup_values
+          (i32.add (i32.add (local.get $p) (i32.const 8)) (i32.shl (i32.add (local.get $i) (i32.const 1)) (i32.const 4)))
+          (i32.shl (i32.sub (local.get $n) (local.get $i)) (i32.const 1)))))
     (i64.extend_i32_u (local.get $p)))
   (func $dict_dissoc (param $d i64) (param $key i64) (result i64)
     (local $p i32) (local $n i32) (local $i i32) (local $j i32)

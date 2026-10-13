@@ -39,7 +39,7 @@ pub struct Field {
 pub struct Claims {
     /// Attributes: local name to global name.
     pub attributes: BTreeMap<String, String>,
-    /// Each global name's claimed value type, as written and as a type.
+    /// Each global name's declared value type, as written and as a type.
     pub attribute_types: BTreeMap<String, (String, Ty)>,
     /// Types: record types, variants, constructors and aliases.
     pub types: BTreeMap<String, TypeDef>,
@@ -99,7 +99,7 @@ impl Claims {
         self.attribute_types.contains_key(name).then(|| name.to_string())
     }
 
-    /// The local name a global name is claimed under, if any: an
+    /// The local name a global name is declared under, if any: an
     /// attribute's, or the label a record type written in place gives
     /// it, as `(claim (ok ?a) : {(conduct.result/ok ?a)})` does `ok`.
     pub fn local(&self, global: &str) -> Option<String> {
@@ -128,7 +128,7 @@ impl Claims {
         })
     }
 
-    /// Whether `name` is claimed as anything: an attribute or a type.
+    /// Whether `name` is declared as anything: an attribute or a type.
     pub fn claims(&self, name: &str) -> bool {
         self.attributes.contains_key(name) || self.types.contains_key(name)
     }
@@ -175,6 +175,7 @@ impl Claims {
                 "integer" => Ty::int(),
                 "boolean" => Ty::bool(),
                 "json" => Ty::Prim(Prim::Json),
+                "keyword" => Ty::Prim(Prim::Keyword),
                 _ => {
                     if let Some(def) = self.types.get(name) {
                         if !def.params.is_empty() {
@@ -185,7 +186,9 @@ impl Claims {
                     if let Some(global) = self.attributes.get(name) {
                         return Ok(self.attribute_types[global].1.clone());
                     }
-                    return Err(format!("`{name}` is not a type: claim it, or use `text`, `integer`, `boolean`"));
+                    return Err(format!(
+                        "`{name}` is not a type: declare it, or use `text`, `integer`, `boolean`, `keyword`"
+                    ));
                 }
             },
             TypeExpr::Var(v) => env.var(v),
@@ -232,10 +235,16 @@ impl Claims {
                 for (i, m) in members.iter().enumerate() {
                     let (global, t) = match m {
                         Member::Name(n, _) => {
-                            let global = self
-                                .attributes
-                                .get(n)
-                                .ok_or_else(|| format!("`{n}` in a record type is not a claimed attribute"))?;
+                            let global = self.attributes.get(n).ok_or_else(|| {
+                                if self.types.contains_key(n) {
+                                    format!(
+                                        "`{n}` is a type; members of a record are attributes: declare one that \
+                                         holds it, as `(type start : (domain/start {n}))` does"
+                                    )
+                                } else {
+                                    format!("`{n}` in a record type is not a declared attribute")
+                                }
+                            })?;
                             (global.clone(), self.attribute_types[global].1.clone())
                         }
                         Member::Inline(g, value) => (g.clone(), self.ty(value, env)?),

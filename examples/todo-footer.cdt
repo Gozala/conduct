@@ -55,26 +55,24 @@
       }
     ")
 
-(define (attr name of) (get of name ""))
-
 (define (update model handler event attrs)
   {model: model, effects: (if (= handler "clear") [(emit "todo-clear" "")] [])})
 
 (define (link filter label href attrs)
   (h "li" {}
-    [(h "a" {"href" href "class" (if (= (attr "filter" of: attrs) filter) "selected" "")} [label])]))
+    [(h "a" {:href href :class (if (= (get :filter of: attrs or: "") filter) "selected" "")} [label])]))
 
 (define (view model attrs)
-  (let [active (attr "active" of: attrs)
-        completed (attr "completed" of: attrs)]
-    (h "footer" {"class" "footer"}
-      [(h "span" {"class" "todo-count"}
+  (let [active (get :active of: attrs or: "")
+        completed (get :completed of: attrs or: "")]
+    (h "footer" {:class "footer"}
+      [(h "span" {:class "todo-count"}
          [(h "strong" {} [active])
           (if (= active "1") " item left" " items left")])
-       (h "ul" {"class" "filters"}
+       (h "ul" {:class "filters"}
          [(link "all" label: "All" href: "#/" attrs: attrs)
           (link "active" label: "Active" href: "#/active" attrs: attrs)
           (link "completed" label: "Completed" href: "#/completed" attrs: attrs)])
        (if (and (not= completed "0") (not= completed ""))
-         (h "button" {"class" "clear-completed"} ["Clear completed"] {"click" "clear"})
+         (h "button" {:class "clear-completed"} ["Clear completed"] {:click "clear"})
          [])])))

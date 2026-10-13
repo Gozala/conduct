@@ -143,21 +143,19 @@
       }
     ")
 
-(claim todos : (demo.app/todos (list ?todo)))
-(claim active-count : (demo.app/active integer))
-(claim completed-count : (demo.app/completed integer))
-(claim phase : (demo.app/phase text))
-(claim height : (demo.app/height text))
-(claim about-open : (demo.app/about boolean))
+(type todos : (demo.app/todos (list ?todo)))
+(type active-count : (demo.app/active integer))
+(type completed-count : (demo.app/completed integer))
+(type phase : (demo.app/phase text))
+(type height : (demo.app/height text))
+(type about-open : (demo.app/about boolean))
 
-(claim id : (demo.todo/id text))
-(claim title : (demo.todo/title text))
-(claim completed : (demo.todo/completed boolean))
-
-(define (attr name of) (get of name ""))
+(type id : (demo.todo/id text))
+(type title : (demo.todo/title text))
+(type completed : (demo.todo/completed boolean))
 
 (define (filter-of attrs)
-  (let [f (attr "filter" of: attrs)] (if (= f "") "all" f)))
+  (let [f (get :filter of: attrs or: "")] (if (= f "") "all" f)))
 
 (define (init attrs)
   {todos: [], active-count: 0, completed-count: 0, phase: "measuring", height: "", about-open: false})
@@ -191,7 +189,7 @@
         title (trim (first (rest parts) ""))]
     (if (= title "")
       (change "DELETE" path: (str "/api/todos/" id) body: "")
-      (change "PATCH" path: (str "/api/todos/" id) body: (to-json {"title" title})))))
+      (change "PATCH" path: (str "/api/todos/" id) body: (to-json {:title title})))))
 
 (define (next model effects) {model: model, effects: effects})
 
@@ -213,16 +211,16 @@
         (next (assoc model phase: (if (= (phase model) "revealing") "shown" (phase model))) effects: [])
       "about" (next (assoc model about-open: (not (about-open model))) effects: [])
       ;; What a person did.
-      "add" (next model effects: [(change "POST" path: "/api/todos" body: (to-json {"title" value}))])
+      "add" (next model effects: [(change "POST" path: "/api/todos" body: (to-json {:title value}))])
       "toggleAll"
-        (next model effects: [(change "PATCH" path: "/api/todos" body: (to-json {"completed" (= value "true")}))])
+        (next model effects: [(change "PATCH" path: "/api/todos" body: (to-json {:completed (= value "true")}))])
       ;; The todo with that id, if there is one, flips.
       "toggle"
         (next model
           effects: (map (filter (todos model) where: (fn [todo] (= (id todo) value)))
                         each: (fn [todo] (change "PATCH"
                                                  path: (str "/api/todos/" (id todo))
-                                                 body: (to-json {"completed" (not (completed todo))})))))
+                                                 body: (to-json {:completed (not (completed todo))})))))
       "destroy" (next model effects: [(change "DELETE" path: (str "/api/todos/" value) body: "")])
       "edit" (next model effects: [(edit value)])
       "clear" (next model effects: [(change "DELETE" path: "/api/todos" body: "")])
@@ -232,7 +230,7 @@
 ;; The view
 
 (define (link href label)
-  (h "a" {"href" href "target" "_blank" "rel" "noopener"} [label]))
+  (h "a" {:href href :target "_blank" :rel "noopener"} [label]))
 
 (define (paragraph words) (h "p" {} words))
 
@@ -253,52 +251,52 @@
      ["conduct compiles each element to a Wasm component: pure definitions, stored by hash, with every type inferred."])])
 
 (define (info model)
-  (h "div" {"class" "info"}
-    [(h "button" {"type" "button"
-                  "class" "about-toggle"
-                  "aria-expanded" (if (about-open model) "true" "false")
-                  "aria-controls" "about"}
-        [(h "span" {"class" "icon" "aria-hidden" "true"} ["i"]) "About this demo"]
-        {"click" "about"})
-     (if (about-open model) (h "div" {"id" "about" "class" "about"} about) [])]))
+  (h "div" {:class "info"}
+    [(h "button" {:type "button"
+                  :class "about-toggle"
+                  :aria-expanded (if (about-open model) "true" "false")
+                  :aria-controls "about"}
+        [(h "span" {:class "icon" :aria-hidden "true"} ["i"]) "About this demo"]
+        {:click "about"})
+     (if (about-open model) (h "div" {:id "about" :class "about"} about) [])]))
 
 (define (item todo)
-  (h "todo-item" {"key" (id todo)
-                  "todo-id" (id todo)
-                  "title" (title todo)
-                  "completed" (if (completed todo) "true" "false")}
+  (h "todo-item" {:key (id todo)
+                  :todo-id (id todo)
+                  :title (title todo)
+                  :completed (if (completed todo) "true" "false")}
      []
-     {"todo-toggle" "toggle" "todo-destroy" "destroy" "todo-edit" "edit"}))
+     {:todo-toggle "toggle" :todo-destroy "destroy" :todo-edit "edit"}))
 
 (define (frame-attrs model)
-  (let [base {"class" "frame" "data-phase" (phase model)}]
+  (let [base {:class "frame" :data-phase (phase model)}]
     (if (= (phase model) "revealing")
-      (assoc base "style" (str "height: " (height model) "px"))
+      (assoc base :style (str "height: " (height model) "px"))
       base)))
 
 (define (view model attrs)
   (let [total (+ (active-count model) (completed-count model))
-        header (h "header" {"class" "header"}
+        header (h "header" {:class "header"}
                  [(h "h1" {} ["todos"])
-                  (h "todo-input" {"has-todos" (if (> total 0) "true" "false")
-                                   "all-completed" (if (and (> total 0) (= (active-count model) 0)) "true" "false")}
+                  (h "todo-input" {:has-todos (if (> total 0) "true" "false")
+                                   :all-completed (if (and (> total 0) (= (active-count model) 0)) "true" "false")}
                      []
-                     {"todo-add" "add" "todo-toggle-all" "toggleAll"})])
+                     {:todo-add "add" :todo-toggle-all "toggleAll"})])
         main (if (> total 0)
-               [(h "section" {"class" "main"} [(h "ul" {"class" "todo-list"} (map (todos model) each: item))])
-                (h "todo-footer" {"active" (str (active-count model))
-                                  "completed" (str (completed-count model))
-                                  "filter" (filter-of attrs)}
+               [(h "section" {:class "main"} [(h "ul" {:class "todo-list"} (map (todos model) each: item))])
+                (h "todo-footer" {:active (str (active-count model))
+                                  :completed (str (completed-count model))
+                                  :filter (filter-of attrs)}
                    []
-                   {"todo-clear" "clear"})]
+                   {:todo-clear "clear"})]
                [])
-        list (h "section" {"class" "todoapp"} [header main])
+        list (h "section" {:class "todoapp"} [header main])
         content [list (info model)]]
     (if (= (phase model) "shown")
-      (h "div" {"class" "frame" "data-phase" (phase model)}
-        [(h "div" {"class" "content" "key" "content"} content)])
+      (h "div" {:class "frame" :data-phase (phase model)}
+        [(h "div" {:class "content" :key "content"} content)])
       ;; The spinner is the page's, which the slot shows.
       (h "div" (frame-attrs model)
-        [(h "div" {"class" "spinner" "key" "spinner"} [(h "slot")])
-         (h "div" {"class" "content" "key" "content"} content
-            {"resize" "measured" "transitionend" "revealed"})]))))
+        [(h "div" {:class "spinner" :key "spinner"} [(h "slot")])
+         (h "div" {:class "content" :key "content"} content
+            {:resize "measured" :transitionend "revealed"})]))))

@@ -13,9 +13,9 @@ compiled to WebAssembly components.
   keeps its hash; mutually recursive definitions are hashed as a cycle.
   A definition is type checked once, ever.
 - **Data declared, code inferred, with a lattice of types.** Attributes
-  are claimed: a global name, a local one, and the type of its values.
-  Everything else is inferred; a signature is optional, and checked when
-  given. Types have unions
+  are declared with `type`: a global name, a local one, and the type of
+  its values. Everything else is inferred; a signature, a `claim`, is
+  optional, and checked when given. Types have unions
   and intersections (Simple-sub's algebraic subtyping), records are
   structural, and unions of variants grow through inference, as in Roc.
   There is no `nil`: what may be missing is an attribute, and failure is
@@ -62,24 +62,20 @@ memory nor the routes' grows over 120 more requests.
 $ cargo run -- check examples/todo-item.cdt
 #2b845adc8c attributes : List[String]
 #f7a2cda090 styles : String
-#d60d3b9f7d attr : (String, of: Dict[a]) -> a | String
 #2ac3bbe7d7 init : (Any) -> {editing: Bool}
 #a65931f7a3 stay : (a) -> {effects: List[Nothing], model: a}
-#a9685e2029 update : ({editing: Bool}, attrs: Dict[String], event: Any, handler: Any) -> {effects: List[Effect], model: {editing: Bool}}
-#30c7ccb2ae view : ({editing: Bool}, attrs: Dict[String]) -> View
+#e86f1e95f6 update : ({editing: Bool}, attrs: Dict[String], event: Any, handler: Any) -> {effects: List[Effect], model: {editing: Bool}}
+#22d915a618 view : ({editing: Bool}, attrs: Dict[String]) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (24967 bytes)
+wrote todo-item.wasm (25411 bytes)
 
 $ cargo run -- route examples/todos-route.cdt -o todos.wasm
-wrote todos.wasm (30018 bytes)
+wrote todos.wasm (30320 bytes)
 ```
 
 Every type above is inferred; `editing` is the attribute the element
-claims. `attr`'s type says it returns the
-dictionary's value type, or the `String` it gives for a missing key. The same
-`attr` is written in all three elements, and it has the same hash in
-each: the codebase holds it once.
+declares.
 
 `cargo test` runs everything: the reader, inference, hashing, the code
 generator on Wasmtime, the elements and routes on the polyfill, and the
@@ -104,17 +100,18 @@ The design the language is heading for is in
 (cond a x b y :else z)
 (and a b) (or a b) (not a)
 
-(claim title : (demo.todo/title text))  ; an attribute: local name, global name, values
-(claim done : (demo.todo/done boolean))
-{title: "Buy milk", done: false}        ; a record: claimed attributes as keys
+(type title : (demo.todo/title text))   ; an attribute: local name, global name, values
+(type done : (demo.todo/done boolean))
+{title: "Buy milk", done: false}        ; a record: declared attributes as keys
 {demo.todo/title: "Buy milk"}           ; the same key, by its global name
 (title todo)                            ; read an attribute
 (title todo "untitled")                 ; an attribute, or the default
+(get title of: todo or: "untitled")     ; the same, with `get`
 (assoc todo done: true title: "Milk")   ; a copy of a record with attributes set
-{"class" "toggle" "type" "checkbox"}    ; a dictionary: string keys
-(get attrs "title" "")                  ; the value, or "" for no such key
+{:class "toggle" :type "checkbox"}      ; a dictionary: keyword keys, sorted
+(get :title of: attrs or: "")           ; the value, or "" for no such key
 (first xs "none")                       ; the first, or the default
-(assoc d "k" v) (dissoc d "k")
+(assoc d :k v) (dissoc d :k)
 [1 2 3] (count xs) (first xs) (rest xs) (concat xs ys) (conj xs x)
 (map xs each: f) (filter xs where: f)
 (str "id: " 42)                         ; any values, as text
@@ -137,22 +134,22 @@ The design the language is heading for is in
   (ok todo) (json (todo-json todo) status: 201)
   (error why) (problem why))            ; no `_`: these two variants cover
 
-(claim person : {name age ? phone})     ; a record type: phone is optional
+(type person : {name age ? phone})      ; a record type: phone is optional
 (person "Ada" age: 36)                  ; its constructor
 (match p (person who age: n) ..)        ; and its pattern
-(claim (ok ?a) : {(conduct.result/ok ?a)})            ; a type constructor
-(claim (result ?a error: ?e) : [(ok ?a) (error ?e)])  ; a variant
-(claim job : [done pending idle])       ; overlapping records, in rank order
+(type point : {io.gozala.point/x: integer io.gozala.point/y: integer})  ; attributes in place
+(type (ok ?a) : {(conduct.result/ok ?a)})             ; a type constructor
+(type (result ?a error: ?e) : [(ok ?a) (error ?e)])   ; a variant
+(type job : [done pending idle])        ; overlapping records, in rank order
 (claim (half integer) : (result integer error: [:odd]))  ; a signature
 (claim (greet! person) with: {print} : {})              ; with capabilities
 
-
-(h "li" {"class" "done"} [child ...] {"click" "handler"})   ; a view
+(h "li" {:class "done"} [child ...] {:click "handler"})     ; a view
 (emit "todo-toggle" id)                                     ; an event to send
 (fetch "PATCH" "/api/todos/a" body "changed")               ; a request to make
 
 (split "a\nb" "\n") (trim " a ")                            ; text
-(parse-json body) (to-json {"title" t})                     ; JSON in and out
+(parse-json body) (to-json {:title t})                      ; JSON in and out
 (json-get j "todos") (json-items j)                         ; Json -> Json, List[Json]
 (json-str j) (json-int j) (json-bool j)                     ; Json -> String, Int, Bool
 (json-type j)                                               ; "string", "null", ...
@@ -172,43 +169,47 @@ definition's hash, since callers may use it.
 
 ### Attributes
 
-A record's keys are attributes, and an attribute is claimed before it
-is used: `(claim title : (demo.todo/title text))` names the global key
+A record's keys are attributes, and an attribute is declared before it
+is used: `(type title : (demo.todo/title text))` names the global key
 `demo.todo/title` that values carry, the local name `title` code uses,
 and the type of its values, which every record that sets it is checked
-against. A key no claim declares is an error, so a misspelled key is
-never a new key. Two claims of one global name must agree on its type.
-Types are shown with attributes by their local names.
+against. A key no type declares is an error, so a misspelled key is
+never a new key. Two declarations of one global name must agree on its
+type. Types are shown with attributes by their local names.
 
-An element's prelude claims the element contract's attributes
+An element's prelude declares the element contract's attributes
 (`model`, `effects`, and an event's `kind`, `value`, `checked`, `key`
-and `status`), and a route's prelude claims a request's and a
+and `status`), and a route's prelude declares a request's and a
 response's and the todo model's.
 
-### Claims
+### Types and claims
 
-One form, `claim`, says what a name is or what type it has. A claim of a
-name the same source defines is that definition's **signature**; any
-other claim **defines a type**:
+Two forms say what a name is and what type it has. `type` declares
+what a name is:
 
-- `(claim name : (io.gozala.person/name text))` is an attribute.
-- `(claim person : {name age ? phone})` is a record type: attributes,
-  by local name or written in place, `{(io.gozala.person/name text)}`,
-  those after `?` optional. It is open: a value with more attributes is
+- `(type name : (io.gozala.person/name text))` is an attribute.
+- `(type person : {name age ? phone})` is a record type: attributes,
+  by local name or written in place, `{io.gozala.person/name: text}` or
+  `{(io.gozala.person/name text)}`, those after `?` optional. Its
+  members are attributes, never other record types: a record holds
+  another through an attribute, `(type start : (io.gozala.line/start
+  point))`. It is open: a value with more attributes is
   still a `person`. A record type of one required attribute is a
   variant instead, told apart by its key, so `(ok 1)` is not an `error`
   and a record with more is not an `ok`. It is also a constructor,
   `(person "Ada" age: 36)`,
   whose first attribute is the default label, and a pattern,
   `(person who age: n)`, which binds by label.
-- `(claim (ok ?a) : {(conduct.result/ok ?a)})` is a type constructor:
+- `(type (ok ?a) : {(conduct.result/ok ?a)})` is a type constructor:
   `?a` is a type variable, always named, and `(ok integer)` is the type
-  of `(ok 5)`. Every codebase claims `ok`, `error`, and
+  of `(ok 5)`. Every codebase declares `ok`, `error`, and
   `(result ?value error: ?reason)`.
-- `(claim job : [done pending idle])` is a variant: its cases in rank
+- `(type job : [done pending idle])` is a variant: its cases in rank
   order.
 
-A signature lists the parameters' types, with labels as the definition
+`claim` is a definition's **signature**, and goes with a `define` of the
+same name in the same source; a claim of anything else is an error that
+suggests `type`. A signature lists the parameters' types, with labels as the definition
 has them, then `:` and the result: `(claim (half integer) : (result
 integer error: [:odd]))`. A function type is written `((\ ?a) : ?b)`.
 The definition is checked against its signature with the signature's
@@ -227,10 +228,10 @@ the variant's rank, wherever they are written, so a value is the first
 case it fits:
 
 ```clojure
-(claim idle : {description})
-(claim pending : {description started-at})
-(claim done : {description completed-at})
-(claim job : [done pending idle])
+(type idle : {description})
+(type pending : {description started-at})
+(type done : {description completed-at})
+(type job : [done pending idle])
 
 (define (report job)
   (match job
@@ -261,6 +262,22 @@ no function takes none: `(f)` is `f`. A local or a definition with a
 built-in's name shadows it, so a parameter can be called `filter`.
 `to-json` encodes a dictionary; a record with attributes is `null`, since
 it holds their ids, not their names.
+
+### Dictionaries
+
+A dictionary's keys are keywords, `{:class "toggle"}`, and its entries
+are kept sorted by key, however it was built: a literal, `assoc`, or
+the host, so two equal dictionaries are one value with one hash, and
+encode to the same JSON. Its type is `Dict[v]`, its values' type; a key
+is a `Keyword`. `{}` is both the empty dictionary and the record with no
+attributes.
+
+`get` reads either kind of container: `(get :title of: attrs or: "")`
+reads a key, and needs `or:`, since a dictionary may lack any key;
+`(get title of: todo)` reads an attribute, the same as `(title todo)`,
+and needs `or:` only where the record may lack it. An attribute is
+named, never computed, so `(get k of: d or: 0)` with a local `k` is a
+dictionary read whatever `k` is called.
 
 A record update keeps whatever else the record holds:
 `(define (bump m) (assoc m n: (+ (n m) 1)))` infers
@@ -531,7 +548,7 @@ response = {code headers body}
 `params` holds what the pattern's `:name` segments matched, and `search`
 the decoded query string, as the demo's authoring library gives a Zena
 route. A route's codebase starts with the model's functions and a
-[prelude](src/route.cdt) that claims the attributes above and defines
+[prelude](src/route.cdt) that declares the attributes above and defines
 `json`, `status` and `problem`, the helpers the Zena routes import.
 Unlike an element's `update`, `handle`'s task does its work itself: it
 calls the model and waits for it.

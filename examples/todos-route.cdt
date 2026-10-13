@@ -12,10 +12,10 @@
 (define pattern "/api/todos")
 
 (define (todo-json todo)
-  {"id" (id todo) "title" (title todo) "completed" (completed todo)})
+  {:id (id todo) :title (title todo) :completed (completed todo)})
 
 (define (filter-of request)
-  (match (get (search request) "filter" "all")
+  (match (get :filter of: (search request) or: "all")
     "active" :active
     "completed" :completed
     _ :all))
@@ -23,8 +23,8 @@
 (define (list! request)
   (let [found (query! (filter-of request))
         counts (counts found)]
-    (json {"todos" (map (todos found) each: todo-json)
-           "counts" {"active" (active-count counts) "completed" (completed-count counts)}}
+    (json {:todos (map (todos found) each: todo-json)
+           :counts {:active (active-count counts) :completed (completed-count counts)}}
           status: 200)))
 
 (define (add-todo! request)
