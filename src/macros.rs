@@ -59,7 +59,9 @@ pub struct Rule {
     template: Sexp,
     /// The rule's head as written.
     head: String,
-    /// The rule as written: what its macro's hash covers.
+    /// The rule as written: what tells two rules apart.
+    written: String,
+    /// The rule with its template's pins: what its macro's hash covers.
     pub text: String,
 }
 
@@ -93,8 +95,8 @@ impl Rule {
             Span::default(),
         );
         let head = head.to_string();
-        let text = format!("{head} {template}");
-        let rule = Rule { pattern, vars, template: template.clone(), head, text };
+        let written = format!("{head} {}", raw(template));
+        let rule = Rule { pattern, vars, template: template.clone(), head, text: written.clone(), written };
         rule.check_template(&rule.template, 0)?;
         Ok(rule)
     }
@@ -110,13 +112,12 @@ impl Rule {
     fn check_template(&self, form: &Sexp, depth: usize) -> Result<()> {
         match form {
             Sexp::Symbol(s, _) if self.vars.contains_key(s.as_str()) => {
-                let want = self.vars[s.as_str()];
-                if want != depth {
-                    return Err(if want > depth {
-                        format!("`{s}` matched under `...`, so the template uses it under `...` too: `{s} ...`")
-                    } else {
-                        format!("`{s}` matched one form, so it cannot repeat under `...`")
-                    });
+                // A variable may be used under more `...` than it matched
+                // under, the same each time, but not fewer.
+                if self.vars[s.as_str()] > depth {
+                    return Err(format!(
+                        "`{s}` matched under `...`, so the template uses it under `...` too: `{s} ...`"
+                    ));
                 }
                 Ok(())
             }
@@ -147,8 +148,12 @@ impl Rule {
     }
 
     /// Pin each symbol the template writes to the definition `resolve`
-    /// finds for it.
+    /// finds for it, except the name the template itself defines: its
+    /// own references to that name are to what it defines.
     pub fn pin(&mut self, resolve: &dyn Fn(&str) -> Option<Hash>) {
+        let defines = defined(&self.template);
+        let go_resolve =
+            |s: &str| if Some(s.strip_suffix('!').unwrap_or(s)) == defines.as_deref() { None } else { resolve(s) };
         fn go(form: &mut Sexp, vars: &BTreeMap<String, usize>, resolve: &dyn Fn(&str) -> Option<Hash>) {
             match form {
                 Sexp::Symbol(s, _) if !vars.contains_key(s.as_str()) && !s.contains(PIN) => {
@@ -163,8 +168,8 @@ impl Rule {
                 _ => {}
             }
         }
-        go(&mut self.template, &self.vars, resolve);
-        self.text = format!("{} {}", self.head, self.template);
+        go(&mut self.template, &self.vars, &go_resolve);
+        self.text = format!("{} {}", self.head, raw(&self.template));
     }
 
     /// The forms of a call, if this rule matches them.
@@ -172,6 +177,31 @@ impl Rule {
         let mut out = BTreeMap::new();
         let Pat::Seq(_, fixed, rest) = &self.pattern else { unreachable!() };
         match_seq(fixed, rest.as_deref(), args, &mut out).then_some(out)
+    }
+}
+
+/// A form with its marks and pins, as the macro's hash covers it.
+fn raw(form: &Sexp) -> String {
+    let all = |items: &[Sexp]| items.iter().map(raw).collect::<Vec<_>>().join(" ");
+    match form {
+        Sexp::Symbol(s, _) => s.clone(),
+        Sexp::List(items, _) => format!("({})", all(items)),
+        Sexp::Vector(items, _) => format!("[{}]", all(items)),
+        Sexp::Map(items, _) => format!("{{{}}}", all(items)),
+        other => other.to_string(),
+    }
+}
+
+/// The name a template defines, if it is a definition.
+fn defined(template: &Sexp) -> Option<String> {
+    let Sexp::List(items, _) = template else { return None };
+    match items.as_slice() {
+        [head, Sexp::Symbol(name, _), ..] if head.as_symbol() == Some("define") => Some(bare(name).to_string()),
+        [head, Sexp::List(sig, _), ..] if head.as_symbol() == Some("define") => {
+            let name = bare(sig.first()?.as_symbol()?);
+            Some(name.strip_suffix('!').unwrap_or(name).to_string())
+        }
+        _ => None,
     }
 }
 
@@ -387,8 +417,10 @@ impl Macro {
     /// Close a set of rules: any two that overlap must be ordered, one
     /// narrower than the other.
     pub fn close(name: &str, mut rules: Vec<Rule>) -> Result<Macro> {
-        rules.sort_by(|a, b| a.text.cmp(&b.text));
-        rules.dedup_by(|a, b| a.text == b.text);
+        // A rule added again is the same rule, pinned or not; the one
+        // added first, pinned already, is kept.
+        rules.sort_by(|a, b| a.written.cmp(&b.written));
+        rules.dedup_by(|a, b| a.written == b.written);
         for (i, a) in rules.iter().enumerate() {
             for b in &rules[i + 1..] {
                 if !overlap(&a.pattern, &b.pattern) {

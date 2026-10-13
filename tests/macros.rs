@@ -163,3 +163,69 @@ fn a_macro_does_not_hide_a_task() {
     let e = cb.add_source("(macro (print! x) x)").unwrap_err().to_string();
     assert!(e.contains("already defined"), "{e}");
 }
+
+#[test]
+fn expansions_do_not_change_hashes_or_labels() {
+    // A definition a template writes is the definition written by hand.
+    let cb = check(
+        "(macro (mkid name) (define (name x) x))
+         (mkid id1) (mkid id2) (define (id3 x) x)
+         (macro (mkpair name) (define (name x y) [x y]))
+         (mkpair pair)
+         (define p (pair 1 y: 2))",
+    );
+    let h = |n: &str| cb.lookup(n).unwrap().hash;
+    assert_eq!(h("id1"), h("id3"));
+    assert_eq!(h("id2"), h("id3"));
+    assert_eq!(cb.type_of("pair").unwrap(), "(a, y: a) -> List[a]");
+}
+
+#[test]
+fn source_cannot_write_a_mark() {
+    let e = error("(macro (add-first a b) (let [tmp a] (+ tmp b))) (define r (add-first 1 tmp\u{1}1))");
+    assert!(e.contains("control characters"), "{e}");
+}
+
+#[test]
+fn adding_the_same_source_again() {
+    let src = "(define (helper x) (+ x 1)) (macro (inc1 v) (helper v))";
+    let mut cb = check(src);
+    let before = cb.macros["inc1"].hash;
+    cb.add_source(src).unwrap();
+    assert_eq!(cb.macros["inc1"].hash, before);
+}
+
+#[test]
+fn a_definition_a_template_writes_refers_to_itself() {
+    let mut cb = check("(define (count n) 999)");
+    cb.add_source(
+        "(macro (defcount) (define (count n) (if (= n 0) 0 (count (- n 1)))))
+         (defcount)
+         (define r (count 3))",
+    )
+    .unwrap();
+    assert_eq!(run(&cb, "r"), Value::Int(0));
+}
+
+#[test]
+fn a_macro_and_a_local_do_not_share_a_name() {
+    let e = error("(macro (sq x) (* x x)) (define (q2 sq) (sq 3))");
+    assert!(e.contains("`sq` is a macro, so it cannot also name a local"), "{e}");
+    let e = error("(define (q3 and) 1)");
+    assert!(e.contains("`and` is a macro"), "{e}");
+    let e = error("(macro (foo! x) x) (define (foo x) (+ x 1))");
+    assert!(e.contains("`foo` is a macro"), "{e}");
+}
+
+#[test]
+fn errors_show_names_as_written() {
+    let e = error("(macro (g a b) a) (macro (m x) (g y)) (define r (m 1))");
+    assert!(e.contains("no rule of `g` matches `(g y)`"), "{e}");
+    assert!(!e.contains('\u{1}'), "{e}");
+}
+
+#[test]
+fn a_variable_matched_once_repeats_with_the_others() {
+    let cb = check("(macro (offsets v x ...) [(+ v x) ...]) (define o (offsets 10 1 2))");
+    assert_eq!(run(&cb, "o"), Value::List(vec![Value::Int(11), Value::Int(12)]));
+}

@@ -90,7 +90,8 @@ impl fmt::Display for Sexp {
         match self {
             Sexp::Int(n, _) => write!(f, "{n}"),
             Sexp::Str(s, _) => write!(f, "{s:?}"),
-            Sexp::Symbol(s, _) => write!(f, "{s}"),
+            // As a person wrote it: without an expansion's mark.
+            Sexp::Symbol(s, _) => write!(f, "{}", bare(s)),
             Sexp::Keyword(s, _) => write!(f, ":{s}"),
             Sexp::Label(s, _) => write!(f, "{s}:"),
             Sexp::List(items, _) => seq(f, "(", items, ")"),
@@ -230,6 +231,11 @@ impl Reader<'_> {
         }
         let text = &self.text[start..self.pos];
         let span = Span { start, end: self.pos };
+        // Marks and pins are the compiler's: a name a person writes has
+        // neither.
+        if text.chars().any(|c| c.is_control()) {
+            return self.error("a name cannot contain control characters", start);
+        }
         if text == ":" {
             return Ok(Sexp::Label(String::new(), span));
         }

@@ -47,6 +47,31 @@ it. Newest first.
   still handle them, and they can go in a cleanup.
 - **A macro's expansion cannot write a macro rule yet;** that needs
   closing rules to a fixpoint.
+- **A local may not take a macro's name.** Expansion runs before names
+  are resolved and does not see locals, so `(define (f sq) (sq 3))`
+  would expand the macro `sq`. Refusing the local keeps "a name is one
+  thing"; `and`, `or` and `cond` are no longer reserved words but are
+  macros, so they cannot name locals either.
+- **What a review found, and these fix:**
+  - A parameter a template wrote took its marked name as its label,
+    and labels are hashed, so a definition's hash depended on how many
+    expansions ran before it. Labels are now the bare name.
+  - The reader accepted the mark and pin characters, so source could
+    capture a template's binder or call a shadowed definition by hash.
+    A name with a control character is now a read error.
+  - Adding the same source again saw its pinned rule and its unpinned
+    copy as two rules matching the same calls. Rules are now told apart
+    as written, and the first, already pinned, is kept.
+  - A definition a template writes pinned its own recursive call to the
+    definition it replaced. The name a template defines is not pinned.
+  - A macro `foo!` and a definition `foo` could both exist, the macro
+    hiding the task. Each now refuses the other.
+  - Errors showed marks. Forms are shown as written.
+- **Expansion is at most 512 macro calls deep.** A recursive rule adds
+  one level per step, so `(and ..)` of hundreds of forms fails where the
+  old built-in did not. Rules cannot report errors of their own, so
+  `(cond :else 1 x 2)` says no rule matches `(cond)`, not that `:else`
+  must come last; procedural macros will be able to say so.
 
 ## Types and dictionaries
 

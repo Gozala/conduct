@@ -385,8 +385,10 @@ fn parameters(items: &[Sexp], span: Span) -> Result<Vec<Param>> {
     while let Some(item) = rest.next() {
         let param = match item {
             Sexp::Symbol(..) => {
+                // The label is the parameter's name as written, whatever
+                // expansion wrote it: labels are part of the hash.
                 let name = binder(item)?;
-                Param { label: name.clone(), local: name }
+                Param { label: bare(&name).to_string(), local: name }
             }
             Sexp::Label(label, lspan) if !params.is_empty() => {
                 let Some(local) = rest.next() else {

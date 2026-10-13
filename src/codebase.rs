@@ -281,7 +281,9 @@ impl Codebase {
     fn expand_call(&mut self, name: &str, args: &[Sexp], span: reader::Span, depth: usize) -> Result<Sexp, Error> {
         let error = |message: String| Error::Resolve { def: format!("({name} ..)"), message };
         if depth >= EXPANSION_DEPTH {
-            return Err(error("expands without end: does its expansion always call it again?".into()));
+            return Err(error(format!(
+                "expands more than {EXPANSION_DEPTH} macro calls deep: does its expansion always call it again?"
+            )));
         }
         self.marks += 1;
         self.macros[name].expand(name, args, self.marks, span).map_err(error)
@@ -300,7 +302,7 @@ impl Codebase {
             }
         }
         for name in defs.iter().map(|d| &d.name).chain(types.iter().map(|t| &t.name)) {
-            if self.macros.contains_key(name) {
+            if self.macros.contains_key(name) || self.macros.contains_key(&format!("{name}!")) {
                 return Err(Error::Resolve {
                     def: name.clone(),
                     message: format!("`{name}` is a macro, so it cannot also name a definition or a type"),
@@ -559,7 +561,7 @@ impl Codebase {
                     };
                     Some(Target::Hash(*h, labels))
                 };
-                let names = Names { lookup: &lookup, claims: &self.claims };
+                let names = Names { lookup: &lookup, claims: &self.claims, macros: &self.macros };
                 let term = resolve(&d.body, &mut Vec::new(), &names).map_err(|e| match e {
                     ResolveError::Unbound(name) => Error::Unbound { name, def: d.name.clone() },
                     ResolveError::Invalid(message) => Error::Resolve { def: d.name.clone(), message },
@@ -827,9 +829,20 @@ enum Target {
 struct Names<'a> {
     lookup: &'a dyn Fn(&str) -> Option<Target>,
     claims: &'a Claims,
+    macros: &'a BTreeMap<String, macros::Macro>,
 }
 
 impl Names<'_> {
+    /// A local may not take a macro's name: expansion does not see
+    /// locals, so a call of it would expand the macro.
+    fn local(&self, name: &str) -> Result<(), ResolveError> {
+        let name = bare(name);
+        if self.macros.contains_key(name) || self.macros.contains_key(&format!("{name}!")) {
+            return Err(ResolveError::Invalid(format!("`{name}` is a macro, so it cannot also name a local")));
+        }
+        Ok(())
+    }
+
     /// The global name of an attribute, written by its local name or its
     /// global one.
     fn attribute(&self, name: &str) -> Option<String> {
@@ -1089,6 +1102,9 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
         }
         Expr::Fn(params, body) => {
             let params = canonical(params);
+            for p in &params {
+                names.local(&p.local)?;
+            }
             scope.extend(params.iter().map(|p| p.local.clone()));
             let body = resolve(body, scope, names);
             scope.truncate(scope.len() - params.len());
@@ -1096,6 +1112,7 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
         }
         Expr::App(callee, args, _) => app(callee, args, scope, names)?,
         Expr::Let(name, value, body) => {
+            names.local(name)?;
             let value = b(value, scope)?;
             scope.push(name.clone());
             let body = resolve(body, scope, names);
@@ -1166,6 +1183,9 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
             let mut arms: Vec<(Pattern, Term)> = Vec::new();
             for (p, _, r) in patterns {
                 let bound = p.binders();
+                for b in &bound {
+                    names.local(b)?;
+                }
                 scope.extend(bound.iter().cloned());
                 let r = resolve(r, scope, names);
                 scope.truncate(scope.len() - bound.len());
