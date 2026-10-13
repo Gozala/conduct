@@ -372,15 +372,15 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         // The default comes back for a missing key.
         Op::Get => {
             let v = var();
-            (vec![Ty::dict(v.clone()), Ty::str(), v.clone()], v)
+            (vec![Ty::dict(v.clone()), keyword(), v.clone()], v)
         }
         Op::Assoc => {
             let v = var();
-            (vec![Ty::dict(v.clone()), Ty::str(), v.clone()], Ty::dict(v))
+            (vec![Ty::dict(v.clone()), keyword(), v.clone()], Ty::dict(v))
         }
         Op::Dissoc => {
             let v = var();
-            (vec![Ty::dict(v.clone()), Ty::str()], Ty::dict(v))
+            (vec![Ty::dict(v.clone()), keyword()], Ty::dict(v))
         }
         Op::H => (vec![Ty::str(), Ty::dict(Ty::str()), Ty::list(Ty::Top), Ty::dict(Ty::str())], Ty::View),
         Op::Emit => (vec![Ty::str(), Ty::str()], Ty::Effect),
@@ -398,6 +398,10 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         Op::HasField => (vec![Ty::Top, Ty::str()], Ty::bool()),
         Op::WithEnv => (vec![Ty::Top, Ty::Top], Ty::Top),
     }
+}
+
+fn keyword() -> Ty {
+    Ty::Prim(crate::types::Prim::Keyword)
 }
 
 fn json() -> Ty {

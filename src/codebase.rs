@@ -1069,6 +1069,13 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
 /// read; of a built-in; or of a function value, whose first argument is
 /// passed without its label and whose others go in label order.
 fn app(callee: &Expr, args: &[Arg], scope: &mut Vec<String>, names: &Names) -> Result<Term, ResolveError> {
+    if let Expr::Var(name, _) = callee
+        && name == "get"
+        && !scope.contains(name)
+        && (names.lookup)(name).is_none()
+    {
+        return get(args, scope, names);
+    }
     let resolved: Vec<(Option<String>, Term)> = args
         .iter()
         .map(|a| Ok((a.label.clone(), resolve(&a.value, scope, names)?)))
@@ -1110,6 +1117,45 @@ fn app(callee: &Expr, args: &[Arg], scope: &mut Vec<String>, names: &Names) -> R
         }
     }
     value_call(resolve(callee, scope, names)?, resolved)
+}
+
+/// `(get key of: container or: default)`: an attribute of a record,
+/// which needs a default only where the record may lack it, or a
+/// keyword of a dictionary, which always may.
+fn get(args: &[Arg], scope: &mut Vec<String>, names: &Names) -> Result<Term, ResolveError> {
+    const FORM: &str = "`get` reads `(get key of: container or: default)`";
+    let invalid = |m: String| Err(ResolveError::Invalid(m));
+    let Some((first, rest)) = args.split_first() else { return invalid(FORM.into()) };
+    if first.label.is_some() {
+        return invalid(format!("{FORM}: the key goes first, without a label"));
+    }
+    let mut of = None;
+    let mut or = None;
+    for a in rest {
+        match a.label.as_deref() {
+            Some("of") => of = Some(resolve(&a.value, scope, names)?),
+            Some("or") => or = Some(resolve(&a.value, scope, names)?),
+            Some(l) => return invalid(format!("{FORM}; it has no `{l}:`")),
+            None => return invalid(format!("{FORM}: only the key goes without a label")),
+        }
+    }
+    let Some(of) = of else { return invalid(format!("{FORM}: it needs `of:`, what to read")) };
+    // An attribute names itself; it is never a value to compute.
+    if let Expr::Var(name, _) = &first.value
+        && !scope.contains(name)
+        && (names.lookup)(name).is_none()
+        && let Some(attribute) = names.attribute(name)
+    {
+        let args = std::iter::once(of).chain(or).map(|t| (None, t)).collect();
+        return read(name, attribute, args);
+    }
+    let key = resolve(&first.value, scope, names)?;
+    let Some(or) = or else {
+        return invalid(
+            "a dictionary may lack any key, so reading one needs `or:`: `(get :key of: dictionary or: default)`".into(),
+        );
+    };
+    builtin(Op::Get, vec![(None, of), (None, key), (None, or)])
 }
 
 /// A call through a function value: the first argument without its

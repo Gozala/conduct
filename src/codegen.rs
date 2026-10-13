@@ -1228,8 +1228,9 @@ pub fn decode(memory: &[u8], v: i64) -> Value {
     }
     let p = v as usize;
     let (kind, len) = (u32_at(p), u32_at(p + 4) as usize);
+    // A dictionary's key is a string or, set by `assoc`, a keyword.
     let str_of = |v: i64| match decode(memory, v) {
-        Value::Str(s) => s,
+        Value::Str(s) | Value::Keyword(s) => s,
         other => panic!("expected a string, found {other:?}"),
     };
     let pairs = |p: usize, n: usize| -> Vec<(String, Value)> {

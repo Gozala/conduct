@@ -59,8 +59,8 @@ fn closures_capture() {
 
 #[test]
 fn strings_and_defaults() {
-    let src = "(define d {\"title\" \"Buy milk\"})
-               (define t (str (get d \"title\" \"untitled\") \" / \" (get d \"nope\" \"none\") \" \" 42 \" \" true))";
+    let src = "(define d {:title \"Buy milk\"})
+               (define t (str (get :title of: d or: \"untitled\") \" / \" (get :nope of: d or: \"none\") \" \" 42 \" \" true))";
     assert_eq!(run(src, "t", &[]), Value::Str("Buy milk / none 42 true".into()));
     // An attribute read with a default, and a list's first with one.
     let src = "(type title : (t/title ?title))
@@ -82,14 +82,14 @@ fn records_and_equality() {
     fields.sort_by(|x, y| x.0.cmp(&y.0));
     assert_eq!(fields, vec![("t/a".into(), Value::Str("x".into())), ("t/b".into(), Value::Int(2))]);
     assert_eq!(run("(define e (= [1 \"a\" :x] [1 \"a\" :x]))", "e", &[]), Value::Bool(true));
-    assert_eq!(run("(define e (= {\"a\" 1 \"b\" 2} {\"b\" 2 \"a\" 1}))", "e", &[]), Value::Bool(true));
+    assert_eq!(run("(define e (= {:a 1 :b 2} {:b 2 :a 1}))", "e", &[]), Value::Bool(true));
 }
 
 #[test]
 fn lists_and_dicts() {
     let src = "(define xs (filter (conj (concat [1 2] [3]) 4) where: (fn [x] (> x 1))))
                (define n (count (rest xs)))
-               (define d (dissoc (assoc (assoc {} \"a\" 1) \"b\" 2) \"a\"))";
+               (define d (dissoc (assoc (assoc {} :a 1) :b 2) :a))";
     assert_eq!(run(src, "xs", &[]), Value::List(vec![Value::Int(2), Value::Int(3), Value::Int(4)]));
     assert_eq!(run(src, "n", &[]), Value::Int(2));
     assert_eq!(run(src, "d", &[]), Value::Dict(vec![("b".into(), Value::Int(2))]));
@@ -97,7 +97,7 @@ fn lists_and_dicts() {
 
 #[test]
 fn views() {
-    let src = "(define v (h \"li\" {\"class\" \"done\"} [\"hi\" (h \"b\")] {\"click\" \"go\"}))";
+    let src = "(define v (h \"li\" {:class \"done\"} [\"hi\" (h \"b\")] {:click \"go\"}))";
     let Value::View { tag, attrs, children, events } = run(src, "v", &[]) else { panic!() };
     assert_eq!(tag, "li");
     assert_eq!(attrs, vec![("class".into(), Value::Str("done".into()))]);
@@ -127,10 +127,10 @@ fn ownership_edge_cases() {
     // Defaults: a default not taken is dropped, and a bound attribute
     // its arm ignores is dropped.
     let src = "(type k : (t/k ?k)) (type n : (t/n ?n))
-               (define (f d fallback) (get d \"k\" (str fallback \"!\")))
+               (define (f d fallback) (get :k of: d or: (str fallback \"!\")))
                (define (g r) (match r {k: x} 1 _ 0))
                (define (h r fallback) (k r (str fallback \"!\")))
-               (define e (f {\"k\" \"v\"} fallback: \"unused\"))
+               (define e (f {:k \"v\"} fallback: \"unused\"))
                (define gk (g {k: [\"heap\"], n: 1}))
                (define m (h {k: \"v\", n: 1} fallback: \"unused\"))";
     assert_eq!(run(src, "e", &[]), Value::Str("v".into()));
@@ -178,7 +178,7 @@ fn json_round_trips() {
          (define completed (json-int (json-get (json-get doc \"counts\") \"completed\")))
          (define missing (json-int (json-get doc \"nope\")))
          (define bad (json-str (parse-json \"{{\\\"a\\\": }}\")))
-         (define encoded (to-json {{\"title\" \"say \\\"hi\\\"\\n\" \"completed\" false \"tags\" [1 (parse-json \"null\") true]}}))
+         (define encoded (to-json {{:title \"say \\\"hi\\\"\\n\" :completed false :tags [1 (parse-json \"null\") true]}}))
          (define again (json-str (json-get (parse-json encoded) \"title\")))"
     );
     assert_eq!(run(&src, "first-title", &[]), Value::Str("Buy \"oat\" milk é😀".into()));
@@ -189,7 +189,7 @@ fn json_round_trips() {
     assert_eq!(run(&src, "bad", &[]), Value::Str("".into()));
     assert_eq!(
         run(&src, "encoded", &[]),
-        Value::Str(r#"{"title":"say \"hi\"\u000a","completed":false,"tags":[1,null,true]}"#.into())
+        Value::Str(r#"{"completed":false,"tags":[1,null,true],"title":"say \"hi\"\u000a"}"#.into())
     );
     assert_eq!(run(&src, "again", &[]), Value::Str("say \"hi\"\n".into()));
 }
@@ -314,7 +314,7 @@ fn shared_values_are_copied() {
                (define (grow xs) [(conj xs 3) xs]) (define l (grow [1 2]))
                (define (dbl xs) [(map xs each: (fn [x] (* x 2))) xs]) (define m (dbl [1 2]))
                (define (keep xs) [(filter xs where: (fn [x] (> x 1))) xs]) (define f (keep [1 2]))
-               (define (put d) [(assoc d \"a\" 2) (dissoc d \"a\") d]) (define d (put {\"a\" 1}))";
+               (define (put d) [(assoc d :a 2) (dissoc d :a) d]) (define d (put {:a 1}))";
     let ints = |v: &[i64]| Value::List(v.iter().map(|n| Value::Int(*n)).collect());
     let Value::List(r) = run(src, "r", &[]) else { panic!() };
     assert_eq!(name_fields(r[1].clone(), &["t/n"]), [("t/n".into(), Value::Int(1))]);
@@ -363,7 +363,7 @@ fn variants_match_and_bind() {
 fn the_empty_map_is_an_empty_record_too() {
     let src = "(type a : (t/a ?a))
                (define e (assoc {} a: 1))
-               (define same (= {} (dissoc (assoc {} \"k\" 1) \"k\")))
+               (define same (= {} (dissoc (assoc {} :k 1) :k)))
                (define text (to-json {}))";
     assert_eq!(run(src, "same", &[]), Value::Bool(true));
     assert_eq!(run(src, "text", &[]), Value::Str("{}".into()));

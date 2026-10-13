@@ -7,7 +7,7 @@
 (define pattern "/api/todos/:id")
 
 (define (todo-json todo)
-  {"id" (id todo) "title" (title todo) "completed" (completed todo)})
+  {:id (id todo) :title (title todo) :completed (completed todo)})
 
 ;; The change a PATCH asks for: the id, and the title and completion
 ;; where the body has them as a string and a boolean. An attribute the
@@ -31,7 +31,7 @@
 
 (claim (handle! request) with: {model} : response)
 (define (handle! request)
-  (let [id (get (params request) "id" "")]
+  (let [id (get :id of: (params request) or: "")]
     (match (method request)
       "PATCH" (change! id request: request)
       "DELETE" (delete! id)

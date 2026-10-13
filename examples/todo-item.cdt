@@ -74,14 +74,12 @@
 
 (type editing : (demo.todo-item/editing boolean))
 
-(define (attr name of) (get of name ""))
-
 (define (init attrs) {editing: false})
 
 (define (stay model) {model: model, effects: []})
 
 (define (update model handler event attrs)
-  (let [id (attr "todo-id" of: attrs)]
+  (let [id (get :todo-id of: attrs or: "")]
     (cond
       (= handler "toggle") {model: model, effects: [(emit "todo-toggle" id)]}
       (= handler "destroy") {model: model, effects: [(emit "todo-destroy" id)]}
@@ -94,24 +92,24 @@
       :else (stay model))))
 
 (define (view model attrs)
-  (let [done (= (attr "completed" of: attrs) "true")
-        title (attr "title" of: attrs)]
+  (let [done (= (get :completed of: attrs or: "") "true")
+        title (get :title of: attrs or: "")]
     (if (editing model)
-      (h "li" {"class" "editing"}
-        [(h "input" {"key" "edit"
-                     "class" "edit"
-                     "value" title
-                     "autofocus" ""
-                     "aria-label" "Edit the todo"}
+      (h "li" {:class "editing"}
+        [(h "input" {:key "edit"
+                     :class "edit"
+                     :value title
+                     :autofocus ""
+                     :aria-label "Edit the todo"}
             []
-            {"keydown" "key" "blur" "save"})])
-      (h "li" {"class" (if done "completed" "")}
-        [(h "input" {"key" "toggle"
-                     "class" "toggle"
-                     "type" "checkbox"
-                     "checked" (if done "true" "false")
-                     "aria-label" "Toggle the todo"}
+            {:keydown "key" :blur "save"})])
+      (h "li" {:class (if done "completed" "")}
+        [(h "input" {:key "toggle"
+                     :class "toggle"
+                     :type "checkbox"
+                     :checked (if done "true" "false")
+                     :aria-label "Toggle the todo"}
             []
-            {"change" "toggle"})
-         (h "label" {} [title] {"dblclick" "edit"})
-         (h "button" {"class" "destroy" "aria-label" "Delete the todo"} ["×"] {"click" "destroy"})]))))
+            {:change "toggle"})
+         (h "label" {} [title] {:dblclick "edit"})
+         (h "button" {:class "destroy" :aria-label "Delete the todo"} ["×"] {:click "destroy"})]))))

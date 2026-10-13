@@ -175,6 +175,7 @@ impl Claims {
                 "integer" => Ty::int(),
                 "boolean" => Ty::bool(),
                 "json" => Ty::Prim(Prim::Json),
+                "keyword" => Ty::Prim(Prim::Keyword),
                 _ => {
                     if let Some(def) = self.types.get(name) {
                         if !def.params.is_empty() {
@@ -185,7 +186,9 @@ impl Claims {
                     if let Some(global) = self.attributes.get(name) {
                         return Ok(self.attribute_types[global].1.clone());
                     }
-                    return Err(format!("`{name}` is not a type: declare it, or use `text`, `integer`, `boolean`"));
+                    return Err(format!(
+                        "`{name}` is not a type: declare it, or use `text`, `integer`, `boolean`, `keyword`"
+                    ));
                 }
             },
             TypeExpr::Var(v) => env.var(v),

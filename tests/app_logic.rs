@@ -11,7 +11,7 @@ const TODO_APP: &str = include_str!("../examples/todo-app.cdt");
 
 /// The events the element hears, and a response with a JSON body.
 const DRIVER: &str = r#"
-(define attrs {"filter" ""})
+(define attrs {:filter ""})
 (define (ev kind value) {kind: kind, value: value})
 (define (resp body) {kind: "response", value: body, status: 200})
 (define list-body "{\"todos\":[{\"id\":\"a\",\"title\":\"Buy milk\",\"completed\":false},{\"id\":\"b\",\"title\":\"Walk\",\"completed\":true}],\"counts\":{\"active\":1,\"completed\":1}}")
@@ -89,7 +89,7 @@ fn html(v: &Value) -> String {
 #[test]
 fn connecting_loads_the_list() {
     assert_eq!(effects(eval("", "connected")), vec![fetch("GET", "/api/todos?filter=all", "", "loaded")]);
-    let with_filter = "(define filtered (update (init {}) handler: \"attribute-changed\" event: (ev \"attribute-changed\" value: \"filter\") attrs: {\"filter\" \"active\"}))";
+    let with_filter = "(define filtered (update (init {}) handler: \"attribute-changed\" event: (ev \"attribute-changed\" value: \"filter\") attrs: {:filter \"active\"}))";
     assert_eq!(effects(eval(with_filter, "filtered")), vec![fetch("GET", "/api/todos?filter=active", "", "loaded")]);
     // Another attribute changing loads nothing.
     let other = "(define other (update (init {}) handler: \"attribute-changed\" event: (ev \"attribute-changed\" value: \"lang\") attrs: {}))";
@@ -100,12 +100,14 @@ fn connecting_loads_the_list() {
 fn a_loaded_list_renders_items_and_footer() {
     let page = html(&eval("(define page (view ready attrs: attrs))", "page"));
     assert!(page.starts_with("<div class=\"frame\" data-phase=\"measuring\">"), "{page}");
-    assert!(page.contains("<todo-input has-todos=\"true\" all-completed=\"false\""), "{page}");
+    assert!(page.contains("<todo-input all-completed=\"false\" has-todos=\"true\""), "{page}");
     assert!(
-        page.contains("<todo-item key=\"a\" todo-id=\"a\" title=\"Buy milk\" completed=\"false\" @todo-toggle=toggle"),
+        page.contains(
+            "<todo-item completed=\"false\" key=\"a\" title=\"Buy milk\" todo-id=\"a\" @todo-destroy=destroy"
+        ),
         "{page}"
     );
-    assert!(page.contains("<todo-item key=\"b\" todo-id=\"b\" title=\"Walk\" completed=\"true\""), "{page}");
+    assert!(page.contains("<todo-item completed=\"true\" key=\"b\" title=\"Walk\" todo-id=\"b\""), "{page}");
     assert!(page.contains("<todo-footer active=\"1\" completed=\"1\" filter=\"all\" @todo-clear=clear>"), "{page}");
 }
 
@@ -181,5 +183,5 @@ fn the_reveal_moves_through_its_phases() {
     assert!(!shown.contains("spinner"), "{shown}");
     // The about pill opens the words about the demo.
     let about = "(define open (view (model (update ready handler: \"about\" event: {kind: \"click\"} attrs: attrs)) attrs: attrs))";
-    assert!(html(&eval(about, "open")).contains("<div id=\"about\" class=\"about\">"));
+    assert!(html(&eval(about, "open")).contains("<div class=\"about\" id=\"about\">"));
 }

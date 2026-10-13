@@ -33,7 +33,7 @@ fn records_are_structural() {
 fn unions_from_branches_and_defaults() {
     assert_eq!(ty("(define (pick b) (if b 1 \"one\"))", "pick"), "(Bool) -> Int | String");
     // A lookup names what it gives when the key is missing.
-    assert_eq!(ty("(define (lookup d) (get d \"k\" 0))", "lookup"), "(Dict[a]) -> a | Int");
+    assert_eq!(ty("(define (lookup d) (get :k of: d or: 0))", "lookup"), "(Dict[a]) -> a | Int");
     assert_eq!(ty("(define (head xs) (first xs \"\"))", "head"), "(List[a]) -> a | String");
 }
 
@@ -101,7 +101,7 @@ fn record_update() {
     assert_eq!(ty(&format!("{claims} (define (f m) (b (assoc m a: 1)))"), "f"), "({b: a}) -> a");
     // Only a record has attributes to set.
     assert_eq!(ty(&format!("{claims} (define (g m) (a (assoc m a: 1)))"), "g"), "({}) -> Int");
-    for not_a_record in ["123", "[1 2]", "{\"k\" \"v\"}", "\"text\"", ":kw"] {
+    for not_a_record in ["123", "[1 2]", "{:k \"v\"}", "\"text\"", ":kw"] {
         let e = Codebase::new()
             .add_source(&format!("{claims} (define r (assoc {not_a_record} a: 1))"))
             .unwrap_err()

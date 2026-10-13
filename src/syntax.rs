@@ -259,7 +259,9 @@ fn retired(name: &str) -> Option<&'static str> {
             "conduct has no `nil`: leave an attribute out of a record, return a variant such as \
              `{error: :not-found}`, or use `[]` for no children"
         }
-        "??" => "conduct has no `??`: read an attribute with a default, `(title todo \"\")`, or `(get d k default)`",
+        "??" => {
+            "conduct has no `??`: read an attribute with a default, `(title todo \"\")`, or `(get :key of: dictionary or: default)`"
+        }
         "if-some" => "conduct has no `if-some`: `match` the value, `(match r {title: t} .. _ ..)`",
         "nil?" | "some?" => "conduct has no `nil`: `match` on whether an attribute is there, `{title: t}`",
         "def" => "`def` is now `define`: `(define name value)`",
@@ -587,20 +589,27 @@ fn map_literal(items: &[Sexp], span: Span) -> Result<Expr> {
         return err("a map needs an even number of forms", span);
     }
     let pairs: Vec<(&Sexp, &Sexp)> = items.chunks(2).map(|c| (&c[0], &c[1])).collect();
-    // An empty map is a dictionary: a record needs at least one field.
-    if pairs.is_empty() || matches!(pairs[0].0, Sexp::Str(..)) {
+    if let Some((Sexp::Str(key, kspan), _)) = pairs.first() {
+        return err(format!("a dictionary's keys are keywords: write `:{key}`, not `\"{key}\"`"), *kspan);
+    }
+    // `{}` is nothing at all, a dictionary or a record; keyword keys make
+    // a dictionary, its entries sorted by key.
+    if pairs.is_empty() || matches!(pairs[0].0, Sexp::Keyword(..)) {
         let mut entries: Vec<(String, Expr)> = Vec::new();
         for (k, v) in pairs {
-            let Sexp::Str(key, _) = k else {
-                return err("a dictionary's keys must all be strings", k.span());
+            let key = match k {
+                Sexp::Keyword(key, _) => key,
+                Sexp::Str(key, kspan) => {
+                    return err(format!("a dictionary's keys are keywords: write `:{key}`, not `\"{key}\"`"), *kspan);
+                }
+                other => return err("a dictionary's keys are all keywords, `:name`", other.span()),
             };
-            let value = expr(v)?;
-            if let Some(slot) = entries.iter_mut().find(|(name, _)| name == key) {
-                slot.1 = value;
-            } else {
-                entries.push((key.clone(), value));
+            if entries.iter().any(|(name, _)| name == key) {
+                return err(format!("the key `:{key}` appears twice"), k.span());
             }
+            entries.push((key.clone(), expr(v)?));
         }
+        entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
         return Ok(Expr::Dict(entries));
     }
     let mut fields: Vec<(String, Expr)> = Vec::new();
@@ -608,7 +617,10 @@ fn map_literal(items: &[Sexp], span: Span) -> Result<Expr> {
         let name = match k {
             Sexp::Label(name, _) if !name.is_empty() => name,
             Sexp::Keyword(name, kspan) => {
-                return err(format!("a record's keys are attributes: write `{name}:`, not `:{name}`"), *kspan);
+                return err(
+                    format!("a record's keys are attributes, a dictionary's keywords: write `{name}:`, not `:{name}`"),
+                    *kspan,
+                );
             }
             other => return err("a record's keys are attributes, `name:`", other.span()),
         };

@@ -25,7 +25,7 @@
 ;; A response with `value` as its JSON body.
 (claim (json ?value status: integer) : response)
 (define (json value status)
-  {code: status, headers: {"content-type" "application/json"}, body: (to-json value)})
+  {code: status, headers: {:content-type "application/json"}, body: (to-json value)})
 
 ;; A response with no body.
 (claim (status integer) : response)

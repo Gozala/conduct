@@ -72,7 +72,7 @@ const FETCHER: &str = r#"
   (cond
     (= handler "connected")
       {model: m
-       effects: (map (filter (split (get attrs "urls" "") "\n") where: (fn [u] (not (= u "")))) each: ask)}
+       effects: (map (filter (split (get :urls of: attrs or: "") "\n") where: (fn [u] (not (= u "")))) each: ask)}
     (= handler "answer")
       {model: {n: (+ (n m) 1)}
        effects: [(emit "answered" (str (status event 0) " " (value event "")))]}

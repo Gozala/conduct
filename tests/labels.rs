@@ -101,7 +101,10 @@ fn types_agree() {
 fn retired_forms_say_what_to_write() {
     assert!(error("(def x 1)").contains("`def` is now `define`"));
     assert!(error("(defn f [x] x)").contains("`defn` is now `define`"));
-    assert!(error("(type a : (t/a text)) (define r {:a 1})").contains("write `a:`, not `:a`"));
+    assert!(
+        error("(type a : (t/a text)) (type b : (t/b text)) (define r {b: 1 :a 1})").contains("write `a:`, not `:a`")
+    );
+    assert!(error("(define d {\"a\" 1})").contains("a dictionary's keys are keywords: write `:a`"));
     assert!(error("(type a : (t/a text)) (define (f r) (:a r))").contains("read an attribute by calling it"));
     assert!(error("(define (f) 1)").contains("takes no parameters, so it is a value"));
 }
