@@ -353,7 +353,7 @@ const TODO_FOOTER: &str = include_str!("../examples/todo-footer.cdt");
 async fn todo_input_adds_and_clears() {
     let mut el = Element::load(TODO_INPUT).await;
     let id = el.create(&[("has-todos", "false"), ("all-completed", "false")]).await;
-    let field = "<input autofocus=\"\" class=\"new-todo\" placeholder=\"What needs to be done?\"";
+    let field = "<input #new-todo autofocus=\"\" class=\"new-todo\" placeholder=\"What needs to be done?\"";
     assert_eq!(el.render(id).await, format!("<div class=\"row\">{field} @keydown=keydown></input></div>"));
 
     // Enter adds the trimmed title and clears the field once.
@@ -366,13 +366,22 @@ async fn todo_input_adds_and_clears() {
     // A blank title adds nothing.
     el.handle(id, "keydown", event("keydown", Some("   "), Some("Enter"))).await;
     assert!(el.take_emitted().is_empty());
+    // An update other than an add, such as the attribute <todo-app> sets
+    // after it, does not clear the field again: what the person pasted
+    // since, with no keystroke, stays.
+    el.handle(id, "keydown", event("keydown", Some("Walk"), Some("Enter"))).await;
+    assert!(el.render(id).await.contains(".value=\"\""));
+    el.set_attr(id, "has-todos", Some("true")).await;
+    assert!(!el.render(id).await.contains(".value"));
+    el.set_attr(id, "has-todos", Some("false")).await;
+    el.take_emitted();
 
     // With todos, the toggle-all checkbox appears and reports its state.
     el.set_attr(id, "has-todos", Some("true")).await;
     el.set_attr(id, "all-completed", Some("true")).await;
     let html = el.render(id).await;
     assert!(
-        html.starts_with("<div class=\"row\"><input aria-label=\"Mark all as complete\" class=\"toggle-all\" id=\"toggle-all\" type=\"checkbox\""),
+        html.starts_with("<div class=\"row\"><input #toggle-all aria-label=\"Mark all as complete\" class=\"toggle-all\" id=\"toggle-all\" type=\"checkbox\""),
         "{html}"
     );
     assert!(html.contains(".checked=true @change=toggle-all"), "{html}");

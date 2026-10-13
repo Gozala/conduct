@@ -4,8 +4,10 @@
 ;;
 ;; The Zena version clears its "clear the field" flag inside `render`.
 ;; A view here is pure, so the flag is part of the model: an add sets
-;; it, and the next keystroke clears it, so a render in between leaves
-;; the field empty and one after leaves it to the person typing.
+;; it, and every other update clears it, so it empties the field in the
+;; one render after the add. A later render, such as one for a changed
+;; attribute, leaves the field to the person typing, even when what
+;; they typed came with no keystroke, as a paste from a menu does.
 
 (define attributes ["has-todos" "all-completed"])
 
@@ -58,7 +60,7 @@
    has-todos: (= (get :has-todos of: attrs or: "") "true")
    all-completed: (= (get :all-completed of: attrs or: "") "true")})
 
-(define (stay model) {model: model, effects: []})
+(define (stay model) {model: (assoc model clear: false), effects: []})
 
 (define (add model title: "") (stay model))
 (define (add model title) {model: (assoc model clear: true), effects: [(emit "todo-add" title)]})
@@ -68,19 +70,23 @@
 (define (update {action: :attribute-changed attribute: :all-completed value: v} model)
   (stay (assoc model all-completed: (= v "true"))))
 (define (update {action: :keydown key: "Enter" value: text} model) (add model title: (trim text)))
-(define (update {action: :keydown} model) (stay (assoc model clear: false)))
+(define (update {action: :keydown} model) (stay model))
 (define (update {action: :toggle-all params ...} model)
-  {model: model, effects: [(emit "todo-toggle-all" (if (checked params false) "true" "false"))]})
+  {model: (assoc model clear: false), effects: [(emit "todo-toggle-all" (if (checked params false) "true" "false"))]})
 (define (update command model) (stay model))
 
+;; Both inputs have keys: without them, the checkbox that appears with
+;; the first todo would pair with the field, and the field the person is
+;; typing in would turn into the checkbox.
 (define (field model)
-  (let [base {:class "new-todo" :placeholder "What needs to be done?" :autofocus ""}]
+  (let [base {:key "new-todo" :class "new-todo" :placeholder "What needs to be done?" :autofocus ""}]
     (if (clear model) (assoc base :value "") base)))
 
 (define (view model)
   (h "div" {:class "row"}
     [(if (has-todos model)
-       (h "input" {:id "toggle-all"
+       (h "input" {:key "toggle-all"
+                   :id "toggle-all"
                    :class "toggle-all"
                    :type "checkbox"
                    :checked (if (all-completed model) "true" "false")

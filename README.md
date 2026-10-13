@@ -58,6 +58,12 @@ conduct routes, each in a store of its own as the demo's service worker
 keeps them, and the routes change the model. Neither the element's
 memory nor the routes' grows over 120 more requests.
 
+**The demo runs in a browser**: <https://gozala.github.io/conduct/>. Its
+page and service worker ([`demo/`](demo)) are the polyfill demo's, with the
+conduct compiler in place of Zena's: each compiles the `.cdt` sources above
+when it starts, and the shelf at the bottom shows each source, the type of
+each definition under the pointer, and its problems as you edit it.
+
 The compiler is a component too ([`compiler/`](compiler)). It builds for
 `wasm32-unknown-unknown` with `wit-bindgen`, imports nothing, and exports
 `compile` and `check` as WASI 0.3 `async` functions
@@ -712,8 +718,6 @@ polyfill with stack switching, JSPI, or nested turns.
    before it failed. That needs MLstruct's negation types.
 3. **The codebase in Dialog**: definitions as facts, names as assertions
    that point at hashes.
-4. **The demo in the browser**: the demo's page and service worker,
-   compiling conduct with the compiler component as they compile Zena.
 
 [Wasm Component Model Polyfill]: https://github.com/dialog-db/wasm-component-model-polyfill
 [`examples/todo-item.cdt`]: examples/todo-item.cdt
