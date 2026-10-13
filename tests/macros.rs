@@ -36,7 +36,7 @@ fn a_call_expands_by_its_rule() {
          (define g (cond (= 1 2) :no (= 1 1) :yes :else :never))
          (define h (and true (or false true) true))",
     );
-    assert_eq!(cb.type_of("f").unwrap(), "(Any) -> {} | :zero");
+    assert_eq!(cb.type_of("f").unwrap(), "((\\ any) : [{} :zero])");
     assert_eq!(run(&cb, "g"), Value::Keyword("yes".into()));
     assert_eq!(run(&cb, "h"), Value::Bool(true));
     let e = error("(define x (cond))");
@@ -153,7 +153,7 @@ fn a_template_performs() {
     let mut cb = Codebase::new();
     cb.add_host("print", "print", vec![conduct::types::Ty::str()], conduct::types::Ty::record([])).unwrap();
     cb.add_source("(macro (twice! line) (do (print! line) (print! line))) (define (greet! who) (twice! who))").unwrap();
-    assert_eq!(cb.type_of("greet").unwrap(), "(String) -> (task {} with: {print})");
+    assert_eq!(cb.type_of("greet").unwrap(), "((\\ text) : (task {} with: {print}))");
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn expansions_do_not_change_hashes_or_labels() {
     let h = |n: &str| cb.lookup(n).unwrap().hash;
     assert_eq!(h("id1"), h("id3"));
     assert_eq!(h("id2"), h("id3"));
-    assert_eq!(cb.type_of("pair").unwrap(), "(a, y: a) -> List[a]");
+    assert_eq!(cb.type_of("pair").unwrap(), "((\\ ?a y: ?a) : (list ?a))");
 }
 
 #[test]

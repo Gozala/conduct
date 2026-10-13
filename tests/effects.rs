@@ -32,33 +32,33 @@ fn error(src: &str) -> String {
 
 #[test]
 fn a_definition_marked_bang_makes_a_task() {
-    assert_eq!(ty("(define x 1)", "x"), "Int");
-    assert_eq!(ty("(define (greet! name) (log! (str \"hi \" name)))", "greet"), "(Any) -> (task {} with: {log})");
+    assert_eq!(ty("(define x 1)", "x"), "integer");
+    assert_eq!(ty("(define (greet! name) (log! (str \"hi \" name)))", "greet"), "((\\ any) : (task {} with: {log}))");
     // Capabilities add up, through `let`, `do`, and other tasks.
     let src = "(define (stamp! msg) (let [t (now!)] (log! (str t \": \" msg))))
                (define (twice! msg) (stamp! msg) (stamp! msg))";
-    assert_eq!(ty(src, "twice"), "(Any) -> (task {} with: {clock, log})");
+    assert_eq!(ty(src, "twice"), "((\\ any) : (task {} with: {clock log}))");
     // A task of no parameters is the task itself.
     assert_eq!(ty("(define (later!) (log! \"later\"))", "later"), "(task {} with: {log})");
     // A host function is a function answering a task, or a task.
-    assert_eq!(ty("(define f log)", "f"), "(String) -> (task {} with: {log})");
-    assert_eq!(ty("(define f now)", "f"), "(task Int with: {clock})");
+    assert_eq!(ty("(define f log)", "f"), "((\\ text) : (task {} with: {log}))");
+    assert_eq!(ty("(define f now)", "f"), "(task integer with: {clock})");
 }
 
 #[test]
 fn calls_are_pure() {
     // Calling without `!` answers the task and performs nothing, so a
     // list of tasks needs no effect polymorphism.
-    assert_eq!(ty("(define (all xs) (map xs each: log))", "all"), "(List[String]) -> List[(task {} with: {log})]");
+    assert_eq!(ty("(define (all xs) (map xs each: log))", "all"), "((\\ (list text)) : (list (task {} with: {log})))");
     assert_eq!(
         ty("(define (logger prefix) (fn [m] (log (str prefix m))))", "logger"),
-        "(Any) -> (Any) -> (task {} with: {log})"
+        "((\\ any) : ((\\ any) : (task {} with: {log})))"
     );
     // A task held in a value is performed with `(t!)`.
     let src = "(define (run! t) (t!))
                (define (both! a b) (a!) (b!))";
-    assert_eq!(ty(src, "run"), "((task a with: b)) -> (task a with: b)");
-    assert_eq!(ty(src, "both"), "((task Any with: a), b: (task b with: a)) -> (task b with: a)");
+    assert_eq!(ty(src, "run"), "((\\ (task ?a with: ?b)) : (task ?a with: ?b))");
+    assert_eq!(ty(src, "both"), "((\\ (task any with: ?a) b: (task ?b with: ?a)) : (task ?b with: ?a))");
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn only_a_task_performs() {
     // `fn!` makes one that performs.
     assert_eq!(
         ty("(define (each xs) (map xs each: (fn! [x] (log! x))))", "each"),
-        "(List[String]) -> List[(task {} with: {log})]"
+        "((\\ (list text)) : (list (task {} with: {log})))"
     );
     let e = error("(define started (now!))");
     assert!(e.contains("only a task's body may"), "{e}");
@@ -100,13 +100,13 @@ fn elements_stay_pure() {
 fn claims_of_tasks() {
     let mut cb = host();
     cb.add_source("(claim (greet! text) with: {log} : {}) (define (greet! who) (log! who))").unwrap();
-    assert_eq!(cb.type_of("greet").unwrap(), "(String) -> (task {} with: {log})");
+    assert_eq!(cb.type_of("greet").unwrap(), "((\\ text) : (task {} with: {log}))");
     let e =
         cb.add_source("(claim (quiet! text) with: {} : {}) (define (quiet! who) (log! who))").unwrap_err().to_string();
     assert!(e.contains("this uses `log`, where only pure code is allowed"), "{e}");
     // Left out, the capabilities are what the body performs.
     cb.add_source("(claim (hi! text) : {}) (define (hi! who) (log! who))").unwrap();
-    assert_eq!(cb.type_of("hi").unwrap(), "(String) -> (task {} with: {log})");
+    assert_eq!(cb.type_of("hi").unwrap(), "((\\ text) : (task {} with: {log}))");
     let e = cb.add_source("(claim (plain text) : {}) (define (plain! who) (log! who))").unwrap_err().to_string();
     assert!(e.contains("the definition is marked `!`, so its claim is too"), "{e}");
     let e = cb.add_source("(claim (f text) with: {log} : {}) (define (f x) {})").unwrap_err().to_string();
@@ -119,7 +119,7 @@ fn an_environment_provides_capabilities() {
     // Providing `clock` leaves `log`.
     assert_eq!(
         ty(&format!("{src} (define (fixed msg) (perform (stamp msg) with: {{clock: {{now: 7}}}}))"), "fixed"),
-        "(Any) -> (task {} with: {log})"
+        "((\\ any) : (task {} with: {log}))"
     );
     let e = error(&format!("{src} (define (f msg) (perform (stamp msg) with: {{clock: {{}}}}))"));
     assert!(e.contains("an environment that provides `clock` implements `now`"), "{e}");
@@ -220,7 +220,7 @@ fn host_functions_take_optional_attributes() {
     cb.add_host("rename", "model", vec![params], Ty::record([])).unwrap();
     assert_eq!(
         cb.lookup("rename").unwrap().type_string(),
-        "({t/id: String, t/title?: String}) -> (task {} with: {model})"
+        "((\\ {t/id: text, t/title?: text}) : (task {} with: {model}))"
     );
     // The attributes are claimed with unconstrained values, so only the
     // host function's type constrains them.
@@ -231,7 +231,7 @@ fn host_functions_take_optional_attributes() {
                (define (c! t) (rename! (if (= t \"\") {id: \"x\"} (assoc {id: \"x\"} title: t))))";
     cb.add_source(src).unwrap_or_else(|e| panic!("{e}"));
     let e = cb.add_source("(define (d! i) (rename! {id: i, title: 5}))").unwrap_err().to_string();
-    assert!(e.contains("Int is not a String"), "{e}");
+    assert!(e.contains("integer is not a text"), "{e}");
     let e = cb.add_source("(define (e! t) (rename! {title: t}))").unwrap_err().to_string();
     assert!(e.contains("has no attribute `t/id`"), "{e}");
 }
@@ -258,6 +258,6 @@ fn implementations_are_pure_and_given_once() {
 
 #[test]
 fn a_call_with_no_arguments_is_the_value() {
-    assert_eq!(ty("(define r (now))", "r"), "(task Int with: {clock})");
-    assert_eq!(ty("(define (f x) x) (define g (f))", "g"), "(a) -> a");
+    assert_eq!(ty("(define r (now))", "r"), "(task integer with: {clock})");
+    assert_eq!(ty("(define (f x) x) (define g (f))", "g"), "((\\ ?a) : ?a)");
 }

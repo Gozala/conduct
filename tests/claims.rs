@@ -44,8 +44,8 @@ fn a_record_type_constructs() {
          (define bob (person name: \"Bob\" age: 40 phone: \"555\"))
          (define same {{name: \"Ada\", age: 36}})"
     ));
-    assert_eq!(cb.type_of("ada").unwrap(), "{age: Int, name: String}");
-    assert_eq!(cb.type_of("bob").unwrap(), "{age: Int, name: String, phone: String}");
+    assert_eq!(cb.type_of("ada").unwrap(), "{age: integer, name: text}");
+    assert_eq!(cb.type_of("bob").unwrap(), "{age: integer, name: text, phone: text}");
     // A constructor builds the record its attributes make.
     assert_eq!(cb.lookup("ada").unwrap().hash, cb.lookup("same").unwrap().hash);
     assert!(error(&format!("{PERSON} (define x (person \"Ada\"))")).contains("`person` needs `age:`"));
@@ -63,8 +63,8 @@ fn a_record_type_matches() {
          (define (describe p) (match p (person who age: years) (str who \" \" years)))
          (define (call p) (match p (person phone: n) n _ \"none\"))"
     ));
-    assert_eq!(cb.type_of("describe").unwrap(), "({age: Any, name: Any}) -> String");
-    assert_eq!(cb.type_of("call").unwrap(), "({age?: Any, name?: Any, phone?: a}) -> a | String");
+    assert_eq!(cb.type_of("describe").unwrap(), "((\\ {age: any, name: any}) : text)");
+    assert_eq!(cb.type_of("call").unwrap(), "((\\ {age?: any, name?: any, phone?: ?a}) : [?a text])");
     let src = format!(
         "{PERSON}
          (define (describe p) (match p (person who age: years) (str who \" \" years)))
@@ -79,8 +79,11 @@ fn constructors_of_variants() {
         "(define (safe-div n by) (if (= by 0) (error :division-by-zero) (ok (quot n by))))
          (define (show r) (match r (ok v) (str v) (error why) (str why)))",
     );
-    assert_eq!(cb.type_of("safe-div").unwrap(), "(Int, by: Int) -> (error :division-by-zero) | (ok Int)");
-    assert_eq!(cb.type_of("show").unwrap(), "((error Any) | (ok Any)) -> String");
+    assert_eq!(
+        cb.type_of("safe-div").unwrap(),
+        "((\\ integer by: integer) : [(error :division-by-zero) (ok integer)])"
+    );
+    assert_eq!(cb.type_of("show").unwrap(), "((\\ [(error any) (ok any)]) : text)");
     let src = "(define (safe-div n by) (if (= by 0) (error :division-by-zero) (ok (quot n by))))
                (define (show r) (match r (ok v) (str v) (error why) (str why)))";
     assert_eq!(run(&format!("{src} (define a (show (safe-div 7 by: 2)))"), "a"), Value::Str("3".into()));
@@ -96,7 +99,7 @@ fn type_constructors_take_types() {
         "(claim (half integer) : (result integer error: [:odd]))
          (define (half n) (if (= (rem n 2) 0) (ok (quot n 2)) (error :odd)))",
     );
-    assert_eq!(cb.type_of("half").unwrap(), "(Int) -> (error :odd) | (ok Int)");
+    assert_eq!(cb.type_of("half").unwrap(), "((\\ integer) : [(error :odd) (ok integer)])");
     let e = error(
         "(claim (half integer) : (result integer error: [:odd]))
          (define (half n) (if (= (rem n 2) 0) (ok (quot n 2)) (error :uneven)))",
@@ -104,7 +107,7 @@ fn type_constructors_take_types() {
     assert!(e.contains("does not fit its claim"), "{e}");
     assert!(error("(type (box ?a) : {(t/box ?b)})").contains("`?b` is not one of the type's parameters"));
     assert!(error("(claim (f text) : (result integer)) (define (f x) (ok 1))").contains("needs `error:`"));
-    assert!(error("(type x : nothing)").contains("`nothing` is not a type"));
+    assert!(error("(type x : nowhere)").contains("`nowhere` is not a type"));
     assert!(error("(type (x ?a) : (list ?a)) (define y (x 1))").contains("only a record type constructs"));
     assert!(error("(define (f x) (match x (nothing a) a _ 0))").contains("not a declared record type"));
 }
@@ -131,7 +134,7 @@ fn a_variant_ranks_overlapping_records() {
              (done description: d) (str \"Done: \" d)))"
     );
     let cb = check(&src);
-    assert_eq!(cb.type_of("report").unwrap(), "({completed-at?: Any, description: Any, started-at?: Any}) -> String");
+    assert_eq!(cb.type_of("report").unwrap(), "((\\ {completed-at?: any, description: any, started-at?: any}) : text)");
     let job = |fields: &str| run(&format!("{src} (define a (report {{{fields}}}))"), "a");
     assert_eq!(job("description: \"x\""), Value::Str("Idle: x".into()));
     assert_eq!(job("description: \"x\", started-at: 1"), Value::Str("Pending: x".into()));
@@ -166,12 +169,12 @@ fn signatures_are_checked_and_shown() {
          (claim pi : integer)
          (define pi 3)",
     );
-    assert_eq!(cb.type_of("twice").unwrap(), "((a) -> a, x: a) -> a");
-    assert_eq!(cb.type_of("id").unwrap(), "(a) -> a");
+    assert_eq!(cb.type_of("twice").unwrap(), "((\\ ((\\ ?a) : ?a) x: ?a) : ?a)");
+    assert_eq!(cb.type_of("id").unwrap(), "((\\ ?a) : ?a)");
     let e = error("(claim (id ?a) : ?a) (define (id x) (+ x 1))");
-    assert!(e.contains("?a, any type the caller chooses is not a Int"), "{e}");
+    assert!(e.contains("?a, any type the caller chooses is not an integer"), "{e}");
     let e = error("(claim (f integer) : text) (define (f x) (+ x 1))");
-    assert!(e.contains("Int is not a String"), "{e}");
+    assert!(e.contains("integer is not a text"), "{e}");
     let e = error("(claim (f integer extra: integer) : integer) (define (f x y) x)");
     assert!(e.contains("the claim labels the parameters `extra:`, the definition `y:`"), "{e}");
     let e = error("(claim (f other: integer) : integer) (define (f x) x)");
@@ -183,7 +186,7 @@ fn a_signature_is_what_callers_see() {
     // The body answers only `:a`; the claim promises more, and callers
     // must handle it.
     let cb = check("(claim (pick integer) : [:a :b]) (define (pick n) :a)");
-    assert_eq!(cb.type_of("pick").unwrap(), "(Int) -> :a | :b");
+    assert_eq!(cb.type_of("pick").unwrap(), "((\\ integer) : [:a :b])");
     // The claim is part of what the definition is.
     let plain = check("(define (pick n) :a)");
     assert_ne!(cb.lookup("pick").unwrap().hash, plain.lookup("pick").unwrap().hash);
@@ -194,7 +197,7 @@ fn capabilities_in_signatures() {
     let mut cb = Codebase::new();
     cb.add_host("print", "print", vec![conduct::types::Ty::str()], conduct::types::Ty::record([])).unwrap();
     cb.add_source("(claim (greet! text) with: {print} : {}) (define (greet! who) (print! who))").unwrap();
-    assert_eq!(cb.type_of("greet").unwrap(), "(String) -> (task {} with: {print})");
+    assert_eq!(cb.type_of("greet").unwrap(), "((\\ text) : (task {} with: {print}))");
     let e = cb
         .add_source("(claim (quiet! text) with: {} : {}) (define (quiet! who) (print! who))")
         .unwrap_err()
@@ -202,7 +205,7 @@ fn capabilities_in_signatures() {
     assert!(e.contains("this uses `print`, where only pure code is allowed"), "{e}");
     // Left out, they are what the body uses.
     cb.add_source("(claim (hi! text) : {}) (define (hi! who) (print! who))").unwrap();
-    assert_eq!(cb.type_of("hi").unwrap(), "(String) -> (task {} with: {print})");
+    assert_eq!(cb.type_of("hi").unwrap(), "((\\ text) : (task {} with: {print}))");
 }
 
 #[test]
@@ -214,8 +217,8 @@ fn constructors_are_values() {
          (define pairs (map [\"Ada\"] each: (fn [n] (pair n age: 1))))
          (define make pair)"
     ));
-    assert_eq!(cb.type_of("oks").unwrap(), "List[(ok Int)]");
-    assert_eq!(cb.type_of("make").unwrap(), "(a & String, age: b & Int) -> {age: b, name: a}");
+    assert_eq!(cb.type_of("oks").unwrap(), "(list (ok integer))");
+    assert_eq!(cb.type_of("make").unwrap(), "((\\ (& ?a text) age: (& ?b integer)) : {age: ?b, name: ?a})");
     // With optional attributes, a constructor takes different labels at
     // different calls, so it is not a value yet.
     assert!(error(&format!("{PERSON} (define make person)")).contains("optional attributes"));
@@ -238,7 +241,7 @@ fn a_ranked_match_names_every_case_or_ends_with_any() {
     assert!(e.contains("a value may fit no case of `v`"), "{e}");
     let cb =
         check(&format!("{src} (define (f q) (match q (a x: n) n (b x: n) (+ n 100) _ 0)) (define r (f (b 1 z: 2)))"));
-    assert_eq!(cb.type_of("r").unwrap(), "Int");
+    assert_eq!(cb.type_of("r").unwrap(), "integer");
 }
 
 #[test]
@@ -250,8 +253,8 @@ fn a_type_declares_and_a_claim_signs() {
          (define origin (point 0 y: 0))
          (define (shift p) (point (+ (x p) 1) y: (y p)))",
     );
-    assert_eq!(cb.type_of("origin").unwrap(), "{x: Int, y: Int}");
-    assert_eq!(cb.type_of("shift").unwrap(), "({x: Int, y: a & Int}) -> {x: Int, y: a}");
+    assert_eq!(cb.type_of("origin").unwrap(), "{x: integer, y: integer}");
+    assert_eq!(cb.type_of("shift").unwrap(), "((\\ {x: integer, y: (& ?a integer)}) : {x: integer, y: ?a})");
     // Attributes may be written in place, as a record writes its values.
     check("(type point : {io.gozala.point/x: integer io.gozala.point/y: integer}) (define o (point 0 y: 0))");
     check("(type point : {(io.gozala.point/x integer) (io.gozala.point/y integer)}) (define o (point 0 y: 0))");
@@ -283,6 +286,6 @@ fn members_of_a_record_are_attributes() {
          (define l (line (point 0 y: 0) end: (point 1 y: 1)))
          (define (length l) (- (x (end l)) (x (start l))))"
     ));
-    assert_eq!(cb.type_of("l").unwrap(), "{end: {x: Int, y: Int}, start: {x: Int, y: Int}}");
-    assert_eq!(cb.type_of("length").unwrap(), "({end: {x: Int}, start: {x: Int}}) -> Int");
+    assert_eq!(cb.type_of("l").unwrap(), "{end: {x: integer, y: integer}, start: {x: integer, y: integer}}");
+    assert_eq!(cb.type_of("length").unwrap(), "((\\ {end: {x: integer}, start: {x: integer}}) : integer)");
 }

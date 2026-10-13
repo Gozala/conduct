@@ -248,8 +248,8 @@ fn routes_fit_the_contract() {
         todos.type_of("handle").unwrap(),
         // The claim, `(handle! request) with: {model} : response`, is what
         // callers see.
-        "({body: String, headers: Dict[String], method: String, params: Dict[String], path: String, search: Dict[String]}) \
-         -> (task {body: String, code: Int, headers: Dict[String]} with: {model})"
+        "((\\ {body: text, headers: (dict text), method: text, params: (dict text), path: text, search: (dict text)}) \
+         : (task {body: text, code: integer, headers: (dict text)} with: {model}))"
     );
     route::component(&todos).unwrap_or_else(|e| panic!("{e}"));
     let todo = load(TODO);

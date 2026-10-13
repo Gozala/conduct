@@ -3,6 +3,35 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Types are shown as they are written
+
+- **The checker shows a type in the syntax a `type` or `claim` writes:**
+  `[:a :b]` for a union (Roc's brackets), `(list ?a)` and `(dict text)`,
+  `text`, `integer`, `boolean`, `keyword`, `any`, `nothing`, `?a` for a
+  variable, and `((\ integer plus: integer) : integer)` for a function.
+  The old `|`, `List[a]` and `(Int) -> Int` were a second notation for
+  the same things, and `List[a]` could not have stayed beside bracketed
+  unions.
+- **Functions keep the claim syntax.** An arrow was considered, Roc's
+  `a, b -> c`; the claim form stays, and a function that has effects
+  still answers a task, `((\ text) : (task {} with: {print}))`.
+- **A variable that is a record as well is an open record,**
+  `{todo-id: text ?a ...}`: the record `?a`, which has `todo-id`. It is
+  Roc's `{ todoId : Str }a`, written with the `...` of a record
+  pattern's rest. Unlike Roc's row variable, `?a` is the whole record,
+  so a function that answers it answers `?a`.
+- **Other intersections are `(& A B)`.** They are rare, a parameter that
+  is a variable and a text at once, and have no Roc counterpart.
+- **What is shown can mostly be written back:** functions, lists,
+  variants, records and tasks paste into a claim as shown. A claim
+  cannot yet write an open record, an intersection, or a union whose
+  members are not variants (`[?a integer]`); declared types would need
+  them, and Simple-sub represents them only as a variable's bounds.
+- **`any`, `nothing`, `view` and `effect` are type names now,** so the
+  types that print them can be written.
+- **Errors use the same names, with an article:** `text is not an
+  integer`.
+
 ## Two arguments: the command and the model
 
 - **`update` takes the command and the model; `view` takes the model.**
