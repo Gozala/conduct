@@ -167,3 +167,42 @@ fn a_signature_for_clauses() {
     );
     assert!(e.contains("Int is not a String"), "{e}");
 }
+
+#[test]
+fn review_findings() {
+    // A keyword and a variant of one key are different values.
+    let e = error(
+        "(define (f :conduct.result/ok b: :x) 1)
+         (define (f (ok v) b: :y) 2)",
+    );
+    assert!(e.contains("do not cover every call"), "{e}");
+    // Records with different fields may be one record, where anything
+    // may come.
+    let e = error(
+        "(type name : (t/name text)) (type age : (t/age integer))
+         (define (f {name: n}) :name) (define (f {age: a}) :age) (define (f x) :other)",
+    );
+    assert!(e.contains("neither is narrower"), "{e}");
+    // A field every clause names is a record's field, not only a variant.
+    let cb = check(
+        "(type name : (t/name text)) (type age : (t/age integer))
+         (define (g {name: n} b: :x) 1) (define (g {name: n} b: :y) 2)
+         (define r (g {name: \"a\" age: 3} b: :x))",
+    );
+    assert_eq!(run(&cb, "r"), Value::Int(1));
+    // A variant's rank orders the record types it ranks.
+    let cb = check(
+        "(type description : (io.gozala.job/description text))
+         (type started-at : (io.gozala.job/started-at integer))
+         (type completed-at : (io.gozala.job/completed-at integer))
+         (type idle : {description})
+         (type pending : {description started-at})
+         (type done : {description completed-at})
+         (type job : [done pending idle])
+         (define (report (idle description: d)) (str \"Idle: \" d))
+         (define (report (done description: d)) (str \"Done: \" d))
+         (define (report (pending description: d)) (str \"Pending: \" d))
+         (define r (report {description: \"x\", started-at: 1, completed-at: 2}))",
+    );
+    assert_eq!(run(&cb, "r"), Value::Str("Done: x".into()));
+}

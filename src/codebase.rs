@@ -12,7 +12,7 @@ use crate::infer::{Binding, Globals, Infer};
 use crate::macros::{self, Rule};
 use crate::reader::{self, Sexp, bare, pin_of};
 use crate::syntax::{self, Arg, Claim, Clause, Def, Expr, Item, Param, Pat, TypeExpr};
-use crate::term::{Hash, Op, Pattern, Term};
+use crate::term::{Hash, Op, Pattern, Sig, Term};
 use crate::types::{Scheme, Solver, Ty, TypeError, coalesce};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -1667,6 +1667,7 @@ fn clauses_term(clauses: &[Clause], scope: &mut Vec<String>, names: &Names) -> R
     }
     let params: Vec<String> = (0..n).map(|i| format!(" argument {i}")).collect();
     let mut arms: Vec<(Pattern, Term, String)> = Vec::new();
+    let mut ctors: Vec<Option<String>> = Vec::new();
     for c in clauses {
         // Parameters in the function's order: the first, then by label.
         let mut ordered: Vec<&(Option<String>, Pat)> = c.params.iter().collect();
@@ -1677,8 +1678,17 @@ fn clauses_term(clauses: &[Clause], scope: &mut Vec<String>, names: &Names) -> R
                 // A parameter's name binds the argument, even one that
                 // names a record type.
                 Pat::Name(name) => Pattern::Bind(name.clone()),
-                p => names.pattern(p)?.0,
+                p => {
+                    let (pattern, ctor) = names.pattern(p)?;
+                    if n == 1 {
+                        ctors.push(ctor);
+                    }
+                    pattern
+                }
             });
+        }
+        if n == 1 && ctors.len() < arms.len() + 1 {
+            ctors.push(None);
         }
         let pattern = if n == 1 {
             patterns.pop().unwrap()
@@ -1703,6 +1713,31 @@ fn clauses_term(clauses: &[Clause], scope: &mut Vec<String>, names: &Names) -> R
         });
         arms.push((pattern, body?, head.collect::<Vec<_>>().join(" ")));
     }
+    // Record types a variant ranks are ordered by its rank, as a `match`
+    // over them is.
+    let rank: HashMap<String, usize> = {
+        let mut cases: Vec<&str> = ctors.iter().flatten().map(String::as_str).collect();
+        cases.sort();
+        cases.dedup();
+        let ranked = (cases.len() > 1)
+            .then(|| {
+                names.claims.types.keys().find_map(|name| {
+                    let order = names.claims.variant(name)?;
+                    cases.iter().all(|c| order.iter().any(|o| o == c)).then_some(order)
+                })
+            })
+            .flatten();
+        ranked.map(|order| order.into_iter().enumerate().map(|(i, c)| (c, i)).collect()).unwrap_or_default()
+    };
+    let mut arms: Vec<(Pattern, Term, String, Option<usize>)> = arms
+        .into_iter()
+        .zip(ctors.into_iter().chain(std::iter::repeat(None)))
+        .map(|((p, t, h), c)| (p, t, h, c.and_then(|c| rank.get(&c).copied())))
+        .collect();
+    let sig = Sig::of_clauses(&arms.iter().map(|a| &a.0).collect::<Vec<_>>());
+    let before = |a: &(Pattern, Term, String, Option<usize>), b: &(Pattern, Term, String, Option<usize>)| {
+        a.0.narrower(&b.0) || matches!((a.3, b.3), (Some(x), Some(y)) if x < y)
+    };
     // The order clauses are written in means nothing: start from one
     // that does not depend on it.
     let encoded = |p: &Pattern, t: &Term| {
@@ -1710,13 +1745,14 @@ fn clauses_term(clauses: &[Clause], scope: &mut Vec<String>, names: &Names) -> R
         Term::Match(Box::new(Term::Nil), vec![(p.clone(), t.clone())], None).encode(&mut bytes, &|i| i);
         bytes
     };
-    arms.sort_by_cached_key(|(p, t, _)| encoded(p, t));
-    for (i, (a, _, ah)) in arms.iter().enumerate() {
-        for (b, _, bh) in &arms[i + 1..] {
-            if !a.overlaps(b) {
+    arms.sort_by_cached_key(|(p, t, _, _)| encoded(p, t));
+    for (i, x) in arms.iter().enumerate() {
+        for y in &arms[i + 1..] {
+            let (a, ah, b, bh) = (&x.0, &x.2, &y.0, &y.2);
+            if !a.overlaps(b, &sig) {
                 continue;
             }
-            match (a.narrower(b), b.narrower(a)) {
+            match (before(x, y), before(y, x)) {
                 (true, true) => return invalid(format!("the clauses `({ah})` and `({bh})` match the same calls")),
                 (false, false) => {
                     return invalid(format!(
@@ -1733,10 +1769,10 @@ fn clauses_term(clauses: &[Clause], scope: &mut Vec<String>, names: &Names) -> R
     while !arms.is_empty() {
         let at = (0..arms.len())
             .find(|&i| {
-                !arms.iter().enumerate().any(|(j, b)| j != i && b.0.overlaps(&arms[i].0) && b.0.narrower(&arms[i].0))
+                !arms.iter().enumerate().any(|(j, b)| j != i && b.0.overlaps(&arms[i].0, &sig) && before(b, &arms[i]))
             })
             .expect("narrower is a partial order");
-        let (p, t, _) = arms.remove(at);
+        let (p, t, _, _) = arms.remove(at);
         ordered.push((p, t));
     }
     if !Pattern::cover(&ordered.iter().map(|(p, _)| p).collect::<Vec<_>>()) {

@@ -487,7 +487,12 @@ fn cover_type(patterns: &[&Pattern]) -> Option<Ty> {
 fn column_type(patterns: &[&Pattern]) -> Ty {
     fn ty(sig: &crate::term::Sig) -> Ty {
         match sig {
-            crate::term::Sig::Open => Ty::Top,
+            crate::term::Sig::Open | crate::term::Sig::Fields(_) => Ty::Top,
+            // One variant with a payload is as much a record's field.
+            crate::term::Sig::Tags(tags) if tags.len() == 1 && tags.values().all(Option::is_some) => {
+                let (k, p) = tags.iter().next().unwrap();
+                Ty::record([(k.clone(), p.as_ref().map(ty).unwrap())])
+            }
             crate::term::Sig::Tags(tags) => Ty::tags(tags.iter().map(|(k, p)| (k.clone(), p.as_ref().map(ty)))),
         }
     }

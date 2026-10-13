@@ -480,9 +480,30 @@ impl Pattern {
 pub enum Sig {
     Open,
     Tags(BTreeMap<String, Option<Sig>>),
+    /// A function's arguments: each parameter's.
+    Fields(BTreeMap<String, Sig>),
 }
 
 impl Sig {
+    /// What the arguments of a function with these clauses may be.
+    pub fn of_clauses(patterns: &[&Pattern]) -> Sig {
+        let Some(keys) = argument_columns(patterns) else { return Sig::of(patterns) };
+        Sig::Fields(
+            keys.iter()
+                .map(|k| {
+                    let column: Vec<&Pattern> = patterns
+                        .iter()
+                        .filter_map(|p| match p {
+                            Pattern::Fields(f) => f.iter().find(|(l, _)| l == k).map(|(_, p)| p),
+                            _ => None,
+                        })
+                        .collect();
+                    (k.clone(), Sig::of(&column))
+                })
+                .collect(),
+        )
+    }
+
     pub fn of(patterns: &[&Pattern]) -> Sig {
         if patterns.is_empty() || patterns.iter().any(|p| p.irrefutable()) {
             return Sig::Open;
@@ -493,8 +514,12 @@ impl Sig {
         let mut tags = BTreeMap::new();
         for (k, _) in &variants {
             let payloads: Vec<&Pattern> = variants.iter().filter(|v| v.0 == *k).filter_map(|v| v.1).collect();
-            let has = variants.iter().any(|v| v.0 == *k && v.1.is_some());
-            tags.insert(k.to_string(), has.then(|| Sig::of(&payloads)));
+            let keyword = variants.iter().any(|v| v.0 == *k && v.1.is_none());
+            // A keyword and a variant of one key are different values.
+            if keyword && !payloads.is_empty() {
+                return Sig::Open;
+            }
+            tags.insert(k.to_string(), (!keyword).then(|| Sig::of(&payloads)));
         }
         Sig::Tags(tags)
     }
@@ -546,7 +571,11 @@ impl Pattern {
                     .iter()
                     .filter_map(|r| {
                         let p = match r[0].variant() {
-                            Some((key, p)) if key == k => p.cloned().unwrap_or(Pattern::Any),
+                            // A keyword row matches the keyword, a variant
+                            // row the variant.
+                            Some((key, p)) if key == k && p.is_some() == payload.is_some() => {
+                                p.cloned().unwrap_or(Pattern::Any)
+                            }
                             Some(_) => return None,
                             None if r[0].irrefutable() => Pattern::Any,
                             None => return None,
@@ -648,18 +677,26 @@ impl Pattern {
         }
     }
 
-    /// Whether some value matches both.
-    pub fn overlaps(&self, other: &Pattern) -> bool {
+    /// Whether some value matches both, where values are what `sig`
+    /// says.
+    pub fn overlaps(&self, other: &Pattern, sig: &Sig) -> bool {
         use Pattern::*;
+        let open = Sig::Open;
+        let field = |k: &str| match sig {
+            Sig::Fields(fields) => fields.get(k).unwrap_or(&open),
+            Sig::Tags(tags) => tags.get(k).and_then(|p| p.as_ref()).unwrap_or(&open),
+            Sig::Open => &open,
+        };
         match (self, other) {
             (Any | Bind(_), _) | (_, Any | Bind(_)) => true,
             (Keyword(a), Keyword(b)) | (Str(a), Str(b)) => a == b,
             (Int(a), Int(b)) => a == b,
-            // Variants with different keys are different values; records
-            // may have any fields besides those a pattern names.
-            (Fields(a), Fields(b)) if a.len() == 1 && b.len() == 1 && a[0].0 != b[0].0 => false,
+            // Where only the variants named may come, variants with
+            // different keys are different values; anywhere else a record
+            // may have both fields.
+            (Fields(a), Fields(b)) if a.len() == 1 && b.len() == 1 && a[0].0 != b[0].0 => !matches!(sig, Sig::Tags(_)),
             (Fields(a), Fields(b)) => {
-                a.iter().all(|(k, pa)| b.iter().find(|(l, _)| l == k).is_none_or(|(_, pb)| pa.overlaps(pb)))
+                a.iter().all(|(k, pa)| b.iter().find(|(l, _)| l == k).is_none_or(|(_, pb)| pa.overlaps(pb, field(k))))
             }
             (List(ai, ar), List(bi, br)) => {
                 let n = match (ar, br) {
@@ -672,7 +709,7 @@ impl Pattern {
                 };
                 let at = |i: usize| ai.get(i).or(ar.as_deref());
                 let bt = |i: usize| bi.get(i).or(br.as_deref());
-                (0..n).all(|i| at(i).unwrap().overlaps(bt(i).unwrap()))
+                (0..n).all(|i| at(i).unwrap().overlaps(bt(i).unwrap(), &Sig::Open))
             }
             _ => false,
         }

@@ -37,6 +37,24 @@ it. Newest first.
   parameter called `person` should not stop matching anything.
 - **The first parameter's label** is the name the clauses that name it
   give it, and they must agree; with none, it is `value`.
+- **A variant's rank orders the record types it ranks,** in clauses as
+  in a `match`: `(report (done ..))`, `(report (pending ..))` and
+  `(report (idle ..))` overlap, neither narrower, but `job` ranks them.
+- **What a review found, and these fix:**
+  - A keyword and a variant of the same key in one parameter were taken
+    for one case, so clauses could pass as covering and leave a call
+    unmatched. They are now different cases.
+  - Records with different fields were taken as disjoint, as variants
+    are, even where an argument may be any record; clauses could then be
+    ambiguous with no error. They are disjoint only in a parameter that
+    holds just the variants its clauses name.
+  - A field every clause names in one parameter forced the argument to
+    be that variant, where a single parameter accepts any record with
+    the field. Now both accept it.
+- **A list pattern in a list pattern makes every item a list.** Items
+  share one type, and the compiled test reads items without checking
+  what kind of value they are, so `[x [y] z]` beside `["a" b]` is a type
+  error; telling kinds apart at run time would allow it.
 - **`rec a. a & T` is shown as `T`.** Recursion through a clause's `rest`
   left a variable bounded by itself; an unguarded occurrence of a
   recursive type's variable says nothing, so it is dropped when the type
