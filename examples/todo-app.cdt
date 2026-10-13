@@ -248,11 +248,11 @@
    (paragraph
      ["The site consists of a Rust app shell and a Rust service worker, shipped as two Wasm core modules with a "
       (link "https://wasm-bindgen.github.io/wasm-bindgen/" label: "wasm-bindgen")
-      " JS shim. The shell defines a closed set of custom elements and the service worker a closed set of routes. Each element is implemented in a "
-      (link "https://github.com/Gozala/conduct" label: "conduct")
-      " source file."])
+      " JS shim. The shell defines a closed set of custom elements and the service worker a closed set of routes."])
    (paragraph
-     ["conduct compiles each element to a Wasm component: pure definitions, stored by hash, with every type inferred."])])
+     ["Each element and each route is implemented in a "
+      (link "https://github.com/Gozala/conduct" label: "conduct")
+      " source file, and the conduct compiler, itself a Wasm component, compiles each one in your browser when the page loads. Open the sources below to read the type it infers for each definition, or to change one and see it compile again."])])
 
 (define (info model)
   (h "div" {:class "info"}

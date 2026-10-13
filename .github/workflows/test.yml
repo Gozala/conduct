@@ -19,26 +19,38 @@ jobs:
       - run: cargo test
 
   # The compiler as a component, built for `wasm32-unknown-unknown` and
-  # run on the polyfill.
-  component:
+  # run on the polyfill, and the demo that runs it in a browser.
+  demo:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             .
             compiler
-      - name: Install wasm-tools
-        run: |
-          curl -sSL https://github.com/bytecodealliance/wasm-tools/releases/download/v1.261.0/wasm-tools-1.261.0-x86_64-linux.tar.gz | tar xz
-          echo "$PWD/wasm-tools-1.261.0-x86_64-linux" >> "$GITHUB_PATH"
+            demo
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools@1.261.0,wasm-bindgen@0.2.126
       - run: cargo clippy --manifest-path compiler/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
-      - run: compiler/build.sh
+      - run: cargo fmt --manifest-path demo/Cargo.toml --check
+      - run: cargo clippy --manifest-path demo/Cargo.toml --target wasm32-unknown-unknown --bins -- -D warnings
+      - run: cargo test --manifest-path demo/Cargo.toml
+      - run: demo/build.sh
       - run: cargo test --test compiler_component -- --nocapture
         env:
           CONDUCT_COMPILER_REQUIRED: "1"
+      - name: Install Playwright
+        run: |
+          pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+      - name: Run the demo in Chromium
+        run: |
+          python -m http.server 8087 --bind 127.0.0.1 --directory demo/dist &
+          sleep 1
+          python demo/tests/browser.py http://127.0.0.1:8087/

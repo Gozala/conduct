@@ -1,0 +1,616 @@
+/*
+ * Copyright 2026 The Dialog DB Project
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+/*
+ * The demo's Material 3 look. Its colors, shapes, type scale, and
+ * elevation are custom properties on the document, in a light theme and
+ * a dark theme that follows the browser's color scheme. Custom
+ * properties inherit through shadow boundaries, so each element's own
+ * styles, which live in its conduct source, read the same tokens.
+ */
+
+:root {
+  color-scheme: light;
+
+  --md-sys-color-primary: #006a60;
+  --md-sys-color-on-primary: #ffffff;
+  --md-sys-color-primary-container: #74f8e5;
+  --md-sys-color-on-primary-container: #00201c;
+  --md-sys-color-secondary: #4a635f;
+  --md-sys-color-on-secondary: #ffffff;
+  --md-sys-color-secondary-container: #cce8e2;
+  --md-sys-color-on-secondary-container: #05201c;
+  --md-sys-color-tertiary: #456179;
+  --md-sys-color-error: #ba1a1a;
+  --md-sys-color-on-error: #ffffff;
+  --md-sys-color-error-container: #ffdad6;
+  --md-sys-color-on-error-container: #410002;
+  --md-sys-color-background: #f4fbf8;
+  --md-sys-color-on-background: #161d1c;
+  --md-sys-color-surface: #f4fbf8;
+  --md-sys-color-on-surface: #161d1c;
+  --md-sys-color-surface-variant: #dae5e1;
+  --md-sys-color-on-surface-variant: #3f4947;
+  --md-sys-color-surface-container-lowest: #ffffff;
+  --md-sys-color-surface-container-low: #eff5f2;
+  --md-sys-color-surface-container: #e9efec;
+  --md-sys-color-surface-container-high: #e3eae7;
+  --md-sys-color-surface-container-highest: #dde4e1;
+  --md-sys-color-outline: #6f7977;
+  --md-sys-color-outline-variant: #bec9c6;
+
+  --md-sys-shape-corner-small: 8px;
+  --md-sys-shape-corner-medium: 12px;
+  --md-sys-shape-corner-large: 16px;
+  --md-sys-shape-corner-extra-large: 28px;
+  --md-sys-shape-corner-full: 999px;
+
+  --md-ref-typeface: "Roboto", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --md-ref-typeface-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", monospace;
+  --md-sys-typescale-display-small: 400 36px / 44px var(--md-ref-typeface);
+  --md-sys-typescale-headline-small: 400 24px / 32px var(--md-ref-typeface);
+  --md-sys-typescale-title-medium: 500 16px / 24px var(--md-ref-typeface);
+  --md-sys-typescale-body-large: 400 16px / 24px var(--md-ref-typeface);
+  --md-sys-typescale-body-medium: 400 14px / 20px var(--md-ref-typeface);
+  --md-sys-typescale-label-large: 500 14px / 20px var(--md-ref-typeface);
+
+  /* The colors of conduct source in the shelf's editor. */
+  --code-keyword: #7b3fa0;
+  --code-type: #006a60;
+  --code-string: #7d5700;
+  --code-escape: #a04100;
+  --code-literal: #b3401a;
+  --code-comment: #6f7977;
+  --code-property: #2f5f86;
+  --code-punctuation: #3f4947;
+  --md-sys-typescale-label-medium: 500 12px / 16px var(--md-ref-typeface);
+  --md-sys-typescale-label-small: 500 11px / 16px var(--md-ref-typeface);
+
+  --md-sys-elevation-1: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px 1px rgb(0 0 0 / 0.15);
+  --md-sys-elevation-2: 0 1px 2px rgb(0 0 0 / 0.3), 0 2px 6px 2px rgb(0 0 0 / 0.15);
+  --md-sys-elevation-3: 0 4px 8px 3px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.3);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --code-keyword: #d9a8f5;
+    --code-type: #53dbc9;
+    --code-string: #ecc56c;
+    --code-escape: #ffb68f;
+    --code-literal: #f5a97c;
+    --code-comment: #8a9592;
+    --code-property: #9ccaf0;
+    --code-punctuation: #bec9c6;
+
+    --md-sys-color-primary: #53dbc9;
+    --md-sys-color-on-primary: #003731;
+    --md-sys-color-primary-container: #005048;
+    --md-sys-color-on-primary-container: #74f8e5;
+    --md-sys-color-secondary: #b1ccc6;
+    --md-sys-color-on-secondary: #1c3531;
+    --md-sys-color-secondary-container: #334b47;
+    --md-sys-color-on-secondary-container: #cce8e2;
+    --md-sys-color-tertiary: #adcae5;
+    --md-sys-color-error: #ffb4ab;
+    --md-sys-color-on-error: #690005;
+    --md-sys-color-error-container: #93000a;
+    --md-sys-color-on-error-container: #ffdad6;
+    --md-sys-color-background: #0e1513;
+    --md-sys-color-on-background: #dde4e1;
+    --md-sys-color-surface: #0e1513;
+    --md-sys-color-on-surface: #dde4e1;
+    --md-sys-color-surface-variant: #3f4947;
+    --md-sys-color-on-surface-variant: #bec9c6;
+    --md-sys-color-surface-container-lowest: #090f0e;
+    --md-sys-color-surface-container-low: #161d1c;
+    --md-sys-color-surface-container: #1a2120;
+    --md-sys-color-surface-container-high: #252b2a;
+    --md-sys-color-surface-container-highest: #303635;
+    --md-sys-color-outline: #899390;
+    --md-sys-color-outline-variant: #3f4947;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  padding: 48px 16px 24px;
+  background: var(--md-sys-color-background);
+  color: var(--md-sys-color-on-background);
+  font: var(--md-sys-typescale-body-large);
+}
+
+main {
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+a {
+  color: var(--md-sys-color-primary);
+}
+
+/* <todo-app> before its list draws: a spinner, in a space as tall as
+   the element's frame while it shows the spinner. The element keeps
+   showing it through a slot while the list fades in. */
+todo-app {
+  display: block;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.loading {
+  display: grid;
+  place-items: center;
+  height: 240px;
+}
+
+/* A ring whose arc fades in to its head, which the page's script
+   turns. */
+.loading .spinner {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: conic-gradient(transparent, var(--md-sys-color-primary) 0.8turn, transparent 0.8turn);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3.5px));
+  will-change: transform;
+}
+
+/*
+ * The shelf, plain HTML beside the application: a bar along the bottom
+ * of the page, always shown, with a tab for each conduct file, and above it
+ * the panel of the active file, when the shelf is open. The page leaves
+ * room below the application for whichever of the two is shown.
+ */
+:root {
+  --shelf-bar-height: 48px;
+  --shelf-panel-height: min(46vh, 520px);
+}
+
+body {
+  padding-bottom: var(--shelf-bar-height);
+}
+
+:root[data-shelf="open"] body {
+  padding-bottom: calc(var(--shelf-bar-height) + var(--shelf-panel-height));
+}
+
+#shelf {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface);
+  box-shadow: var(--md-sys-elevation-3);
+  transition: transform 450ms cubic-bezier(0.05, 0.7, 0.1, 1);
+}
+
+/* The shelf rises into view from below the page when the page adds it. */
+@starting-style {
+  #shelf {
+    transform: translateY(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #shelf {
+    transition: none;
+  }
+}
+
+.shelf-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  height: var(--shelf-bar-height);
+  padding: 0 8px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+#shelf-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--md-sys-color-primary);
+  font: var(--md-sys-typescale-label-large);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#shelf-toggle::before {
+  content: "▴";
+  display: inline-block;
+  width: 1em;
+  transition: transform 120ms ease;
+}
+
+#shelf-toggle[aria-expanded="true"]::before {
+  transform: rotate(180deg);
+}
+
+.shelf-tabs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.shelf-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: none;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  font: 13px / 1 var(--md-ref-typeface-mono);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.shelf-tab:hover {
+  background: var(--md-sys-color-surface-container-high);
+}
+
+.shelf-tab[aria-selected="true"] {
+  border-bottom-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-surface);
+}
+
+.shelf-tab .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: transparent;
+}
+
+.shelf-tab[data-state="edited"] .dot {
+  background: var(--md-sys-color-primary);
+}
+
+.shelf-tab[data-state="failed"] .dot {
+  background: var(--md-sys-color-error);
+}
+
+#shelf-panel {
+  height: var(--shelf-panel-height);
+  overflow: hidden;
+}
+
+#shelf .source {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  padding: 8px 16px 12px;
+}
+
+#shelf .toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#shelf .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 24px;
+  margin: 0;
+}
+
+/* A metric: its label in small text, over its value. */
+#shelf .metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#shelf .metric .label {
+  color: var(--md-sys-color-on-surface-variant);
+  font: var(--md-sys-typescale-label-small);
+  white-space: nowrap;
+}
+
+#shelf .metric .value {
+  color: var(--md-sys-color-on-surface);
+  font: var(--md-sys-typescale-title-medium);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transition: color 150ms ease;
+}
+
+/* An edit not saved mutes the metrics of the last save, all but the size
+   of the source, which follows the edit. */
+#shelf section[data-edited] .metric:not([data-field="source-size"]) .value {
+  color: var(--md-sys-color-outline);
+}
+
+#shelf .editor {
+  flex: 1;
+  min-height: 0;
+}
+
+/*
+ * The editor: a text area over its highlighted copy. The two share every
+ * metric, so each character of the one lies over the same character of
+ * the other, and neither wraps a line.
+ */
+#shelf .editor {
+  position: relative;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-surface-container-lowest);
+  overflow: hidden;
+}
+
+#shelf .editor:focus-within {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: -1px;
+}
+
+#shelf .editor .highlight,
+#shelf .editor .marks,
+#shelf .editor textarea {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 12px;
+  border: none;
+  font: 13px / 1.5 var(--md-ref-typeface-mono);
+  font-variant-ligatures: none;
+  letter-spacing: normal;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+
+#shelf .editor .highlight {
+  color: var(--md-sys-color-on-surface);
+  pointer-events: none;
+  scrollbar-width: none;
+}
+
+/* The diagnostics' wavy lines, under text the layer keeps transparent. */
+#shelf .editor .marks {
+  color: transparent;
+  pointer-events: none;
+  scrollbar-width: none;
+}
+
+#shelf .editor .marks .error,
+#shelf .editor .marks .warning,
+#shelf .editor .marks .information {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+#shelf .editor .marks .error {
+  text-decoration-color: var(--md-sys-color-error);
+}
+
+#shelf .editor .marks .warning {
+  text-decoration-color: var(--code-literal);
+}
+
+#shelf .editor .marks .information {
+  text-decoration-color: var(--md-sys-color-outline);
+}
+
+/* The hover's tooltip and the completions, over the editor. */
+#shelf .editor .tooltip,
+#shelf .editor .completions {
+  position: absolute;
+  z-index: 3;
+  max-width: min(560px, 90%);
+  margin: 0;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  box-shadow: var(--md-sys-elevation-3);
+  font: 12px / 1.5 var(--md-ref-typeface-mono);
+}
+
+#shelf .editor .tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  pointer-events: none;
+  white-space: pre-wrap;
+}
+
+#shelf .editor .tooltip .message {
+  color: var(--md-sys-color-error);
+}
+
+#shelf .editor .tooltip .doc {
+  font-family: var(--md-ref-typeface);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+#shelf .editor .completions {
+  min-width: 240px;
+  max-height: 220px;
+  padding: 4px 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+#shelf .editor .completions li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+#shelf .editor .completions li[aria-selected="true"] {
+  background: color-mix(in srgb, var(--md-sys-color-primary) 18%, transparent);
+}
+
+#shelf .editor .completions .kind {
+  width: 5em;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 11px;
+}
+
+#shelf .editor .completions .detail {
+  overflow: hidden;
+  color: var(--md-sys-color-on-surface-variant);
+  text-overflow: ellipsis;
+}
+
+/* The problems the language service finds as a person types. */
+#shelf .problems {
+  flex: none;
+  max-height: 25%;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  list-style: none;
+  font: 12px / 1.5 var(--md-ref-typeface-mono);
+}
+
+#shelf .problems li {
+  padding: 2px 8px;
+  border-radius: var(--md-sys-shape-corner-small);
+  cursor: pointer;
+}
+
+#shelf .problems li:hover {
+  background: var(--md-sys-color-surface-container-high);
+}
+
+#shelf .problems li.error::before {
+  content: "● ";
+  color: var(--md-sys-color-error);
+}
+
+#shelf .problems li.warning::before {
+  content: "● ";
+  color: var(--code-literal);
+}
+
+#shelf .problems li.information::before {
+  content: "● ";
+  color: var(--md-sys-color-outline);
+}
+
+#shelf .editor textarea {
+  background: transparent;
+  color: transparent;
+  caret-color: var(--md-sys-color-on-surface);
+  resize: none;
+  outline: none;
+}
+
+#shelf .editor textarea::selection {
+  background: color-mix(in srgb, var(--md-sys-color-primary) 28%, transparent);
+  color: transparent;
+}
+
+/* The colors of conduct's tokens, from the theme's palette. */
+.tok-comment {
+  color: var(--code-comment);
+  font-style: italic;
+}
+.tok-string {
+  color: var(--code-string);
+}
+.tok-escape {
+  color: var(--code-escape);
+}
+.tok-number,
+.tok-bool,
+.tok-null {
+  color: var(--code-literal);
+}
+.tok-control,
+.tok-definition,
+.tok-module,
+.tok-modifier,
+.tok-operator-keyword,
+.tok-self {
+  color: var(--code-keyword);
+  font-weight: 600;
+}
+.tok-type {
+  color: var(--code-type);
+}
+.tok-meta,
+.tok-property {
+  color: var(--code-property);
+}
+.tok-operator,
+.tok-punctuation {
+  color: var(--code-punctuation);
+}
+
+#shelf .diagnostics,
+#shelf .trapped {
+  flex: none;
+  max-height: 30%;
+  margin: 0;
+  overflow-y: auto;
+  padding: 8px 12px;
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+  font: 12px / 1.5 var(--md-ref-typeface-mono);
+  white-space: pre-wrap;
+}
+
+#shelf .actions {
+  display: flex;
+  gap: 8px;
+}
+
+#shelf .actions button {
+  padding: 6px 14px;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: transparent;
+  color: var(--md-sys-color-primary);
+  font: var(--md-sys-typescale-label-large);
+  cursor: pointer;
+}
+
+#shelf .actions button[data-action="save"] {
+  border-color: transparent;
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+/* Last, and as specific as any rule above, so that it wins over every
+   display above it. */
+#shelf-panel[hidden],
+#shelf [hidden],
+#shelf .editor [hidden] {
+  display: none;
+}

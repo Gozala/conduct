@@ -1,0 +1,111 @@
+[package]
+name = "conduct-demo"
+description = "A TodoMVC demo whose elements and API routes are conduct components, compiled in the browser and run on the polyfill"
+version = "0.1.0"
+license = "MPL-2.0"
+edition = "2024"
+publish = false
+
+# Trunk builds one binary for the page and one for the service worker. Both
+# run only in the browser; on every other target each is an empty `main`.
+# The host framework's plain Rust, which drives components through the
+# polyfill, builds natively too, where its tests run.
+[[bin]]
+name = "conduct-demo-page"
+path = "src/bin/page.rs"
+
+[[bin]]
+name = "conduct-demo-worker"
+path = "src/bin/worker.rs"
+
+[dependencies]
+futures = "0.3"
+# The demo's own spans, and the polyfill's, which the browser layers record.
+tracing = { version = "0.1", features = ["attributes"] }
+wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { version = "0.3", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry", "std"] }
+tracing-web = "0.1.3"
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "0.4"
+wcmp-wasm-core-web = { git = "https://github.com/dialog-db/wasm-component-model-polyfill" }
+web-sys = { version = "0.3", features = [
+  "AddEventListenerOptions",
+  "Attr",
+  "Client",
+  "Clients",
+  "CssStyleDeclaration",
+  "CssStyleSheet",
+  "CustomEvent",
+  "CustomEventInit",
+  "Document",
+  "DomException",
+  "DomRect",
+  "Element",
+  "Event",
+  "EventTarget",
+  "ExtendableEvent",
+  "ExtendableMessageEvent",
+  "FetchEvent",
+  "Headers",
+  "HtmlCollection",
+  "HtmlDocument",
+  "HtmlElement",
+  "HtmlInputElement",
+  "HtmlTextAreaElement",
+  "IdbDatabase",
+  "IdbFactory",
+  "IdbObjectStore",
+  "IdbOpenDbRequest",
+  "IdbRequest",
+  "IdbTransaction",
+  "IdbTransactionMode",
+  "IdbVersionChangeEvent",
+  "InputEvent",
+  "KeyboardEvent",
+  "Location",
+  "MessageChannel",
+  "MessageEvent",
+  "MessagePort",
+  "MouseEvent",
+  "NamedNodeMap",
+  "Navigator",
+  "Node",
+  "NodeList",
+  "Performance",
+  "Request",
+  "RequestInit",
+  "ResizeObserver",
+  "ResizeObserverEntry",
+  "ResizeObserverSize",
+  "Response",
+  "ResponseInit",
+  "ServiceWorker",
+  "ServiceWorkerContainer",
+  "ServiceWorkerGlobalScope",
+  "ServiceWorkerRegistration",
+  "ShadowRoot",
+  "Storage",
+  "Text",
+  "Url",
+  "Window",
+  "WorkerGlobalScope",
+  "WorkerLocation",
+  "console",
+] }
+
+[dev-dependencies]
+wcmp-macros = { git = "https://github.com/dialog-db/wasm-component-model-polyfill" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill" }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+# Its own workspace: the page and the service worker build for
+# `wasm32-unknown-unknown`.
+[workspace]
