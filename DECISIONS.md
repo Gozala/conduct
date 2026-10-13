@@ -3,6 +3,45 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Types and dictionaries
+
+- **`type` declares what a name is; `claim` is only a signature.** One
+  form for both meant a claim's meaning depended on whether a `define`
+  of its name happened to be in the same source, and a misspelled
+  definition name silently turned a signature into a type. Now a claim
+  with no definition in its source is an error that suggests `type`, and
+  a type of a defined name is an error that suggests `claim`. This
+  replaces the rule under Claims below.
+- **A record type's members are attributes, never record types.**
+  `(type line : {point})` is an error: a member names a key, and a
+  record type is not one. A record holds another through an attribute
+  that holds it, `(type start : (io.gozala.line/start point))`. The
+  alternative, splicing `point`'s attributes in, would make `{point}`
+  mean two different things by what `point` is.
+- **Attributes written in place read as a record writes its values,**
+  `{io.gozala.point/x: integer}`, besides `{(io.gozala.point/x
+  integer)}`.
+- **A dictionary's keys are keywords,** `{:class "x"}`; string-keyed
+  literals are an error that says what to write. Keywords are a new
+  `Keyword` type that every keyword without a payload fits. At run time
+  a keyword and a string with the same bytes are the same key, so a
+  dictionary the host builds with strings is read with keywords.
+- **Entries are kept sorted by the keys' bytes,** in a literal (sorted
+  when parsed), by `assoc` (a sorted insert in the runtime), and in the
+  glue that builds an element's attributes. So a dictionary is one
+  value however it was built, and its hash, its equality and its JSON
+  do not depend on order. JSON a dictionary encodes now lists its keys
+  sorted; the routes' responses changed accordingly.
+- **`get` reads both containers:** `(get key of: container or:
+  default)`. A key that is a declared attribute's name (not a local)
+  reads the attribute, exactly as `(name record)` does, with `or:`
+  only where the record may lack it. Anything else is a dictionary key
+  and needs `or:`. An attribute is never a computed value, so which
+  read it is is decided when the call is resolved. Calling an attribute,
+  `(title todo)`, stays.
+- **The elements' `attr` helper is gone;** `(get :filter of: attrs
+  or: "")` says the same.
+
 ## Tasks
 
 - **Calls are pure; `!` performs.** A definition marked `!` makes a
