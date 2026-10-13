@@ -19,17 +19,26 @@ it. Newest first.
   observed attribute. Putting the attributes in the command instead
   would have kept one copy, but `view`, which hears no command, would
   still have needed them as an argument.
-- **A record pattern can name the whole record:** `{action: :toggle-all
-  command ...}`, as `rest ...` names the rest of a list. In a record the
-  rest is the record itself: records are open, so the fields matched are
-  still there, and taking them out would need a record restriction type
-  that Simple-sub does not have. It is the pattern that binds a value
-  and tests it, which clauses kept needing: `model: {editing: true model
-  ...}` both tests the model and keeps it. Its binder has the type the
-  pattern narrowed the record to.
-- **`update`'s type is now hard to read.** Each clause's `assoc` gives a
-  record update type of its own, `(c with editing: Bool)`, and display
-  does not merge updates of variables that are bounded alike.
+- **A record pattern's `rest ...` is the rest of the record:**
+  `{action: :toggle-all params ...}` binds `params` to the command
+  without `action`, as `[x rest ...]` binds a list without `x`. (It
+  first bound the whole record, which read wrong: `{editing: true model
+  ...}` named something that still had `editing`.) Its type is the
+  narrowed record with each named field taken out, `(r without
+  editing)`: an update that sets the field to nothing, `{k?: Nothing}`,
+  so reading it is an error and an optional read finds nothing, with no
+  new kind of type in the solver. At run time a new record is made
+  without the fields. There is still no pattern that binds a value whole
+  while testing it; the clauses here have not needed one since.
+- **Display merges variables that every input has together.** Each
+  clause's `assoc` left a variable of its own, all of them in the
+  parameter's intersection and each in its own `with` in the result.
+  When two variables appear in negative positions only together,
+  instantiating both with what flows in is as general as keeping them
+  apart, so display merges them (MLsub's co-occurrence analysis, for the
+  negative polarity alone). Updates of an update show as one, `(b with
+  height: a, phase: String)`, and setting a field twice as once.
+  `update` went from eight variables to one.
 
 ## Commands with keyword actions
 

@@ -620,6 +620,9 @@ impl<'a> Builder<'a> {
                             Step::Field(k) => Term::Field(k.clone(), Box::new(v)),
                             Step::Item(i) => Term::Prim(Op::Nth, vec![v, Term::Int(*i as i64)]),
                             Step::Drop(n) => Term::Prim(Op::Drop, vec![v, Term::Int(*n as i64)]),
+                            Step::Without(keys) => {
+                                keys.iter().fold(v, |v, k| Term::Prim(Op::Without, vec![v, Term::Str(k.clone())]))
+                            }
                         });
                         body = Term::Let(Box::new(read), Box::new(body));
                     }
@@ -826,6 +829,17 @@ impl<'a> Builder<'a> {
                 let _ = write!(out, " (i64.extend_i32_u (local.get {p})))");
                 out
             }
+            Term::Prim(Op::Without, args) => {
+                let [value, Term::Str(name)] = args.as_slice() else {
+                    return Err(CodegenError("internal: a record's rest names the field it leaves out".into()));
+                };
+                let v = self.expr(value, env, frame, cycle, live)?;
+                let (t, r) = (frame.local(), frame.local());
+                format!(
+                    "(block (result i64) (local.set {t} {v}) (local.set {r} (call $rec_without (local.get {t}) (i64.const {}))) (call $drop (local.get {t})) (local.get {r}))",
+                    field_id(name)
+                )
+            }
             Term::Prim(Op::HasField, args) => {
                 let [value, Term::Str(name)] = args.as_slice() else {
                     return Err(CodegenError("internal: a field test names its field".into()));
@@ -1027,6 +1041,7 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::JsonBool => format!("(call $json_bool {})", a[0]),
         Op::JsonType => format!("(call $json_type {})", a[0]),
         Op::HasField => unreachable!("a field test is compiled where it is met"),
+        Op::Without => unreachable!("a record's rest is compiled where it is met"),
         Op::WithEnv => format!("(call $with_env {} {})", a[0], a[1]),
     }
 }
@@ -1094,7 +1109,7 @@ fn pattern_test(value: Term, pattern: &Pattern) -> Term {
         Pattern::Int(n) => Term::Prim(Op::Eq, vec![value, Term::Int(*n)]),
         Pattern::Bool(b) => Term::Prim(Op::Eq, vec![value, Term::Bool(*b)]),
         Pattern::Any | Pattern::Bind(_) => Term::Bool(true),
-        Pattern::As(_, p) => pattern_test(value, p),
+        Pattern::Rest(_, p) => pattern_test(value, p),
         Pattern::List(items, rest) => {
             // The length first, then each item, read only once it is
             // known to be there.

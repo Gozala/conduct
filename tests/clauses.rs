@@ -228,18 +228,27 @@ fn boolean_patterns() {
 }
 
 #[test]
-fn a_record_pattern_binds_the_whole_record() {
+fn a_record_pattern_binds_the_rest() {
     let cb = check(
         "(type action : (t/action keyword)) (type value : (t/value text))
-         (define (act {action: :shout command ...}) (str (value command \"\") \"!\"))
+         (define (act {action: :shout params ...}) (str (value params \"\") \"!\"))
          (define (act {action: :whisper value: v}) v)
          (define (act command) \"\")
          (define r [(act {action: :shout, value: \"hi\"}) (act {action: :whisper, value: \"psst\"}) (act {action: :nap})])
-         (define (kind c) (match c {action: :shout whole ...} (action whole) _ :other))",
+         (define (rest c) (match c {action: :shout others ...} others _ {}))
+         (define o (rest {action: :shout, value: \"x\"}))",
     );
     let strs = |v: &[&str]| Value::List(v.iter().map(|s| Value::Str(s.to_string())).collect());
     assert_eq!(run(&cb, "r"), strs(&["hi!", "psst", ""]));
-    // The whole record is as narrow as its pattern made it.
-    assert_eq!(cb.type_of("kind").unwrap(), "(Any) -> :other | :shout");
-    assert!(error("(define (f {a: 1 [x] ...}) 1)").contains("ends with a name for the whole record"));
+    // The rest is the record without what the pattern named.
+    assert_eq!(cb.type_of("o").unwrap(), "{value: String}");
+    let Value::Record(fields) = run(&cb, "o") else { panic!() };
+    assert_eq!(fields.len(), 1);
+    let e = error(
+        "(type action : (t/action keyword))
+         (define (f {action: :x others ...}) (action others))
+         (define (f c) :none)",
+    );
+    assert!(e.contains("has no `t/action`") || e.contains("has no"), "{e}");
+    assert!(error("(define (f {a: 1 [x] ...}) 1)").contains("ends with a name for the rest of the record"));
 }

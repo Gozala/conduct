@@ -101,6 +101,9 @@ pub enum Op {
     /// what a list pattern reads. Not in source.
     Nth,
     Drop,
+    /// A record without a field: what a record pattern's rest reads. Not
+    /// in source.
+    Without,
 }
 
 impl Op {
@@ -185,6 +188,7 @@ impl Op {
             Op::WithEnv => "with-env",
             Op::Nth => "nth",
             Op::Drop => "drop",
+            Op::Without => "without",
         }
     }
 
@@ -288,9 +292,9 @@ pub enum Pattern {
     /// (a name or `_`) for the list of the rest. Without one, the list
     /// has exactly as many items as there are patterns.
     List(Vec<Pattern>, Option<Box<Pattern>>),
-    /// A pattern that also binds the whole value it matches: a record
-    /// pattern's `rest ...`, `{action: :toggle command ...}`.
-    As(String, Box<Pattern>),
+    /// A record pattern that also binds the rest of the record, the
+    /// fields it does not name: `{action: :toggle params ...}`.
+    Rest(String, Box<Pattern>),
 }
 
 /// One step of the way to what a pattern binds: a record's field, a
@@ -300,6 +304,8 @@ pub enum Step {
     Field(String),
     Item(usize),
     Drop(usize),
+    /// A record without the fields a pattern named.
+    Without(Vec<String>),
 }
 
 impl Pattern {
@@ -335,8 +341,8 @@ impl Pattern {
                     p.encode(out);
                 }
             }
-            Pattern::As(_, p) => {
-                out.push(9);
+            Pattern::Rest(_, p) => {
+                out.push(10);
                 p.encode(out);
             }
             Pattern::List(items, rest) => {
@@ -357,7 +363,7 @@ impl Pattern {
     /// What the pattern tests, without a name for the whole value.
     pub fn core(&self) -> &Pattern {
         match self {
-            Pattern::As(_, p) => p.core(),
+            Pattern::Rest(_, p) => p.core(),
             p => p,
         }
     }
@@ -380,7 +386,7 @@ impl Pattern {
         fn go(p: &Pattern, out: &mut Vec<String>) {
             match p {
                 Pattern::Bind(name) => out.push(name.clone()),
-                Pattern::As(name, p) => {
+                Pattern::Rest(name, p) => {
                     out.push(name.clone());
                     go(p, out);
                 }
@@ -410,8 +416,14 @@ impl Pattern {
             };
             match p {
                 Pattern::Bind(_) => out.push(path.clone()),
-                Pattern::As(_, p) => {
+                Pattern::Rest(_, p) => {
+                    let named = match p.core() {
+                        Pattern::Fields(fields) => fields.iter().map(|(k, _)| k.clone()).collect(),
+                        _ => vec![],
+                    };
+                    path.push(Step::Without(named));
                     out.push(path.clone());
+                    path.pop();
                     go(p, path, out);
                 }
                 Pattern::Fields(fields) => {

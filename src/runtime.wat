@@ -564,6 +564,25 @@
     (local.get $out))
 
   ;; Records
+  (func $rec_without (param $r i64) (param $id i64) (result i64)
+    ;; A new record of `r`'s fields but `id`, sorted as `r`'s are.
+    (local $p i32) (local $q i32) (local $n i32) (local $i i32) (local $j i32)
+    (local.set $p (call $ptr (local.get $r)))
+    (local.set $n (call $len (local.get $r)))
+    (local.set $q (call $obj (i32.const 3) (i32.sub (local.get $n) (i32.const 1)) (i32.shl (i32.sub (local.get $n) (i32.const 1)) (i32.const 4))))
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (if (i64.ne (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 4)))) (local.get $id))
+          (then
+            (i64.store offset=8 (i32.add (local.get $q) (i32.shl (local.get $j) (i32.const 4)))
+              (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 4)))))
+            (i64.store offset=16 (i32.add (local.get $q) (i32.shl (local.get $j) (i32.const 4)))
+              (call $dup (i64.load offset=16 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 4))))))
+            (local.set $j (i32.add (local.get $j) (i32.const 1)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))
+    (i64.extend_i32_u (local.get $q)))
   (func $rec_get (param $r i64) (param $id i64) (result i64)
     (local $p i32) (local $n i32) (local $i i32)
     (local.set $p (call $ptr (local.get $r)))

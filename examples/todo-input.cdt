@@ -69,8 +69,8 @@
   (stay (assoc model all-completed: (= v "true"))))
 (define (update {action: :keydown key: "Enter" value: text} model) (add model title: (trim text)))
 (define (update {action: :keydown} model) (stay (assoc model clear: false)))
-(define (update {action: :toggle-all command ...} model)
-  {model: model, effects: [(emit "todo-toggle-all" (if (checked command false) "true" "false"))]})
+(define (update {action: :toggle-all params ...} model)
+  {model: model, effects: [(emit "todo-toggle-all" (if (checked params false) "true" "false"))]})
 (define (update command model) (stay model))
 
 (define (field model)

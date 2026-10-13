@@ -65,11 +65,11 @@ $ cargo run -- check examples/todo-item.cdt
 #4747ea7b44 init : (Dict[String]) -> {done: Bool, editing: Bool, title: String, todo-id: String}
 #a65931f7a3 stay : (a) -> {effects: List[Nothing], model: a}
 #6716c18e6a save : (Any, model: a & {todo-id: Any}) -> {effects: List[Effect], model: (a with editing: Bool)}
-#a2b4128baf update : ({action?: Any, attribute?: Any, key?: Any, value?: a & b & String}, model: c & d & e & f & g & h & i & j & {editing?: Any, todo-id: String}) -> {effects: List[Effect], model: j | (c with editing: Bool) | (d with editing: Bool) | (e with title: a) | (f with todo-id: b) | (g with done: Bool) | ((h with editing: Bool) with editing: Bool) | ((i with editing: Bool) with editing: Bool)}
+#7dd369880c update : ({action?: Any, attribute?: Any, key?: Any, value?: a & String}, model: b & {editing?: Any, todo-id: String}) -> {effects: List[Effect], model: b | (b with done: Bool) | (b with editing: Bool) | (b with todo-id: a) | (b with title: a)}
 #e670df2d1f view : ({done: Bool, editing: Bool, title: String}) -> View
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm
-wrote todo-item.wasm (28571 bytes)
+wrote todo-item.wasm (28966 bytes)
 
 $ cargo run -- route examples/todos-route.cdt -o todos.wasm
 wrote todos.wasm (30409 bytes)
@@ -83,13 +83,15 @@ and on the model, which holds the attributes the element shows:
 (define (update {action: :attribute-changed attribute: :title value: title} model)
   (stay (assoc model title: title)))
 (define (update {action: :edit} model) (stay (assoc model editing: true)))
-(define (update {action: :keydown key: "Enter" command ...} model: {editing: true model ...})
-  (save (value command "") model: model))
+(define (update {action: :keydown key: "Enter" params ...} model: {editing: true rest ...})
+  (save (value params "") model: rest))
 (define (update command model) (stay model))
 ```
 
-`update`'s type shows what is left to do: each clause's `assoc` is a
-record update of its own, and nothing yet merges them for display.
+`{editing: true rest ...}` matches a model that is editing and binds
+`rest` to the model without `editing`, as `[x rest ...]` binds the rest
+of a list; `save` sets `editing` again. The type says the model comes
+back as it was, or with one field set.
 
 `cargo test` runs everything: the reader, inference, hashing, the code
 generator on Wasmtime, the elements and routes on the polyfill, and the

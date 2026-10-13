@@ -102,8 +102,9 @@
   {model: model, effects: [(emit "todo-destroy" (todo-id model))]})
 (define (update {action: :edit} model) (stay (assoc model editing: true)))
 (define (update {action: :keydown key: "Escape"} model) (stay (assoc model editing: false)))
-(define (update {action: :keydown key: "Enter" command ...} model: {editing: true model ...}) (save (value command "") model: model))
-(define (update {action: :save command ...} model: {editing: true model ...}) (save (value command "") model: model))
+(define (update {action: :keydown key: "Enter" params ...} model: {editing: true rest ...})
+  (save (value params "") model: rest))
+(define (update {action: :save params ...} model: {editing: true rest ...}) (save (value params "") model: rest))
 (define (update command model) (stay model))
 
 (define (view model)
