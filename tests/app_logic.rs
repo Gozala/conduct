@@ -16,8 +16,8 @@ const DRIVER: &str = r#"
 (define (resp body) {kind: "response", value: body, status: 200})
 (define list-body "{\"todos\":[{\"id\":\"a\",\"title\":\"Buy milk\",\"completed\":false},{\"id\":\"b\",\"title\":\"Walk\",\"completed\":true}],\"counts\":{\"active\":1,\"completed\":1}}")
 
-(define connected (update (init attrs) handler: "connected" event: {kind: "connected"} attrs: attrs))
-(define loaded (update (model connected) handler: "loaded" event: (resp list-body) attrs: attrs))
+(define connected (update (assoc {kind: "connected"} action: :connected) model: (init attrs) attrs: attrs))
+(define loaded (update (assoc (resp list-body) action: :loaded) model: (model connected) attrs: attrs))
 (define ready (model loaded))
 "#;
 
@@ -73,7 +73,7 @@ fn html(v: &Value) -> String {
                 }
             }
             for (e, h) in events {
-                if let Value::Str(s) = h {
+                if let Value::Str(s) | Value::Keyword(s) = h {
                     out.push_str(&format!(" @{e}={s}"));
                 }
             }
@@ -89,10 +89,10 @@ fn html(v: &Value) -> String {
 #[test]
 fn connecting_loads_the_list() {
     assert_eq!(effects(eval("", "connected")), vec![fetch("GET", "/api/todos?filter=all", "", "loaded")]);
-    let with_filter = "(define filtered (update (init {}) handler: \"attribute-changed\" event: (ev \"attribute-changed\" value: \"filter\") attrs: {:filter \"active\"}))";
+    let with_filter = "(define filtered (update (assoc (ev \"attribute-changed\" value: \"filter\") action: :attribute-changed) model: (init {}) attrs: {:filter \"active\"}))";
     assert_eq!(effects(eval(with_filter, "filtered")), vec![fetch("GET", "/api/todos?filter=active", "", "loaded")]);
     // Another attribute changing loads nothing.
-    let other = "(define other (update (init {}) handler: \"attribute-changed\" event: (ev \"attribute-changed\" value: \"lang\") attrs: {}))";
+    let other = "(define other (update (assoc (ev \"attribute-changed\" value: \"lang\") action: :attribute-changed) model: (init {}) attrs: {}))";
     assert_eq!(effects(eval(other, "other")), vec![]);
 }
 
@@ -115,39 +115,39 @@ fn a_loaded_list_renders_items_and_footer() {
 fn changes_go_out_and_reload() {
     let cases = [
         (
-            "(define x (update ready handler: \"add\" event: (ev \"todo-add\" value: \"Read\") attrs: attrs))",
+            "(define x (update (assoc (ev \"todo-add\" value: \"Read\") action: :add) model: ready attrs: attrs))",
             fetch("POST", "/api/todos", r#"{"title":"Read"}"#, "changed"),
         ),
         (
-            "(define x (update ready handler: \"toggle\" event: (ev \"todo-toggle\" value: \"a\") attrs: attrs))",
+            "(define x (update (assoc (ev \"todo-toggle\" value: \"a\") action: :toggle) model: ready attrs: attrs))",
             fetch("PATCH", "/api/todos/a", r#"{"completed":true}"#, "changed"),
         ),
         (
-            "(define x (update ready handler: \"toggle\" event: (ev \"todo-toggle\" value: \"b\") attrs: attrs))",
+            "(define x (update (assoc (ev \"todo-toggle\" value: \"b\") action: :toggle) model: ready attrs: attrs))",
             fetch("PATCH", "/api/todos/b", r#"{"completed":false}"#, "changed"),
         ),
         (
-            "(define x (update ready handler: \"toggleAll\" event: (ev \"todo-toggle-all\" value: \"true\") attrs: attrs))",
+            "(define x (update (assoc (ev \"todo-toggle-all\" value: \"true\") action: :toggle-all) model: ready attrs: attrs))",
             fetch("PATCH", "/api/todos", r#"{"completed":true}"#, "changed"),
         ),
         (
-            "(define x (update ready handler: \"edit\" event: (ev \"todo-edit\" value: \"a\\nOat milk \") attrs: attrs))",
+            "(define x (update (assoc (ev \"todo-edit\" value: \"a\\nOat milk \") action: :edit) model: ready attrs: attrs))",
             fetch("PATCH", "/api/todos/a", r#"{"title":"Oat milk"}"#, "changed"),
         ),
         (
-            "(define x (update ready handler: \"edit\" event: (ev \"todo-edit\" value: \"a\\n   \") attrs: attrs))",
+            "(define x (update (assoc (ev \"todo-edit\" value: \"a\\n   \") action: :edit) model: ready attrs: attrs))",
             fetch("DELETE", "/api/todos/a", "", "changed"),
         ),
         (
-            "(define x (update ready handler: \"destroy\" event: (ev \"todo-destroy\" value: \"b\") attrs: attrs))",
+            "(define x (update (assoc (ev \"todo-destroy\" value: \"b\") action: :destroy) model: ready attrs: attrs))",
             fetch("DELETE", "/api/todos/b", "", "changed"),
         ),
         (
-            "(define x (update ready handler: \"clear\" event: (ev \"todo-clear\" value: \"\") attrs: attrs))",
+            "(define x (update (assoc (ev \"todo-clear\" value: \"\") action: :clear) model: ready attrs: attrs))",
             fetch("DELETE", "/api/todos", "", "changed"),
         ),
         (
-            "(define x (update ready handler: \"changed\" event: (resp \"\") attrs: attrs))",
+            "(define x (update (assoc (resp \"\") action: :changed) model: ready attrs: attrs))",
             fetch("GET", "/api/todos?filter=all", "", "loaded"),
         ),
     ];
@@ -157,7 +157,7 @@ fn changes_go_out_and_reload() {
     // Toggling a todo that is not in the list asks for nothing.
     assert_eq!(
         effects(eval(
-            "(define x (update ready handler: \"toggle\" event: (ev \"todo-toggle\" value: \"zz\") attrs: attrs))",
+            "(define x (update (assoc (ev \"todo-toggle\" value: \"zz\") action: :toggle) model: ready attrs: attrs))",
             "x"
         )),
         vec![]
@@ -166,8 +166,8 @@ fn changes_go_out_and_reload() {
 
 #[test]
 fn the_reveal_moves_through_its_phases() {
-    let steps = "(define measured (model (update ready handler: \"measured\" event: (ev \"resize\" value: \"320\") attrs: attrs)))
-                 (define revealed (model (update measured handler: \"revealed\" event: {kind: \"transitionend\"} attrs: attrs)))
+    let steps = "(define measured (model (update (assoc (ev \"resize\" value: \"320\") action: :measured) model: ready attrs: attrs)))
+                 (define revealed (model (update (assoc {kind: \"transitionend\"} action: :revealed) model: measured attrs: attrs)))
                  (define revealing-page (view measured attrs: attrs))
                  (define shown-page (view revealed attrs: attrs))";
     let revealing = html(&eval(steps, "revealing-page"));
@@ -182,6 +182,6 @@ fn the_reveal_moves_through_its_phases() {
     );
     assert!(!shown.contains("spinner"), "{shown}");
     // The about pill opens the words about the demo.
-    let about = "(define open (view (model (update ready handler: \"about\" event: {kind: \"click\"} attrs: attrs)) attrs: attrs))";
+    let about = "(define open (view (model (update (assoc {kind: \"click\"} action: :about) model: ready attrs: attrs)) attrs: attrs))";
     assert!(html(&eval(about, "open")).contains("<div class=\"about\" id=\"about\">"));
 }

@@ -233,16 +233,16 @@ async fn todo_item_renders_and_reports_changes() {
     assert_eq!(
         el.render(id).await,
         "<li class=\"editing\">\
-         <input #edit aria-label=\"Edit the todo\" autofocus=\"\" class=\"edit\" .value=\"Buy milk\" @blur=save @keydown=key></input>\
+         <input #edit aria-label=\"Edit the todo\" autofocus=\"\" class=\"edit\" .value=\"Buy milk\" @blur=save @keydown=keydown></input>\
          </li>"
     );
-    el.handle(id, "key", event("keydown", Some("Buy oat milk"), Some("Enter"))).await;
+    el.handle(id, "keydown", event("keydown", Some("Buy oat milk"), Some("Enter"))).await;
     assert_eq!(el.take_emitted(), vec![(id, "todo-edit".to_string(), "7\nBuy oat milk".to_string())]);
     assert!(el.render(id).await.starts_with("<li class=\"completed\">"));
 
     // Escape cancels an edit without reporting anything.
     el.handle(id, "edit", event("dblclick", None, None)).await;
-    el.handle(id, "key", event("keydown", Some("ignored"), Some("Escape"))).await;
+    el.handle(id, "keydown", event("keydown", Some("ignored"), Some("Escape"))).await;
     assert!(el.take_emitted().is_empty());
     assert!(!el.render(id).await.contains("editing"));
 
@@ -354,17 +354,17 @@ async fn todo_input_adds_and_clears() {
     let mut el = Element::load(TODO_INPUT).await;
     let id = el.create(&[("has-todos", "false"), ("all-completed", "false")]).await;
     let field = "<input autofocus=\"\" class=\"new-todo\" placeholder=\"What needs to be done?\"";
-    assert_eq!(el.render(id).await, format!("<div class=\"row\">{field} @keydown=key></input></div>"));
+    assert_eq!(el.render(id).await, format!("<div class=\"row\">{field} @keydown=keydown></input></div>"));
 
     // Enter adds the trimmed title and clears the field once.
-    el.handle(id, "key", event("keydown", Some("  Buy milk "), Some("Enter"))).await;
+    el.handle(id, "keydown", event("keydown", Some("  Buy milk "), Some("Enter"))).await;
     assert_eq!(el.take_emitted(), vec![(id, "todo-add".to_string(), "Buy milk".to_string())]);
     assert!(el.render(id).await.contains(".value=\"\""));
     // The next keystroke leaves the field to the person typing.
-    el.handle(id, "key", event("keydown", Some(""), Some("a"))).await;
+    el.handle(id, "keydown", event("keydown", Some(""), Some("a"))).await;
     assert!(!el.render(id).await.contains(".value"));
     // A blank title adds nothing.
-    el.handle(id, "key", event("keydown", Some("   "), Some("Enter"))).await;
+    el.handle(id, "keydown", event("keydown", Some("   "), Some("Enter"))).await;
     assert!(el.take_emitted().is_empty());
 
     // With todos, the toggle-all checkbox appears and reports its state.
@@ -375,8 +375,8 @@ async fn todo_input_adds_and_clears() {
         html.starts_with("<div class=\"row\"><input aria-label=\"Mark all as complete\" class=\"toggle-all\" id=\"toggle-all\" type=\"checkbox\""),
         "{html}"
     );
-    assert!(html.contains(".checked=true @change=toggleAll"), "{html}");
-    el.handle(id, "toggleAll", event_with("change", None, Some(false), None)).await;
+    assert!(html.contains(".checked=true @change=toggle-all"), "{html}");
+    el.handle(id, "toggle-all", event_with("change", None, Some(false), None)).await;
     assert_eq!(el.take_emitted(), vec![(id, "todo-toggle-all".to_string(), "false".to_string())]);
 }
 

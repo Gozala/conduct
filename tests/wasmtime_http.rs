@@ -66,17 +66,14 @@ const FETCHER: &str = r#"
 (define (init attrs) {n: 0})
 (define (ask url)
   (if (= (count (split url "/big")) 1)
-    (fetch "POST" url (str "{\"url\":\"" url "\"}") "answer")
-    (fetch "GET" url "" "answer")))
-(define (update m handler event attrs)
-  (cond
-    (= handler "connected")
-      {model: m
-       effects: (map (filter (split (get :urls of: attrs or: "") "\n") where: (fn [u] (not (= u "")))) each: ask)}
-    (= handler "answer")
-      {model: {n: (+ (n m) 1)}
-       effects: [(emit "answered" (str (status event 0) " " (value event "")))]}
-    :else {model: m, effects: []}))
+    (fetch "POST" url (str "{\"url\":\"" url "\"}") :answer)
+    (fetch "GET" url "" :answer)))
+(define (update {action: :connected} model: m attrs)
+  {model: m
+   effects: (map (filter (split (get :urls of: attrs or: "") "\n") where: (fn [u] (not (= u "")))) each: ask)})
+(define (update {action: :answer status: code value: body} model: m attrs)
+  {model: {n: (+ (n m) 1)}, effects: [(emit "answered" (str code " " body))]})
+(define (update command model: m attrs) {model: m, effects: []})
 (define (view m attrs) (h "p" {} [(str (n m))] {}))
 "#;
 

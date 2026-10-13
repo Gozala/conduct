@@ -153,7 +153,7 @@ fn todo_item_memory_is_flat() {
         core.set_attr(id, "completed", Some("true"));
         core.handle(id, "edit", "dblclick", None, None);
         assert_eq!(core.render(id), 2);
-        core.handle(id, "key", "keydown", Some("Buy oat milk"), Some("Enter"));
+        core.handle(id, "keydown", "keydown", Some("Buy oat milk"), Some("Enter"));
         core.set_attr(id, "completed", Some("false"));
         core.set_attr(id, "title", Some("Buy milk"));
     };
@@ -190,12 +190,12 @@ fn todo_input_and_footer_memory_is_flat() {
     let mut input = Core::new(include_str!("../examples/todo-input.cdt"));
     let id = input.create(&[("has-todos", "true"), ("all-completed", "false")]);
     let round = |core: &mut Core| {
-        core.handle(id, "key", "keydown", Some("  Buy milk "), Some("Enter"));
+        core.handle(id, "keydown", "keydown", Some("  Buy milk "), Some("Enter"));
         core.render(id);
-        core.handle(id, "key", "keydown", Some(""), Some("a"));
+        core.handle(id, "keydown", "keydown", Some(""), Some("a"));
         core.render(id);
         core.set_attr(id, "all-completed", Some("true"));
-        core.handle(id, "toggleAll", "change", None, None);
+        core.handle(id, "toggle-all", "change", None, None);
     };
     round(&mut input);
     let baseline = input.live();

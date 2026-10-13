@@ -84,18 +84,18 @@
   {model: {editing: false}
    effects: [(emit "todo-edit" (str (id-of attrs) "\n" title))]})
 
-;; `update` is defined by clauses: a call takes the narrowest one that
-;; matches it, so the last, which matches anything, is what any other
-;; event does.
-(define (update model handler: "toggle" event attrs)
+;; `update` is defined by clauses on the command it hears: a call takes
+;; the narrowest one that matches, so the last, which matches anything,
+;; is what any other command does.
+(define (update {action: :toggle} model attrs)
   {model: model, effects: [(emit "todo-toggle" (id-of attrs))]})
-(define (update model handler: "destroy" event attrs)
+(define (update {action: :destroy} model attrs)
   {model: model, effects: [(emit "todo-destroy" (id-of attrs))]})
-(define (update model handler: "edit" event attrs) (stay {editing: true}))
-(define (update model handler: "key" event: {key: "Escape"} attrs) (stay {editing: false}))
-(define (update {editing: true} handler: "key" event: {key: "Enter" value: title} attrs) (save title attrs: attrs))
-(define (update {editing: true} handler: "save" event attrs) (save (value event "") attrs: attrs))
-(define (update model handler event attrs) (stay model))
+(define (update {action: :edit} model attrs) (stay {editing: true}))
+(define (update {action: :keydown key: "Escape"} model attrs) (stay {editing: false}))
+(define (update {action: :keydown key: "Enter" value: title} model: {editing: true} attrs) (save title attrs: attrs))
+(define (update {action: :save value: title} model: {editing: true} attrs) (save title attrs: attrs))
+(define (update command model attrs) (stay model))
 
 (define (view model attrs)
   (let [done (= (get :completed of: attrs or: "") "true")
@@ -108,7 +108,7 @@
                      :autofocus ""
                      :aria-label "Edit the todo"}
             []
-            {:keydown "key" :blur "save"})])
+            {:keydown :keydown :blur :save})])
       (h "li" {:class (if done "completed" "")}
         [(h "input" {:key "toggle"
                      :class "toggle"
@@ -116,6 +116,6 @@
                      :checked (if done "true" "false")
                      :aria-label "Toggle the todo"}
             []
-            {:change "toggle"})
-         (h "label" {} [title] {:dblclick "edit"})
-         (h "button" {:class "destroy" :aria-label "Delete the todo"} ["×"] {:click "destroy"})]))))
+            {:change :toggle})
+         (h "label" {} [title] {:dblclick :edit})
+         (h "button" {:class "destroy" :aria-label "Delete the todo"} ["×"] {:click :destroy})]))))

@@ -3,6 +3,31 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Commands with keyword actions
+
+- **`update` hears a command: `(update command model: m attrs: a)`.**
+  The handler was a separate string parameter; it is now the command's
+  `action` field, a keyword, so a clause matches it with the rest of the
+  event: `(update {action: :keydown key: "Enter" value: title} model:
+  {editing: true} attrs)`.
+- **The command comes first,** as Elm's `update msg model` has it, so a
+  clause's pattern for it goes without a label. The model is labeled.
+- **Actions are keywords, as in Clojure,** wherever code names one: a
+  view's events, `{:click :toggle}`, and a request's, `(fetch .. :loaded)`.
+  `h` and `fetch` take keywords there. The host still names handlers
+  with strings, so the glue turns the string it is given into a keyword
+  (one just lifted, so its kind is set in place); the lifecycle actions
+  `:connected` and `:attribute-changed` are static keywords.
+- **Handler names became keyword-shaped:** `toggleAll` is
+  `:toggle-all`, and `todo-item`'s `key` is `:keydown`, so the action
+  and the `key` attribute do not read alike.
+- **Where a clause matched a field to test it, it binds the field to use
+  it,** `{action: :toggle value: which}`, since there is still no
+  pattern that binds the whole command. A command without the field
+  takes the catch-all instead of reading `""`; `todo-input`'s
+  `:toggle-all` keeps its old meaning with a clause for `checked: true`
+  and one for the rest.
+
 ## Elements' `update` by clauses
 
 - **Every element's `update` is now clauses,** one per handler, with the

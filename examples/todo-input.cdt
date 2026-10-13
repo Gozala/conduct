@@ -56,13 +56,13 @@
 (define (add model title: "") {model: model, effects: []})
 (define (add model title) {model: (assoc model clear: true), effects: [(emit "todo-add" title)]})
 
-(define (update model handler: "key" event: {key: "Enter" value: text} attrs)
-  (add model title: (trim text)))
-(define (update model handler: "key" event attrs) {model: (assoc model clear: false), effects: []})
-(define (update model handler: "toggleAll" event attrs)
-  {model: model
-   effects: [(emit "todo-toggle-all" (if (checked event false) "true" "false"))]})
-(define (update model handler event attrs) {model: model, effects: []})
+(define (update {action: :keydown key: "Enter" value: text} model attrs) (add model title: (trim text)))
+(define (update {action: :keydown} model attrs) {model: (assoc model clear: false), effects: []})
+(define (update {action: :toggle-all checked: true} model attrs)
+  {model: model, effects: [(emit "todo-toggle-all" "true")]})
+(define (update {action: :toggle-all} model attrs)
+  {model: model, effects: [(emit "todo-toggle-all" "false")]})
+(define (update command model attrs) {model: model, effects: []})
 
 (define (field model)
   (let [base {:class "new-todo" :placeholder "What needs to be done?" :autofocus ""}]
@@ -77,6 +77,6 @@
                    :checked (get :all-completed of: attrs or: "")
                    :aria-label "Mark all as complete"}
           []
-          {:change "toggleAll"})
+          {:change :toggle-all})
        [])
-     (h "input" (field model) [] {:keydown "key"})]))
+     (h "input" (field model) [] {:keydown :keydown})]))
