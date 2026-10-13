@@ -172,7 +172,7 @@ fn signatures_are_checked_and_shown() {
     assert_eq!(cb.type_of("twice").unwrap(), "((\\ ((\\ ?a) : ?a) x: ?a) : ?a)");
     assert_eq!(cb.type_of("id").unwrap(), "((\\ ?a) : ?a)");
     let e = error("(claim (id ?a) : ?a) (define (id x) (+ x 1))");
-    assert!(e.contains("?a, any type the caller chooses is not an integer"), "{e}");
+    assert!(e.contains("integer is not ?a, any type the caller chooses"), "{e}");
     let e = error("(claim (f integer) : text) (define (f x) (+ x 1))");
     assert!(e.contains("integer is not a text"), "{e}");
     let e = error("(claim (f integer extra: integer) : integer) (define (f x y) x)");

@@ -401,9 +401,14 @@ checker shows can be written back **(built)**: `[:a :b]`, `(list ?a)`,
 `text`, `((\ integer plus: integer) : integer)`, `(task {} with: {log})`,
 `(ok integer)`. A record that is also a variable is an open record,
 `{todo-id: text ?a ...}`, after Roc's `{ todoId : Str }a`, with the
-`...` of a record pattern's rest. Writing back is partial: a claim
-cannot yet say an open record, an intersection, `(& ?a text)`, or a
-union of anything but variants.
+`...` of a record pattern's rest. Every shown type can be claimed
+**(built)**: a claim also writes intersections, `(& ?a text)`, unions of
+any types, `[?a integer]`, records with a field set or taken out,
+`(?a with n: integer)`, `(?a without title)`, attributes by label,
+`{n: integer, title?: text}`, and recursive types, `(rec ?a {next: ?a})`.
+Where a value must fit one member of a union, or one member of an
+intersection must fit, the checker tries them in turn; the choice is
+greedy, so it is not complete.
 
 ## Open decisions
 

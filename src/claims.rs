@@ -48,7 +48,7 @@ pub struct Claims {
 /// How a claim's type variables are read.
 pub enum Mode<'a> {
     /// As types the caller chooses: what a definition is checked against.
-    Rigid,
+    Rigid(&'a Solver),
     /// As fresh variables at a level: what callers instantiate.
     Flexible(&'a Solver, u32),
 }
@@ -58,11 +58,14 @@ pub struct Env<'a> {
     pub vars: HashMap<String, Ty>,
     pub mode: Mode<'a>,
     depth: u32,
+    /// Whether what is read flows out (a result) rather than in (a
+    /// parameter).
+    positive: bool,
 }
 
 impl<'a> Env<'a> {
     pub fn new(mode: Mode<'a>) -> Self {
-        Env { vars: HashMap::new(), mode, depth: 0 }
+        Env { vars: HashMap::new(), mode, depth: 0, positive: true }
     }
 
     fn var(&mut self, name: &str) -> Ty {
@@ -70,7 +73,7 @@ impl<'a> Env<'a> {
             return t.clone();
         }
         let t = match self.mode {
-            Mode::Rigid => Ty::Rigid(Rc::from(name)),
+            Mode::Rigid(_) => Ty::Rigid(Rc::from(name)),
             Mode::Flexible(s, level) => s.fresh_ty(level),
         };
         self.vars.insert(name.to_string(), t.clone());
@@ -141,11 +144,12 @@ impl Claims {
             .iter()
             .enumerate()
             .map(|(i, m)| {
-                let (label, global) = match m {
-                    Member::Name(n, _) => (n.clone(), self.attributes.get(n)?.clone()),
-                    Member::Inline(g, _) => (g.rsplit('/').next().unwrap().to_string(), g.clone()),
+                let (label, global, opt) = match m {
+                    Member::Name(n, _) => (n.clone(), self.attributes.get(n)?.clone(), false),
+                    Member::Inline(g, _) => (g.rsplit('/').next().unwrap().to_string(), g.clone(), false),
+                    Member::Field(l, _, opt) => (l.clone(), self.labeled(l)?, *opt),
                 };
-                Some(Field { label, global, optional: i >= *optional })
+                Some(Field { label, global, optional: opt || i >= *optional })
             })
             .collect()
     }
@@ -160,6 +164,31 @@ impl Claims {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The global name of an attribute a record type labels: a declared
+    /// attribute's local name, or the last part of a global name some
+    /// record type writes in place.
+    pub fn labeled(&self, label: &str) -> Option<String> {
+        if let Some(global) = self.attribute(label) {
+            return Some(global);
+        }
+        // A global name is itself.
+        if label.contains('/') {
+            return Some(label.to_string());
+        }
+        let mut inline = self.types.values().flat_map(|t| match &t.body {
+            TypeExpr::Record(members, _) => members
+                .iter()
+                .filter_map(|m| match m {
+                    Member::Inline(g, _) if g.rsplit('/').next() == Some(label) => Some(g.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        });
+        let first = inline.next()?;
+        inline.all(|g| g == first).then_some(first)
     }
 
     /// The global names of a record type's required attributes.
@@ -252,11 +281,26 @@ impl Claims {
                             (global.clone(), self.attribute_types[global].1.clone())
                         }
                         Member::Inline(g, value) => (g.clone(), self.ty(value, env)?),
+                        Member::Field(l, value, _) => {
+                            let global = self.labeled(l).ok_or_else(|| {
+                                format!(
+                                    "`{l}:` is not a declared attribute: declare it, `(type {l} : (domain/{l} type))`"
+                                )
+                            })?;
+                            (global, self.ty(value, env)?)
+                        }
                     };
-                    fields.push((global, if i >= *optional { Ty::opt(t) } else { t }));
+                    let opt = i >= *optional || matches!(m, Member::Field(_, _, true));
+                    fields.push((global, if opt { Ty::opt(t) } else { t }));
                 }
+                // A record of one attribute is the variant it is, except
+                // where a value flows in written as it is shown, `{x:
+                // integer}`: there it asks only for the attribute.
+                let shown = members.iter().all(|m| matches!(m, Member::Field(..)));
                 match fields.as_slice() {
-                    [(global, t)] if !matches!(t, Ty::Opt(_)) => Ty::variant(global.clone(), t.clone()),
+                    [(global, t)] if !matches!(t, Ty::Opt(_)) && (env.positive || !shown) => {
+                        Ty::variant(global.clone(), t.clone())
+                    }
                     _ => Ty::record(fields),
                 }
             }
@@ -277,12 +321,56 @@ impl Claims {
                 function(params, ret)?
             }
             TypeExpr::Caps(caps) => Ty::caps(caps.iter().cloned()),
+            TypeExpr::Inter(parts) => {
+                let mut parts = parts
+                    .iter()
+                    .map(|p| match self.ty(p, env)? {
+                        // `{x: integer ?a ...}`: the record `?a`, which has `x`.
+                        Ty::Tags(tags) if matches!(p, TypeExpr::Record(..)) => {
+                            Ok(Ty::record(tags.iter().map(|(k, t)| (k.clone(), t.clone().unwrap_or(Ty::Top)))))
+                        }
+                        t => Ok(t),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                if parts.len() == 1 { parts.pop().unwrap() } else { Ty::Inter(Rc::new(parts)) }
+            }
+            TypeExpr::Update(base, steps) => {
+                let mut out = self.ty(base, env)?;
+                for (label, value) in steps {
+                    let global = self.labeled(label).ok_or_else(|| format!("`{label}` is not a declared attribute"))?;
+                    out = match value {
+                        Some(v) => Ty::update(out, global, self.ty(v, env)?),
+                        None => Ty::without(out, global),
+                    };
+                }
+                out
+            }
+            // A variable that is the type again: bounded by it both ways.
+            TypeExpr::Rec(v, body) => {
+                let solver = match env.mode {
+                    Mode::Rigid(s) | Mode::Flexible(s, _) => s,
+                };
+                let Ty::Var(var) = solver.fresh_ty(1) else { unreachable!() };
+                let outer = env.vars.insert(v.clone(), Ty::Var(var.clone()));
+                let t = self.ty(body, env);
+                match outer {
+                    Some(o) => env.vars.insert(v.clone(), o),
+                    None => env.vars.remove(v),
+                };
+                let t = t?;
+                var.lower.borrow_mut().push(t.clone());
+                var.upper.borrow_mut().push(t);
+                Ty::Var(var)
+            }
         })
     }
 
     /// A function's parameters' types, each with its label.
     pub fn params(&self, params: &[(Option<String>, TypeExpr)], env: &mut Env) -> Result<Vec<(Option<String>, Ty)>> {
-        params.iter().map(|(l, t)| Ok((l.clone(), self.ty(t, env)?))).collect()
+        env.positive = !env.positive;
+        let out = params.iter().map(|(l, t)| Ok((l.clone(), self.ty(t, env)?))).collect();
+        env.positive = !env.positive;
+        out
     }
 
     fn expand(&self, name: &str, def: &TypeDef, bound: Vec<(String, Ty)>, env: &mut Env) -> Result<Ty> {
@@ -318,6 +406,18 @@ pub fn function(params: Vec<(Option<String>, Ty)>, ret: Ty) -> Result<Ty> {
 /// of tags; records of several attributes joined, those not every case
 /// has becoming optional.
 fn union(cases: Vec<Ty>) -> Result<Ty> {
+    // A record of one attribute among cases is the variant it is.
+    let cases: Vec<Ty> = cases
+        .into_iter()
+        .map(|c| match c {
+            Ty::Record(fields) if fields.len() == 1 && fields.values().all(|t| !matches!(t, Ty::Opt(_))) => {
+                let (k, t) = fields.iter().next().unwrap();
+                Ty::variant(k.clone(), t.clone())
+            }
+            c => c,
+        })
+        .collect();
+    let cases_all = cases.clone();
     if cases.iter().all(|c| matches!(c, Ty::Tags(_))) {
         let mut tags = BTreeMap::new();
         for c in cases {
@@ -336,12 +436,10 @@ fn union(cases: Vec<Ty>) -> Result<Ty> {
             Ty::Record(fields) => records.push((*fields).clone()),
             Ty::Tags(tags) if tags.len() == 1 => {
                 let (k, p) = tags.iter().next().unwrap();
-                let Some(p) = p else {
-                    return Err(format!("the keyword `:{k}` cannot be a case beside records"));
-                };
+                let Some(p) = p else { return Ok(general(cases_all)) };
                 records.push([(k.clone(), p.clone())].into_iter().collect());
             }
-            _ => return Err("a variant's cases are keywords and records".into()),
+            _ => return Ok(general(cases_all)),
         }
     }
     let mut all: BTreeSet<String> = BTreeSet::new();
@@ -359,6 +457,24 @@ fn union(cases: Vec<Ty>) -> Result<Ty> {
     Ok(Ty::record(fields))
 }
 
+/// Cases that are not all keywords and records: one of several types,
+/// with the variants among them as one set.
+fn general(cases: Vec<Ty>) -> Ty {
+    let mut tags = BTreeMap::new();
+    let mut out = Vec::new();
+    for c in cases {
+        match c {
+            Ty::Tags(t) => tags.extend(t.iter().map(|(k, p)| (k.clone(), p.clone()))),
+            Ty::Union(inner) => out.extend(inner.iter().cloned()),
+            c => out.push(c),
+        }
+    }
+    if !tags.is_empty() {
+        out.push(Ty::tags(tags));
+    }
+    if out.len() == 1 { out.pop().unwrap() } else { Ty::Union(Rc::new(out)) }
+}
+
 /// The variables a type mentions.
 pub fn vars(t: &TypeExpr, out: &mut BTreeSet<String>) {
     match t {
@@ -368,7 +484,7 @@ pub fn vars(t: &TypeExpr, out: &mut BTreeSet<String>) {
         TypeExpr::App(_, args, _) => args.iter().for_each(|(_, t)| vars(t, out)),
         TypeExpr::Attribute(_, t, _) => vars(t, out),
         TypeExpr::Record(members, _) => members.iter().for_each(|m| {
-            if let Member::Inline(_, t) = m {
+            if let Member::Inline(_, t) | Member::Field(_, t, _) = m {
                 vars(t, out)
             }
         }),
@@ -379,6 +495,17 @@ pub fn vars(t: &TypeExpr, out: &mut BTreeSet<String>) {
                 vars(w, out);
             }
             vars(ret, out);
+        }
+        TypeExpr::Inter(parts) => parts.iter().for_each(|p| vars(p, out)),
+        TypeExpr::Update(base, steps) => {
+            vars(base, out);
+            steps.iter().filter_map(|(_, v)| v.as_ref()).for_each(|v| vars(v, out));
+        }
+        TypeExpr::Rec(v, body) => {
+            let mut inner = BTreeSet::new();
+            vars(body, &mut inner);
+            inner.remove(v);
+            out.extend(inner);
         }
         TypeExpr::Name(..) | TypeExpr::Keyword(_) | TypeExpr::Caps(_) => {}
     }

@@ -3,6 +3,44 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## What is shown can be claimed
+
+- **Every type the checker shows is a claim that checks,** and shown
+  again is the same type. A test claims every definition of the
+  examples, and a set of tricky ones, with the type shown for it.
+- **Claims gained what printing had:** a union of any types,
+  `[?a integer]`; an intersection, `(& A B)`; an open record,
+  `{n: integer ?a ...}`; a record with a field set or taken out,
+  `(?a with n: integer)`, `(?a without title)`; attributes by their
+  labels, `{n: integer, title?: text}`; and a recursive type,
+  `(rec ?a {next: ?a})`.
+- **The solver has unions and intersections of its own** now, not only
+  as a variable's bounds. What flows out of a union flows out of each
+  member, and what flows into an intersection into each: those are
+  exact. The other two directions choose: a type fits a union where it
+  fits a member, and an intersection fits where one of its members does
+  (records in it are merged first). The members are tried in turn, and
+  a try that fails is undone. The choice is greedy, so a claim whose
+  members only some later constraint tells apart can be refused though
+  it holds; a function's result is checked before its parameters to make
+  that rarer. Overloads are what these intersections would need to be
+  exact, and they are not a goal.
+- **A record of one attribute, written as shown, is read by where it
+  is:** a variant where a value flows out, a record that asks for the
+  attribute where a value flows in. The two print the same, `{n:
+  integer}`, and the reading that is the more general in each place is
+  the one inference would have found.
+- **A recursive type is a variable bounded by its body both ways,**
+  which is how inference makes one; the type the claim declares is not
+  rigid there.
+- **A claim of a definition that performs may write its whole type,**
+  `(claim greet! : ((\ text) : (task {} with: {print})))`, as it is
+  shown, besides the result alone.
+- **What printing simplifies changed with it:** functions side by side
+  merge (`(& ((\ ?a) : ?b) ((\ ?a) : ?c))` is one function), a
+  recursive variable that no constructor guards is dropped before
+  variables are merged, and setting a field of `{}` is a record.
+
 ## Types are shown as they are written
 
 - **The checker shows a type in the syntax a `type` or `claim` writes:**
@@ -22,11 +60,7 @@ it. Newest first.
   so a function that answers it answers `?a`.
 - **Other intersections are `(& A B)`.** They are rare, a parameter that
   is a variable and a text at once, and have no Roc counterpart.
-- **What is shown can mostly be written back:** functions, lists,
-  variants, records and tasks paste into a claim as shown. A claim
-  cannot yet write an open record, an intersection, or a union whose
-  members are not variants (`[?a integer]`); declared types would need
-  them, and Simple-sub represents them only as a variable's bounds.
+- **What is shown can be written back** (see above).
 - **`any`, `nothing`, `view` and `effect` are type names now,** so the
   types that print them can be written.
 - **Errors use the same names, with an article:** `text is not an

@@ -776,7 +776,13 @@ impl Codebase {
                 None => None,
             };
             let ret = self.claims.ty(&claim.ty, env)?;
-            let (ret, inferred) = if claim.performs {
+            // A claim may write the whole type, as it is shown: a task, or
+            // a function that answers one.
+            let task = |t: &TypeExpr| matches!(t, TypeExpr::App(head, _, _) if head == "task");
+            let whole = claim.params.is_none()
+                && claim.with.is_none()
+                && (task(&claim.ty) || matches!(&claim.ty, TypeExpr::Fn(_, w, r) if w.is_some() || task(r)));
+            let (ret, inferred) = if claim.performs && !whole {
                 match &claim.with {
                     Some(w) => (Ty::task(ret, self.claims.ty(w, env)?), None),
                     None => {
@@ -793,7 +799,7 @@ impl Codebase {
             }
         };
         // Checked with its variables as types the caller chooses...
-        let mut rigid_env = Env::new(Mode::Rigid);
+        let mut rigid_env = Env::new(Mode::Rigid(s));
         let (rigid, effect) = read(&mut rigid_env)?;
         s.constrain(&s.instantiate(inferred, 1), &rigid)
             .map_err(|e| format!("the definition does not fit its claim: {e}"))?;

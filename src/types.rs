@@ -97,6 +97,12 @@ pub enum Ty {
     /// an environment has provided those names. It only bounds what
     /// flows into it.
     CapsPlus(Rc<Ty>, Rc<BTreeSet<String>>),
+    /// One of several types, as a claim writes it: `[integer ?a]`. What
+    /// flows in fits one of them; what flows out is any of them.
+    Union(Rc<Vec<Ty>>),
+    /// All of several types, as a claim writes it: `(& ?a {done: boolean})`
+    /// or, for a variable that is a record as well, `{done: boolean ?a ...}`.
+    Inter(Rc<Vec<Ty>>),
 }
 
 impl Ty {
@@ -179,6 +185,11 @@ impl Ty {
     }
 
     pub fn update(record: Ty, field: String, value: Ty) -> Ty {
+        // Setting a field again sets it once.
+        let record = match record {
+            Ty::Update(inner, k, _) if k == field => (*inner).clone(),
+            r => r,
+        };
         Ty::Update(Rc::new(record), field, Rc::new(value))
     }
 
@@ -196,6 +207,7 @@ impl Ty {
             Ty::Update(r, _, v) => r.level().max(v.level()),
             Ty::Tags(tags) => tags.values().flatten().map(Ty::level).max().unwrap_or(0),
             Ty::IfHas(_, t) => t.level(),
+            Ty::Union(ts) | Ty::Inter(ts) => ts.iter().map(Ty::level).max().unwrap_or(0),
             _ => 0,
         }
     }
@@ -222,6 +234,8 @@ impl Ty {
             Ty::Caps(c) => (13, Rc::as_ptr(c) as *const u8 as usize),
             Ty::Opt(t) => (14, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Rigid(name) => (16, Rc::as_ptr(name) as *const u8 as usize),
+            Ty::Union(ts) => (19, Rc::as_ptr(ts) as *const u8 as usize),
+            Ty::Inter(ts) => (20, Rc::as_ptr(ts) as *const u8 as usize),
         }
     }
 }
@@ -262,6 +276,11 @@ struct Cache {
 #[derive(Default)]
 pub struct Solver {
     next_id: Cell<u32>,
+    /// While one of several types is tried, the bounds added, so that a
+    /// try that fails can be undone: each variable, and whether the bound
+    /// went to its upper bounds.
+    trail: RefCell<Vec<(Var, bool)>>,
+    trying: Cell<u32>,
 }
 
 impl Solver {
@@ -288,6 +307,10 @@ impl Solver {
         }
         match (lhs, rhs) {
             (Ty::Bot, _) | (_, Ty::Top) => Ok(()),
+            // Each of several types flows wherever all of them do; what
+            // flows into all of several types flows into each.
+            (Ty::Union(ls), _) => ls.iter().try_for_each(|l| self.go(l, rhs, cache)),
+            (_, Ty::Inter(rs)) => rs.iter().try_for_each(|r| self.go(lhs, r, cache)),
             (Ty::Prim(a), Ty::Prim(b)) if a == b => Ok(()),
             // `{}` is an empty dictionary, and a record that has none of
             // the attributes it may have.
@@ -356,10 +379,12 @@ impl Solver {
                         p1.len()
                     )));
                 }
+                // The result first: where a parameter is one of several
+                // types, what the result needs decides which.
+                self.go(r0, r1, cache)?;
                 for (a, b) in p0.iter().zip(p1.iter()) {
                     self.go(b, a, cache)?;
                 }
-                self.go(r0, r1, cache)?;
                 self.go(e0, e1, cache)
             }
             (Ty::Caps(a), Ty::Caps(b)) => {
@@ -394,7 +419,9 @@ impl Solver {
                 }
                 Ok(())
             }
-            (Ty::List(a), Ty::List(b)) | (Ty::Dict(a), Ty::Dict(b)) => self.go(a, b, cache),
+            (Ty::List(a), Ty::List(b)) | (Ty::Dict(a), Ty::Dict(b)) | (Ty::Opt(a), Ty::Opt(b)) => self.go(a, b, cache),
+            // What is there fits what may be.
+            (_, Ty::Opt(b)) if !matches!(lhs, Ty::Var(_)) => self.go(lhs, b, cache),
             (Ty::Task(a, c), Ty::Task(b, d)) => {
                 self.go(a, b, cache)?;
                 self.go(c, d, cache)
@@ -406,7 +433,7 @@ impl Solver {
             }
             (Ty::Rigid(_), Ty::CapsPlus(rest, _)) => self.go(lhs, rest, cache),
             (Ty::Var(v), _) if rhs.level() <= v.level => {
-                v.upper.borrow_mut().push(rhs.clone());
+                self.bound(v, true, rhs.clone());
                 let lowers = v.lower.borrow().clone();
                 for l in &lowers {
                     self.go(l, rhs, cache)?;
@@ -414,12 +441,65 @@ impl Solver {
                 Ok(())
             }
             (_, Ty::Var(v)) if lhs.level() <= v.level => {
-                v.lower.borrow_mut().push(lhs.clone());
+                self.bound(v, false, lhs.clone());
                 let uppers = v.upper.borrow().clone();
                 for u in &uppers {
                     self.go(lhs, u, cache)?;
                 }
                 Ok(())
+            }
+            // All of several types fits where one of them does.
+            (Ty::Inter(ls), _) => {
+                // Records together are the record of all their fields.
+                if let Ty::Record(_) | Ty::Tags(_) = rhs {
+                    let mut fields = BTreeMap::new();
+                    for l in ls.iter() {
+                        match l {
+                            Ty::Record(fs) => fields.extend(fs.iter().map(|(k, t)| (k.clone(), t.clone()))),
+                            Ty::Tags(tags) if tags.len() == 1 => {
+                                if let Some((k, Some(p))) = tags.iter().next() {
+                                    fields.insert(k.clone(), p.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if fields.len() > 1 {
+                        return self.go(&Ty::record(fields), rhs, cache);
+                    }
+                }
+                // A member that says what is asked, before one that only
+                // may: a record before a variable.
+                let says = |l: &&Ty| match (l, rhs) {
+                    (Ty::Record(fs), Ty::IfHas(k, _)) => fs.contains_key(k),
+                    (Ty::Tags(tags), Ty::IfHas(k, _)) => tags.contains_key(k),
+                    (_, Ty::IfHas(..)) => false,
+                    (Ty::Rigid(_) | Ty::Var(_) | Ty::Top, _) => false,
+                    _ => fits(l, rhs),
+                };
+                let mut order: Vec<&Ty> = ls.iter().filter(says).collect();
+                order.extend(ls.iter().filter(|l| !says(l) && fits(l, rhs)));
+                self.first(order.into_iter().map(|l| (l, rhs)), cache).unwrap_or_else(|| {
+                    Err(TypeError(format!("{} is not {}", Shallow(lhs), article(&Shallow(rhs).to_string()))))
+                })
+            }
+            // A type fits one of several where it fits that one.
+            (_, Ty::Union(rs)) if !matches!(lhs, Ty::Var(_)) => self
+                .first(rs.iter().filter(|r| fits(lhs, r)).map(|r| (lhs, r)), cache)
+                .unwrap_or_else(|| Err(TypeError(format!("{} is not one of {}", Shallow(lhs), Shallow(rhs))))),
+            // A record with a field set fits another with that field set
+            // where the fields fit, and the records do but for that field.
+            (Ty::Update(r0, k0, v0), Ty::Update(r1, k1, v1)) if k0 == k1 => {
+                self.go(v0, v1, cache)?;
+                self.go(r0, &Ty::update((**r1).clone(), k1.clone(), Ty::opt(Ty::Top)), cache)
+            }
+            (_, Ty::Update(r1, k, v1)) if !matches!(lhs, Ty::Var(_)) => {
+                self.go(lhs, &relax(r1, k), cache)?;
+                // Taken out, or anything if there, it asks nothing more.
+                match &**v1 {
+                    Ty::Opt(t) if matches!(**t, Ty::Bot | Ty::Top) => Ok(()),
+                    v1 => self.go(lhs, &Ty::record([(k.clone(), v1.clone())]), cache),
+                }
             }
             // A value without the attribute fits, whatever else it is.
             (_, Ty::IfHas(k, t)) if !matches!(lhs, Ty::Var(_) | Ty::Update(..)) => match lhs {
@@ -458,6 +538,8 @@ impl Solver {
                 Ty::IfHas(..) => self.go(record, rhs, cache),
                 // A variant with its own field set is that variant again.
                 Ty::Tags(tags) => match tags.get(field) {
+                    // `{}` with one field set is the variant of that field.
+                    Some(Some(payload)) if matches!(**record, Ty::Prim(Prim::Empty)) => self.go(value, payload, cache),
                     Some(Some(payload)) => {
                         self.go(value, payload, cache)?;
                         self.go(record, &Ty::variant(field.clone(), Ty::Top), cache)
@@ -476,6 +558,56 @@ impl Solver {
             }
             _ => Err(TypeError(format!("{} is not {}", Shallow(lhs), article(&Shallow(rhs).to_string())))),
         }
+    }
+
+    fn bound(&self, v: &Var, upper: bool, t: Ty) {
+        if upper {
+            v.upper.borrow_mut().push(t)
+        } else {
+            v.lower.borrow_mut().push(t)
+        }
+        if self.trying.get() > 0 {
+            self.trail.borrow_mut().push((v.clone(), upper));
+        }
+    }
+
+    /// The first of several constraints that holds, each tried in turn
+    /// and undone if it does not: `None` if there are none to try, and
+    /// the first one's error if none holds.
+    fn first<'t>(
+        &self,
+        tries: impl Iterator<Item = (&'t Ty, &'t Ty)>,
+        cache: &mut Cache,
+    ) -> Option<Result<(), TypeError>> {
+        let mut error = None;
+        for (l, r) in tries {
+            let mark = self.trail.borrow().len();
+            let saved = (cache.pairs.clone(), cache.reads.clone());
+            self.trying.set(self.trying.get() + 1);
+            let out = self.go(l, r, cache);
+            self.trying.set(self.trying.get() - 1);
+            match out {
+                Ok(()) => {
+                    if self.trying.get() == 0 {
+                        self.trail.borrow_mut().clear();
+                    }
+                    return Some(Ok(()));
+                }
+                Err(e) => {
+                    let undone: Vec<(Var, bool)> = self.trail.borrow_mut().drain(mark..).collect();
+                    for (v, upper) in undone.into_iter().rev() {
+                        if upper {
+                            v.upper.borrow_mut().pop()
+                        } else {
+                            v.lower.borrow_mut().pop()
+                        };
+                    }
+                    (cache.pairs, cache.reads) = saved;
+                    error.get_or_insert(Err(e));
+                }
+            }
+        }
+        error
     }
 
     /// Copy the parts of `ty` above `level` into variables at `level`,
@@ -507,6 +639,8 @@ impl Solver {
             Ty::Update(r, k, v) => {
                 Ty::update(self.extrude(r, pol, level, cache), k.clone(), self.extrude(v, pol, level, cache))
             }
+            Ty::Union(ts) => Ty::Union(Rc::new(ts.iter().map(|t| self.extrude(t, pol, level, cache)).collect())),
+            Ty::Inter(ts) => Ty::Inter(Rc::new(ts.iter().map(|t| self.extrude(t, pol, level, cache)).collect())),
             Ty::Var(v) => {
                 if let Some(nv) = cache.get(&(v.id, pol)) {
                     return Ty::Var(nv.clone());
@@ -514,12 +648,12 @@ impl Solver {
                 let nv = self.fresh(level);
                 cache.insert((v.id, pol), nv.clone());
                 if pol {
-                    v.upper.borrow_mut().push(Ty::Var(nv.clone()));
+                    self.bound(v, true, Ty::Var(nv.clone()));
                     let lowers = v.lower.borrow().clone();
                     let copied = lowers.iter().map(|l| self.extrude(l, pol, level, cache)).collect();
                     *nv.lower.borrow_mut() = copied;
                 } else {
-                    v.lower.borrow_mut().push(Ty::Var(nv.clone()));
+                    self.bound(v, false, Ty::Var(nv.clone()));
                     let uppers = v.upper.borrow().clone();
                     let copied = uppers.iter().map(|u| self.extrude(u, pol, level, cache)).collect();
                     *nv.upper.borrow_mut() = copied;
@@ -576,8 +710,51 @@ impl Solver {
             Ty::Update(r, k, v) => {
                 Ty::update(self.freshen(r, limit, level, map), k.clone(), self.freshen(v, limit, level, map))
             }
+            Ty::Union(ts) => Ty::Union(Rc::new(ts.iter().map(|t| self.freshen(t, limit, level, map)).collect())),
+            Ty::Inter(ts) => Ty::Inter(Rc::new(ts.iter().map(|t| self.freshen(t, limit, level, map)).collect())),
             other => other.clone(),
         }
+    }
+}
+
+/// What a record is but for the field `k`, as far as it can be said:
+/// what a record with `k` set asks of the rest.
+fn relax(r: &Ty, k: &str) -> Ty {
+    match r {
+        Ty::Record(fields) => Ty::record(fields.iter().filter(|(f, _)| *f != k).map(|(f, t)| (f.clone(), t.clone()))),
+        Ty::Tags(tags) if tags.len() == 1 && tags.contains_key(k) => Ty::Top,
+        r => r.clone(),
+    }
+}
+
+/// Whether `l` may fit `r` by their outermost shapes: how a type is
+/// matched to one of a union's members, or one of an intersection's
+/// members to what it flows into.
+fn fits(l: &Ty, r: &Ty) -> bool {
+    match (l, r) {
+        (Ty::Bot, _) | (_, Ty::Top) | (Ty::Var(_), _) | (_, Ty::Var(_)) | (_, Ty::IfHas(..)) => true,
+        (Ty::Union(ls), _) => ls.iter().all(|l| fits(l, r)),
+        (_, Ty::Union(rs)) => rs.iter().any(|r| fits(l, r)),
+        (Ty::Inter(ls), _) => ls.iter().any(|l| fits(l, r)),
+        (_, Ty::Inter(rs)) => rs.iter().all(|r| fits(l, r)),
+        (Ty::Prim(a), Ty::Prim(b)) => a == b,
+        (Ty::Prim(Prim::Empty), Ty::Dict(_) | Ty::Record(_)) => true,
+        (Ty::Tags(tags), Ty::Prim(Prim::Keyword)) => tags.values().all(Option::is_none),
+        (Ty::Tags(a), Ty::Tags(b)) => a.keys().all(|k| b.contains_key(k)),
+        (Ty::Tags(_), Ty::Record(_)) => true,
+        (Ty::Record(a), Ty::Record(b)) => b.iter().all(|(k, t)| matches!(t, Ty::Opt(_)) || a.contains_key(k)),
+        (Ty::Rigid(a), Ty::Rigid(b)) => a == b,
+        (Ty::Fn(a, ..), Ty::Fn(b, ..)) => a.len() == b.len(),
+        (Ty::List(_), Ty::List(_))
+        | (Ty::Dict(_), Ty::Dict(_))
+        | (Ty::Task(..), Ty::Task(..))
+        | (Ty::View, Ty::View)
+        | (Ty::Effect, Ty::Effect)
+        | (Ty::Caps(_), Ty::Caps(_) | Ty::CapsPlus(..))
+        | (Ty::Rigid(_), Ty::CapsPlus(..)) => true,
+        (Ty::Update(..), Ty::Record(_) | Ty::Tags(_) | Ty::Update(..)) => true,
+        (_, Ty::Update(r, ..)) => fits(l, r),
+        _ => false,
     }
 }
 
@@ -614,6 +791,14 @@ impl fmt::Display for Shallow<'_> {
             Ty::Update(r, k, _) => write!(f, "{} with `{k}` set", Shallow(r)),
             Ty::Tags(k) => write!(f, "{}", tags_text(k)),
             Ty::IfHas(k, _) => write!(f, "{{{k}?: ..}}"),
+            Ty::Union(ts) => {
+                let all: Vec<String> = ts.iter().map(|t| Shallow(t).to_string()).collect();
+                write!(f, "[{}]", all.join(" "))
+            }
+            Ty::Inter(ts) => {
+                let all: Vec<String> = ts.iter().map(|t| Shallow(t).to_string()).collect();
+                write!(f, "(& {})", all.join(" "))
+            }
         }
     }
 }
@@ -725,6 +910,8 @@ fn coalesce_go(
             k.clone(),
             Box::new(coalesce_go(v, pol, in_process, recursive, next)),
         ),
+        Ty::Union(ts) => Type::Union(ts.iter().map(|t| coalesce_go(t, pol, in_process, recursive, next)).collect()),
+        Ty::Inter(ts) => Type::Inter(ts.iter().map(|t| coalesce_go(t, pol, in_process, recursive, next)).collect()),
         Ty::Var(v) => {
             let key = (v.id, pol);
             if in_process.contains(&key) {
@@ -762,7 +949,9 @@ fn simplify(ty: Type) -> Type {
     occurrences(&ty, true, &mut pos, &mut neg);
     let keep: HashSet<u32> = pos.intersection(&neg).copied().collect();
     let ty = prune(ty, true, &keep);
-    let mut ty = normalize(ty);
+    // A recursive variable no constructor guards says nothing, and would
+    // keep the variables beside it from merging.
+    let mut ty = normalize(vacuous(normalize(ty), true));
     // Merge or drop variables by what they co-occur with, until nothing
     // changes.
     for _ in 0..64 {
@@ -1293,6 +1482,32 @@ fn merge_containers(parts: &mut Vec<Type>, union: bool) {
         parts.retain(|t| !matches!(t, Type::Dict(_)));
         parts.push(Type::Dict(Box::new(combine(dicts))));
     }
+    // Functions of the same parameters: what each takes, and what each
+    // answers, combined the other way round for the parameters.
+    let fns: Vec<Type> = parts.iter().filter(|t| matches!(t, Type::Fn(..))).cloned().collect();
+    if fns.len() > 1 {
+        let Type::Fn(first, _, _, labels) = &fns[0] else { unreachable!() };
+        let same = fns.iter().all(|f| matches!(f, Type::Fn(p, _, _, l) if p.len() == first.len() && l == labels));
+        if same {
+            let labels = labels.clone();
+            let flip = |ts: Vec<Type>| if union { normalize(Type::Inter(ts)) } else { normalize(Type::Union(ts)) };
+            let mut params: Vec<Vec<Type>> = vec![Vec::new(); first.len()];
+            let (mut rets, mut effs) = (Vec::new(), Vec::new());
+            for f in fns {
+                let Type::Fn(p, r, e, _) = f else { unreachable!() };
+                p.into_iter().enumerate().for_each(|(i, p)| params[i].push(p));
+                rets.push(*r);
+                effs.push(*e);
+            }
+            parts.retain(|t| !matches!(t, Type::Fn(..)));
+            parts.push(Type::Fn(
+                params.into_iter().map(flip).collect(),
+                Box::new(combine(rets)),
+                Box::new(combine(effs)),
+                labels,
+            ));
+        }
+    }
     let tasks: Vec<(Type, Type)> = parts
         .iter()
         .filter_map(|t| if let Type::Task(r, c) = t { Some(((**r).clone(), (**c).clone())) } else { None })
@@ -1359,6 +1574,8 @@ fn merge_records(parts: &mut Vec<Type>, union: bool) {
 fn update(record: Type, field: String, value: Type) -> Type {
     let absent = value == Type::Opt(Box::new(Type::Bot));
     match record {
+        // `{}` is the record with no attributes.
+        Type::Prim(Prim::Empty) => update(Type::Record(BTreeMap::new()), field, value),
         Type::Record(mut fields) if absent => {
             fields.remove(&field);
             Type::Record(fields)
@@ -1545,7 +1762,8 @@ fn write_type(ty: &Type, f: &mut fmt::Formatter<'_>, prec: u8) -> fmt::Result {
         Type::Inter(ts)
             if ts.len() == 2
                 && let Some(Type::Var(v)) = ts.iter().find(|t| matches!(t, Type::Var(_)))
-                && let Some(Type::Record(fs)) = ts.iter().find(|t| matches!(t, Type::Record(_))) =>
+                && let Some(Type::Record(fs)) =
+                    ts.iter().map(as_record).find(|t| matches!(t, Type::Record(_))).as_ref() =>
         {
             write!(f, "{{")?;
             fields(f, fs)?;
