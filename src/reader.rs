@@ -42,12 +42,37 @@ impl Sexp {
         }
     }
 
+    /// A symbol's name, without the mark a macro's expansion gave it.
     pub fn as_symbol(&self) -> Option<&str> {
         match self {
-            Sexp::Symbol(name, _) => Some(name),
+            Sexp::Symbol(name, _) => Some(bare(name)),
             _ => None,
         }
     }
+}
+
+/// What separates a symbol's name from the mark of the expansion that
+/// wrote it. No symbol read from source has one, so a marked name is
+/// never one a person wrote.
+pub const MARK: char = '\u{1}';
+/// What separates a marked name from the hash it referred to where the
+/// macro that wrote it was defined.
+pub const PIN: char = '\u{3}';
+
+/// A symbol's name as written: without its mark and pin.
+pub fn bare(name: &str) -> &str {
+    name.split([MARK, PIN]).next().unwrap_or(name)
+}
+
+/// What follows a marked name's bare part: its mark and pin, or nothing.
+pub fn mark_of(name: &str) -> &str {
+    &name[bare(name).len()..]
+}
+
+/// The hash, in hex, a template symbol was pinned to where its macro
+/// was defined.
+pub fn pin_of(name: &str) -> Option<&str> {
+    name.split_once(PIN).map(|(_, hex)| hex)
 }
 
 impl fmt::Display for Sexp {
@@ -147,6 +172,20 @@ impl Reader<'_> {
                 self.error(format!("unexpected `{}`", b as char), start)
             }
             b'"' => self.string(),
+            // A template, and the places in it where a value goes:
+            // `(when ~test ~@body)`.
+            b'`' | b'~' => {
+                let name = match (b, self.src.get(self.pos + 1)) {
+                    (b'`', _) => "quasiquote",
+                    (_, Some(b'@')) => "unquote-splicing",
+                    _ => "unquote",
+                };
+                self.pos += if name == "unquote-splicing" { 2 } else { 1 };
+                let mark = Span { start, end: self.pos };
+                let inner = self.form()?;
+                let span = Span { start, end: inner.span().end };
+                Ok(Sexp::List(vec![Sexp::Symbol(name.to_string(), mark), inner], span))
+            }
             _ => self.atom(),
         }
     }
@@ -251,6 +290,12 @@ mod tests {
             matches!(&forms[1], Sexp::Map(items, _) if matches!(&items[0], Sexp::Label(n, _) if n == "io.gozala.person/name"))
         );
         assert!(matches!(&forms[2], Sexp::Label(n, _) if n.is_empty()));
+    }
+
+    #[test]
+    fn reads_templates() {
+        let forms = read("`(if ~test {} ~@body)").unwrap();
+        assert_eq!(forms[0].to_string(), "(quasiquote (if (unquote test) {} (unquote-splicing body)))");
     }
 
     #[test]

@@ -2,7 +2,8 @@
 //! refer to things by name. Resolution (in `codebase`) turns these into
 //! name-free terms that can be hashed.
 
-use crate::reader::{Sexp, Span};
+use crate::reader::{Sexp, Span, bare, mark_of};
+use crate::term::Op;
 use std::fmt;
 
 /// A parameter: the label a caller passes it by, and the name the body
@@ -31,8 +32,6 @@ pub enum Expr {
     App(Box<Expr>, Vec<Arg>, Span),
     Let(String, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
-    And(Box<Expr>, Box<Expr>),
-    Or(Box<Expr>, Box<Expr>),
     /// `{name: "Ada"}`: keys as written, a declared attribute's local name
     /// or a global one.
     Record(Vec<(String, Expr)>, Span),
@@ -54,6 +53,13 @@ pub enum Expr {
     Perform(Box<Expr>),
     /// `(perform task with: {capability: {operation: implementation}})`.
     Handle(Box<Expr>, Vec<(String, Vec<(String, Expr)>)>),
+    /// A symbol a template writes: the form `(symbol "name")`, whose
+    /// name is pinned, when the macro is defined, to what it refers to
+    /// there.
+    TemplateSymbol(String),
+    /// A built-in a template uses to build its form, whatever the names
+    /// around it are bound to.
+    Prim(Op, Vec<Expr>),
 }
 
 /// A pattern as written. Record keys and constructors are resolved
@@ -217,9 +223,23 @@ impl Claim {
     }
 }
 
+/// `(macro (name params .. & rest) body)`: a function from the forms
+/// a call is written with to the form it stands for.
+#[derive(Clone, Debug)]
+pub struct Macro {
+    pub name: String,
+    pub params: Vec<Param>,
+    /// The parameter that takes every unlabeled form after the first.
+    pub rest: Option<String>,
+    pub body: Expr,
+    pub span: Span,
+}
+
 /// A top-level form.
 #[derive(Clone, Debug)]
 pub enum Item {
+    /// `(macro (name params ..) body)`.
+    Macro(Macro),
     Def(Def),
     /// `(claim name : type)`: what type a definition has.
     Claim(Claim),
@@ -250,7 +270,7 @@ fn err<T>(message: impl Into<String>, span: Span) -> Result<T> {
 
 /// Words that cannot name a definition or a local.
 const RESERVED: &[&str] =
-    &["define", "claim", "type", "fn", "let", "do", "if", "and", "or", "cond", "match", "nil", "true", "false"];
+    &["define", "claim", "type", "macro", "fn", "let", "do", "if", "match", "nil", "true", "false"];
 
 /// What to write instead of the forms conduct no longer has.
 fn retired(name: &str) -> Option<&'static str> {
@@ -275,18 +295,21 @@ pub fn items(forms: &[Sexp]) -> Result<Vec<Item>> {
     forms.iter().map(item).collect()
 }
 
-const TOP: &str =
-    "a top-level form is `(define name value)`, `(define (name params ..) body)`, a `claim` of one, or a `type`";
+const TOP: &str = "a top-level form is `(define name value)`, `(define (name params ..) body)`, a `claim` of one, \
+                   a `type`, or a `macro`";
 
-fn item(form: &Sexp) -> Result<Item> {
+pub fn item(form: &Sexp) -> Result<Item> {
     let Sexp::List(items, span) = form else {
         return err(TOP, form.span());
     };
     match items.first().and_then(Sexp::as_symbol) {
         Some("define") => define(&items[1..], *span).map(Item::Def),
-        Some("claim") => claim(&items[1..], *span, false).map(Item::Claim),
+        Some("macro") => macro_item(&items[1..], *span).map(Item::Macro),
+        // Types and signatures name global things, so the marks of the
+        // expansion that may have written them do not matter.
+        Some("claim") => claim(&unmarked_all(&items[1..]), *span, false).map(Item::Claim),
         Some("type") => {
-            let c = claim(&items[1..], *span, true)?;
+            let c = claim(&unmarked_all(&items[1..]), *span, true)?;
             if c.performs {
                 return err(format!("a type is not a task: write `{}`, not `{}!`", c.name, c.name), *span);
             }
@@ -300,27 +323,47 @@ fn item(form: &Sexp) -> Result<Item> {
 /// A name as a definition's head or a claim writes it: `show!` marks a
 /// definition that makes a task, and names `show`.
 fn marked(form: &Sexp) -> Result<(String, bool)> {
-    match form {
-        Sexp::Symbol(name, span) if name.len() > 1 && name.ends_with('!') => {
-            let bare = &name[..name.len() - 1];
-            binder(&Sexp::Symbol(bare.to_string(), *span)).map(|n| (n, true))
+    if let Sexp::Symbol(name, span) = form {
+        let b = bare(name);
+        if b.len() > 1 && b.ends_with('!') {
+            let unbanged = format!("{}{}", &b[..b.len() - 1], mark_of(name));
+            return binder(&Sexp::Symbol(unbanged, *span)).map(|n| (n, true));
         }
-        other => binder(other).map(|n| (n, false)),
+    }
+    binder(form).map(|n| (n, false))
+}
+
+/// A form with every symbol's mark taken off.
+fn unmarked(form: &Sexp) -> Sexp {
+    match form {
+        Sexp::Symbol(name, span) => Sexp::Symbol(bare(name).to_string(), *span),
+        Sexp::List(items, span) => Sexp::List(unmarked_all(items), *span),
+        Sexp::Vector(items, span) => Sexp::Vector(unmarked_all(items), *span),
+        Sexp::Map(items, span) => Sexp::Map(unmarked_all(items), *span),
+        other => other.clone(),
     }
 }
 
+fn unmarked_all(forms: &[Sexp]) -> Vec<Sexp> {
+    forms.iter().map(unmarked).collect()
+}
+
 fn define(args: &[Sexp], span: Span) -> Result<Def> {
+    // A definition's name is global, whatever expansion wrote it.
+    let global = |name: String| bare(&name).to_string();
     match args {
-        [Sexp::Symbol(name, nspan), ..] if name.ends_with('!') => {
+        [Sexp::Symbol(name, nspan), ..] if bare(name).ends_with('!') => {
+            let name = bare(name);
             err(format!("`{name}` is a task, so its body is a task's: `(define ({name}) body)`"), *nspan)
         }
-        [Sexp::Symbol(..), value] => Ok(Def { name: binder(&args[0])?, body: expr(value)?, span }),
+        [Sexp::Symbol(..), value] => Ok(Def { name: global(binder(&args[0])?), body: expr(value)?, span }),
         [Sexp::Symbol(..), ..] => err("`(define name value)` takes one value", span),
         [Sexp::List(head, hspan), body @ ..] => {
             let Some((name, params)) = head.split_first() else {
                 return err("`(define (name params ..) body)` needs a name", *hspan);
             };
             let (name, performs) = marked(name)?;
+            let name = global(name);
             let body = sequence(body, span)?;
             let body = if performs { Expr::Task(Box::new(body)) } else { body };
             if params.is_empty() {
@@ -368,6 +411,36 @@ fn parameters(items: &[Sexp], span: Span) -> Result<Vec<Param>> {
         params.push(param);
     }
     Ok(params)
+}
+
+/// `(macro (when test & body) ..)`: parameters as `define` takes them,
+/// and after `&` the one that takes the rest.
+fn macro_item(args: &[Sexp], span: Span) -> Result<Macro> {
+    const FORM: &str = "a macro is `(macro (name params .. & rest) body)`";
+    let [Sexp::List(head, hspan), body @ ..] = args else {
+        return err(FORM, span);
+    };
+    let Some((name, params)) = head.split_first() else {
+        return err(FORM, *hspan);
+    };
+    let name = bare(&binder(name)?).to_string();
+    let (params, rest) = match params.iter().position(|p| p.as_symbol() == Some("&")) {
+        Some(at) => match &params[at + 1..] {
+            [rest] => (&params[..at], Some(binder(rest)?)),
+            _ => return err("`&` is followed by the one parameter that takes the rest", *hspan),
+        },
+        None => (params, None),
+    };
+    if params.is_empty() && rest.is_none() {
+        return err(format!("`{name}` takes the forms it is called with: `(macro ({name} form) ..)`"), *hspan);
+    }
+    let params = parameters(params, *hspan)?;
+    if let Some(r) = &rest
+        && params.iter().any(|p| &p.local == r || &p.label == r)
+    {
+        return err(format!("parameter `{}` appears twice", bare(r)), *hspan);
+    }
+    Ok(Macro { name, params, rest, body: sequence(body, span)?, span })
 }
 
 fn claim(args: &[Sexp], span: Span, is_type: bool) -> Result<Claim> {
@@ -523,10 +596,14 @@ fn type_expr(form: &Sexp) -> Result<TypeExpr> {
     })
 }
 
+/// A name a form binds, with the mark of the expansion that wrote it,
+/// if any: a macro's binder is distinct from every name its call's
+/// forms bind.
 fn binder(form: &Sexp) -> Result<String> {
     match form {
-        Sexp::Symbol(name, span) => {
-            if RESERVED.contains(&name.as_str()) {
+        Sexp::Symbol(full, span) => {
+            let name = bare(full);
+            if RESERVED.contains(&name) {
                 return err(format!("`{name}` is reserved and cannot be bound"), *span);
             }
             if name.len() > 1 && name.ends_with('!') {
@@ -535,7 +612,7 @@ fn binder(form: &Sexp) -> Result<String> {
                     *span,
                 );
             }
-            Ok(name.clone())
+            Ok(full.clone())
         }
         other => err(format!("expected a name, found `{other}`"), other.span()),
     }
@@ -561,7 +638,7 @@ pub fn expr(form: &Sexp) -> Result<Expr> {
     match form {
         Sexp::Int(n, _) => Ok(Expr::Int(*n)),
         Sexp::Str(s, _) => Ok(Expr::Str(s.clone())),
-        Sexp::Symbol(name, span) => Ok(match name.as_str() {
+        Sexp::Symbol(name, span) => Ok(match bare(name) {
             n if retired(n).is_some() => return err(retired(n).unwrap(), *span),
             "true" => Expr::Bool(true),
             "false" => Expr::Bool(false),
@@ -682,7 +759,18 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
     if let Some(name) = head.as_symbol() {
         match name {
             n if retired(n).is_some() => return err(retired(n).unwrap(), span),
-            "define" | "claim" | "type" => return err(format!("`{name}` is only allowed at the top level"), span),
+            "define" | "claim" | "type" | "macro" => {
+                return err(format!("`{name}` is only allowed at the top level"), span);
+            }
+            "quasiquote" => {
+                let [form] = args else {
+                    return err("a template is one form", span);
+                };
+                return template(form, span);
+            }
+            "unquote" | "unquote-splicing" => {
+                return err("`~` and `~@` go inside a template, `` `(..) ``", span);
+            }
             "fn" | "fn!" => {
                 let [Sexp::Vector(params, pspan), body @ ..] = args else {
                     return err(format!("`{name}` takes a parameter vector and a body"), span);
@@ -727,36 +815,6 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
                 };
                 return Ok(Expr::If(boxed(c)?, boxed(t)?, boxed(e)?));
             }
-            "and" | "or" => {
-                if args.len() < 2 {
-                    return err(format!("`{name}` takes at least two arguments"), span);
-                }
-                let mut parts = args.iter().map(expr).collect::<Result<Vec<_>>>()?;
-                let mut out = parts.pop().unwrap();
-                while let Some(prev) = parts.pop() {
-                    out = if name == "and" {
-                        Expr::And(Box::new(prev), Box::new(out))
-                    } else {
-                        Expr::Or(Box::new(prev), Box::new(out))
-                    };
-                }
-                return Ok(out);
-            }
-            "cond" => {
-                if args.is_empty() || !args.len().is_multiple_of(2) {
-                    return err("`cond` takes pairs of a test and a result, ending with `:else`", span);
-                }
-                let pairs: Vec<&[Sexp]> = args.chunks(2).collect();
-                let (last, rest) = pairs.split_last().unwrap();
-                if !matches!(&last[0], Sexp::Keyword(k, _) if k == "else") {
-                    return err("`cond` must end with an `:else` clause", last[0].span());
-                }
-                let mut out = expr(&last[1])?;
-                for pair in rest.iter().rev() {
-                    out = Expr::If(boxed(&pair[0])?, boxed(&pair[1])?, Box::new(out));
-                }
-                return Ok(out);
-            }
             "match" => return match_form(args, span),
             _ => {}
         }
@@ -769,10 +827,11 @@ fn list_form(items: &[Sexp], span: Span) -> Result<Expr> {
     // `(show! x)` performs what `(show x)` answers, and `(t!)`, with no
     // arguments, performs `t` itself.
     if let Sexp::Symbol(name, nspan) = head
-        && name.len() > 1
-        && name.ends_with('!')
+        && bare(name).len() > 1
+        && bare(name).ends_with('!')
     {
-        let callee = Expr::Var(name[..name.len() - 1].to_string(), *nspan);
+        let b = bare(name);
+        let callee = Expr::Var(format!("{}{}", &b[..b.len() - 1], mark_of(name)), *nspan);
         if args.is_empty() {
             return Ok(Expr::Perform(Box::new(callee)));
         }
@@ -837,7 +896,7 @@ fn match_form(args: &[Sexp], span: Span) -> Result<Expr> {
     let pairs: Vec<&[Sexp]> = clauses.chunks(2).collect();
     for (i, pair) in pairs.iter().enumerate() {
         if let Sexp::Symbol(s, sspan) = &pair[0]
-            && s == "_"
+            && bare(s) == "_"
         {
             if i + 1 != pairs.len() {
                 return err("`_` matches anything, so it must be the last clause of a `match`", *sspan);
@@ -864,13 +923,13 @@ fn pattern(form: &Sexp) -> Result<Pat> {
         Sexp::Keyword(k, _) => Pat::Keyword(k.clone()),
         Sexp::Str(s, _) => Pat::Str(s.clone()),
         Sexp::Int(n, _) => Pat::Int(*n),
-        Sexp::Symbol(s, _) if s == "_" => Pat::Any,
+        Sexp::Symbol(s, _) if bare(s) == "_" => Pat::Any,
         Sexp::Symbol(s, sspan) => {
-            if let Some(why) = retired(s) {
+            if let Some(why) = retired(bare(s)) {
                 return err(why, *sspan);
             }
-            if RESERVED.contains(&s.as_str()) {
-                return err(format!("`{s}` is reserved, so it cannot name a value a pattern binds"), *sspan);
+            if RESERVED.contains(&bare(s)) {
+                return err(format!("`{}` is reserved, so it cannot name a value a pattern binds", bare(s)), *sspan);
             }
             Pat::Name(s.clone())
         }
@@ -909,7 +968,7 @@ fn pattern(form: &Sexp) -> Result<Pat> {
                     p => return err(format!("only the first pattern goes without a label, not `{p}`"), p.span()),
                 }
             }
-            Pat::Ctor(name.clone(), out)
+            Pat::Ctor(bare(name).to_string(), out)
         }
         other => {
             return err(
@@ -921,4 +980,55 @@ fn pattern(form: &Sexp) -> Result<Pat> {
             );
         }
     })
+}
+
+/// The expression that builds the form a template writes: what a macro
+/// answers. `~e` is `e`'s value, and `~@e` splices the forms of the list
+/// `e` into the form around it.
+fn template(form: &Sexp, span: Span) -> Result<Expr> {
+    let variant = |key: &str, value: Expr| Expr::Record(vec![(format!("conduct.form/{key}"), value)], span);
+    Ok(match form {
+        Sexp::List(items, _) => match items.as_slice() {
+            [head, e] if head.as_symbol() == Some("unquote") => expr(e)?,
+            [head, _] if head.as_symbol() == Some("unquote-splicing") => {
+                return err("`~@` splices forms into a form around it, `(f ~@args)`", span);
+            }
+            [head, _] if head.as_symbol() == Some("quasiquote") => {
+                return err("a template inside a template is not supported yet", span);
+            }
+            _ => variant("parens", spliced(items, span)?),
+        },
+        Sexp::Vector(items, _) => variant("brackets", spliced(items, span)?),
+        Sexp::Map(items, _) => variant("braces", spliced(items, span)?),
+        Sexp::Symbol(name, _) => variant("symbol", Expr::TemplateSymbol(name.clone())),
+        Sexp::Label(name, _) => variant("label", Expr::Str(name.clone())),
+        Sexp::Int(n, _) => Expr::Int(*n),
+        Sexp::Str(s, _) => Expr::Str(s.clone()),
+        Sexp::Keyword(k, _) => Expr::Keyword(k.clone()),
+    })
+}
+
+/// A list of the forms `items` write, with `~@` splices in place.
+fn spliced(items: &[Sexp], span: Span) -> Result<Expr> {
+    let mut parts: Vec<Expr> = Vec::new();
+    let mut run: Vec<Expr> = Vec::new();
+    for item in items {
+        match item {
+            Sexp::List(inner, _) if inner.len() == 2 && inner[0].as_symbol() == Some("unquote-splicing") => {
+                if !run.is_empty() {
+                    parts.push(Expr::List(std::mem::take(&mut run)));
+                }
+                parts.push(expr(&inner[1])?);
+            }
+            other => run.push(template(other, span)?),
+        }
+    }
+    if !run.is_empty() || parts.is_empty() {
+        parts.push(Expr::List(run));
+    }
+    let mut out = parts.pop().unwrap();
+    while let Some(before) = parts.pop() {
+        out = Expr::Prim(Op::Concat, vec![before, out]);
+    }
+    Ok(out)
 }

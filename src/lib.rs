@@ -19,6 +19,7 @@ pub mod claims;
 pub mod codebase;
 pub mod codegen;
 pub mod element;
+pub mod eval;
 mod fetch;
 pub mod infer;
 pub mod reader;

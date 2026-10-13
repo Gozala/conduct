@@ -8,9 +8,10 @@
 //! same code again, under any names, finds its hash already present.
 
 use crate::claims::{self, Claims, Env, Mode, TypeDef};
+use crate::eval::{Machine, Value};
 use crate::infer::{Binding, Globals, Infer};
-use crate::reader;
-use crate::syntax::{self, Arg, Claim, Def, Expr, Item, Param, Pat, TypeExpr};
+use crate::reader::{self, MARK, PIN, Sexp, Span, bare};
+use crate::syntax::{self, Arg, Claim, Def, Expr, Item, Macro, Param, Pat, TypeExpr};
 use crate::term::{Hash, Op, Pattern, Term};
 use crate::types::{Scheme, Solver, Ty, TypeError, coalesce};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -46,7 +47,36 @@ pub struct Codebase {
     /// Host functions by the capability they need: each one's name and
     /// hash.
     pub hosts: BTreeMap<String, BTreeMap<String, Hash>>,
+    /// Macros by name.
+    pub macros: BTreeMap<String, MacroDef>,
+    /// The last mark an expansion gave its template's symbols.
+    marks: u64,
 }
+
+/// A macro: the function that expands its calls, and how a call's forms
+/// become its arguments.
+#[derive(Clone, Debug)]
+pub struct MacroDef {
+    pub hash: Hash,
+    /// The labels of the function's parameters, in its order.
+    pub labels: Vec<String>,
+    /// The label of the parameter that takes the forms after the first
+    /// that have no label.
+    pub rest: Option<String>,
+}
+
+/// A form's variant key, global name for each kind of form a macro takes
+/// apart and builds.
+fn form_key(kind: &str) -> String {
+    format!("conduct.form/{kind}")
+}
+
+/// What a template's symbol starts with until its expansion marks it.
+const TEMPLATE: char = '\u{2}';
+
+/// How many expansions one form may go through: a macro whose
+/// expansion calls itself without end is an error.
+const EXPANSION_DEPTH: usize = 256;
 
 /// What adding a definition did.
 #[derive(Debug, Clone, PartialEq)]
@@ -157,9 +187,41 @@ impl Codebase {
 
     /// Parse, resolve, hash, and type check `source`, then point its
     /// names at the resulting hashes. Nothing changes on an error.
+    ///
+    /// Macros are expanded first. A macro is defined where it is
+    /// written: what comes before it in the source is added first, so
+    /// the macro may use it, and what comes after may call the macro.
     pub fn add_source(&mut self, source: &str) -> Result<Vec<Added>, Error> {
         let forms = reader::read(source).map_err(Error::Read)?;
-        let items = syntax::items(&forms).map_err(Error::Syntax)?;
+        let saved = (self.claims.clone(), self.names.clone(), self.macros.clone(), self.hosts.clone());
+        let out = self.add_forms(&forms);
+        if out.is_err() {
+            (self.claims, self.names, self.macros, self.hosts) = saved;
+        }
+        out
+    }
+
+    fn add_forms(&mut self, forms: &[Sexp]) -> Result<Vec<Added>, Error> {
+        let mut added = Vec::new();
+        let mut items = Vec::new();
+        for form in forms {
+            let form = self.expand_top(form)?;
+            match syntax::item(&form).map_err(Error::Syntax)? {
+                Item::Macro(m) => {
+                    added.extend(self.add_items(std::mem::take(&mut items))?);
+                    added.push(self.add_macro(m)?);
+                }
+                item => items.push(item),
+            }
+        }
+        added.extend(self.add_items(items)?);
+        Ok(added)
+    }
+
+    fn add_items(&mut self, items: Vec<Item>) -> Result<Vec<Added>, Error> {
+        if items.is_empty() {
+            return Ok(vec![]);
+        }
         let mut defs = Vec::new();
         let mut claims = Vec::new();
         let mut types = Vec::new();
@@ -168,6 +230,15 @@ impl Codebase {
                 Item::Def(d) => defs.push(d),
                 Item::Claim(c) => claims.push(c),
                 Item::Type(t) => types.push(t),
+                Item::Macro(_) => unreachable!("macros are added where they are written"),
+            }
+        }
+        for name in defs.iter().map(|d| &d.name).chain(types.iter().map(|t| &t.name)) {
+            if self.macros.contains_key(name) {
+                return Err(Error::Resolve {
+                    def: name.clone(),
+                    message: format!("`{name}` is a macro, so it cannot also name a definition or a type"),
+                });
             }
         }
         // A claim is the signature of a definition in the same source;
@@ -219,6 +290,162 @@ impl Codebase {
             self.claims = saved;
         }
         out
+    }
+
+    /// Define a macro: its function is added as any definition is, and
+    /// calls of its name expand from now on.
+    fn add_macro(&mut self, m: Macro) -> Result<Added, Error> {
+        let error = |message: String| Err(Error::Resolve { def: m.name.clone(), message });
+        if self.names.contains_key(&m.name) && !self.macros.contains_key(&m.name) || self.claims.claims(&m.name) {
+            return error(format!("`{}` is already defined, so it cannot also name a macro", m.name));
+        }
+        if Op::from_name(&m.name).is_some() {
+            return error(format!("`{}` is a built-in, so it cannot also name a macro", m.name));
+        }
+        let mut params = m.params.clone();
+        if let Some(rest) = &m.rest {
+            params.push(Param { label: rest.clone(), local: rest.clone() });
+        }
+        let labels: Vec<String> = canonical(&params).into_iter().map(|p| p.label).collect();
+        let def = Def { name: m.name.clone(), body: Expr::Fn(params, Box::new(m.body)), span: m.span };
+        let mut added = self.add_checked(vec![def], &HashMap::new())?;
+        let added = added.pop().unwrap();
+        self.macros.insert(m.name.clone(), MacroDef { hash: added.hash, labels, rest: m.rest.clone() });
+        Ok(added)
+    }
+
+    /// A top-level form with its macro calls expanded. A definition's
+    /// head and a type are left as written.
+    fn expand_top(&mut self, form: &Sexp) -> Result<Sexp, Error> {
+        if let Sexp::List(items, span) = form
+            && let Some(head) = items.first().and_then(Sexp::as_symbol)
+        {
+            match head {
+                "define" | "macro" if items.len() > 2 => {
+                    let mut out = items[..2].to_vec();
+                    for item in &items[2..] {
+                        out.push(self.expand(item, 0)?);
+                    }
+                    return Ok(Sexp::List(out, *span));
+                }
+                "define" | "macro" | "claim" | "type" => return Ok(form.clone()),
+                _ => {}
+            }
+        }
+        let expanded = self.expand(form, 0)?;
+        if expanded != *form {
+            // A macro may write a definition or a type.
+            return self.expand_top(&expanded);
+        }
+        Ok(expanded)
+    }
+
+    /// `form` with every call of a macro replaced by its expansion.
+    fn expand(&mut self, form: &Sexp, depth: usize) -> Result<Sexp, Error> {
+        let all = |cb: &mut Self, items: &[Sexp]| items.iter().map(|i| cb.expand(i, depth)).collect::<Result<Vec<_>, _>>();
+        Ok(match form {
+            Sexp::List(items, span) => match items.first().and_then(Sexp::as_symbol) {
+                Some(name) if self.macros.contains_key(name) => {
+                    if depth >= EXPANSION_DEPTH {
+                        return Err(Error::Resolve {
+                            def: format!("({name} ..)"),
+                            message: "expands without end: does its expansion always call it again?".into(),
+                        });
+                    }
+                    let out = self.expand_call(name, &items[1..], *span)?;
+                    self.expand(&out, depth + 1)?
+                }
+                Some("quasiquote") => Sexp::List(vec![items[0].clone(), self.expand_template(&items[1..], depth)?], *span),
+                // A definition's or macro's head and a type are not
+                // calls.
+                Some("claim" | "type") => form.clone(),
+                _ => Sexp::List(all(self, items)?, *span),
+            },
+            Sexp::Vector(items, span) => Sexp::Vector(all(self, items)?, *span),
+            Sexp::Map(items, span) => Sexp::Map(all(self, items)?, *span),
+            other => other.clone(),
+        })
+    }
+
+    /// A template's form with the calls in its `~` and `~@` expanded.
+    fn expand_template(&mut self, items: &[Sexp], depth: usize) -> Result<Sexp, Error> {
+        fn go(cb: &mut Codebase, form: &Sexp, depth: usize) -> Result<Sexp, Error> {
+            let all = |cb: &mut Codebase, items: &[Sexp]| items.iter().map(|i| go(cb, i, depth)).collect::<Result<Vec<_>, _>>();
+            Ok(match form {
+                Sexp::List(items, span)
+                    if items.len() == 2
+                        && matches!(items[0].as_symbol(), Some("unquote" | "unquote-splicing")) =>
+                {
+                    Sexp::List(vec![items[0].clone(), cb.expand(&items[1], depth)?], *span)
+                }
+                Sexp::List(items, span) => Sexp::List(all(cb, items)?, *span),
+                Sexp::Vector(items, span) => Sexp::Vector(all(cb, items)?, *span),
+                Sexp::Map(items, span) => Sexp::Map(all(cb, items)?, *span),
+                other => other.clone(),
+            })
+        }
+        match items {
+            [form] => go(self, form, depth),
+            _ => Ok(Sexp::List(items.to_vec(), Span { start: 0, end: 0 })),
+        }
+    }
+
+    /// Run a macro on the forms of its call: the form it answers, its
+    /// template's symbols marked as this expansion's.
+    fn expand_call(&mut self, name: &str, args: &[Sexp], span: Span) -> Result<Sexp, Error> {
+        let m = self.macros[name].clone();
+        let error = |message: String| Error::Resolve { def: format!("({name} ..)"), message };
+        // The call's forms as the macro's arguments: the first, the
+        // labeled ones, and the rest.
+        let mut given: BTreeMap<String, Value> = BTreeMap::new();
+        let mut rest = Vec::new();
+        let positional: Vec<&String> = m.labels.iter().filter(|l| Some(*l) != m.rest.as_ref()).collect();
+        let mut forms = args.iter();
+        while let Some(form) = forms.next() {
+            match form {
+                Sexp::Label(label, _) if positional.contains(&label) => {
+                    let Some(value) = forms.next() else {
+                        return Err(error(format!("the label `{label}:` needs a form")));
+                    };
+                    if given.insert(label.clone(), to_value(value)).is_some() {
+                        return Err(error(format!("`{name}` is given `{label}:` twice")));
+                    }
+                }
+                other if given.is_empty() && rest.is_empty() && !positional.is_empty() => {
+                    given.insert(positional[0].clone(), to_value(other));
+                }
+                other if m.rest.is_some() => rest.push(to_value(other)),
+                other => {
+                    return Err(error(format!(
+                        "only the first form goes without a label: `{name}` takes {}, not `{other}`",
+                        positional[1..].iter().map(|l| format!("{l}:")).collect::<Vec<_>>().join(" ")
+                    )));
+                }
+            }
+        }
+        if let Some(r) = &m.rest {
+            given.insert(r.clone(), Value::List(rest.into()));
+        }
+        let missing: Vec<String> = m.labels.iter().filter(|l| !given.contains_key(*l)).map(|l| format!("{l}:")).collect();
+        if !missing.is_empty() {
+            return Err(error(format!("`{name}` needs {}", missing.join(" "))));
+        }
+        let args = m.labels.iter().map(|l| given.remove(l).unwrap()).collect();
+        let mut machine = Machine { defs: &self.defs, fuel: 1_000_000 };
+        let f = machine.definition(m.hash).map_err(error)?;
+        let out = machine.call(&f, args).map_err(error)?;
+        // A macro that fails says why with `(error reason)`.
+        if let Value::Record(fields) = &out
+            && fields.len() == 1
+            && let Some(reason) = fields.get("conduct.result/error")
+        {
+            return Err(error(match reason {
+                Value::Str(s) => s.to_string(),
+                other => format!("{other:?}"),
+            }));
+        }
+        self.marks += 1;
+        to_form(&out, self.marks, span).map_err(error)
     }
 
     /// Record type claims, after checking each agrees with what is
@@ -1395,4 +1622,64 @@ fn strongly_connected(deps: &[Vec<usize>]) -> Vec<Vec<usize>> {
         }
     }
     s.out
+}
+
+/// A form as a macro takes it: numbers, strings and keywords as
+/// themselves, the rest as variants.
+fn to_value(form: &Sexp) -> Value {
+    let all = |items: &[Sexp]| Value::List(items.iter().map(to_value).collect::<Vec<_>>().into());
+    match form {
+        Sexp::Int(n, _) => Value::Int(*n),
+        Sexp::Str(s, _) => Value::str(s),
+        Sexp::Keyword(k, _) => Value::Keyword(k.as_str().into()),
+        Sexp::Symbol(s, _) => Value::variant(&form_key("symbol"), Value::str(s)),
+        Sexp::Label(l, _) => Value::variant(&form_key("label"), Value::str(l)),
+        Sexp::List(items, _) => Value::variant(&form_key("parens"), all(items)),
+        Sexp::Vector(items, _) => Value::variant(&form_key("brackets"), all(items)),
+        Sexp::Map(items, _) => Value::variant(&form_key("braces"), all(items)),
+    }
+}
+
+/// The form a macro answers. A symbol its template wrote takes the
+/// expansion's mark, so it binds only what the same expansion writes,
+/// and is never bound by the call's own forms.
+fn to_form(value: &Value, mark: u64, span: Span) -> Result<Sexp, String> {
+    let items = |v: &Value| match v {
+        Value::List(items) => items.iter().map(|i| to_form(i, mark, span)).collect::<Result<Vec<_>, _>>(),
+        _ => Err("a form's items are a list of forms".to_string()),
+    };
+    Ok(match value {
+        Value::Int(n) => Sexp::Int(*n, span),
+        Value::Str(s) => Sexp::Str(s.to_string(), span),
+        Value::Bool(b) => Sexp::Symbol(b.to_string(), span),
+        Value::Keyword(k) => Sexp::Keyword(k.to_string(), span),
+        Value::Record(fields) if fields.len() == 1 => {
+            let (key, payload) = fields.iter().next().unwrap();
+            let text = |v: &Value| match v {
+                Value::Str(s) => Ok(s.to_string()),
+                _ => Err(format!("`{key}` holds a string")),
+            };
+            match key.strip_prefix("conduct.form/") {
+                Some("symbol") => {
+                    let name = text(payload)?;
+                    match name.strip_prefix(TEMPLATE) {
+                        Some(written) => {
+                            let (name, pin) = match written.split_once(PIN) {
+                                Some((name, hex)) => (name, format!("{PIN}{hex}")),
+                                None => (written, String::new()),
+                            };
+                            Sexp::Symbol(format!("{}{MARK}{mark}{pin}", bare(name)), span)
+                        }
+                        None => Sexp::Symbol(name, span),
+                    }
+                }
+                Some("label") => Sexp::Label(text(payload)?, span),
+                Some("parens") => Sexp::List(items(payload)?, span),
+                Some("brackets") => Sexp::Vector(items(payload)?, span),
+                Some("braces") => Sexp::Map(items(payload)?, span),
+                _ => return Err(format!("a macro answers a form, and `{key}` is not one")),
+            }
+        }
+        _ => return Err("a macro answers a form: a symbol, a number, a string, a keyword, or a form of forms".into()),
+    })
 }
