@@ -368,3 +368,19 @@ fn the_empty_map_is_an_empty_record_too() {
     assert_eq!(run(src, "same", &[]), Value::Bool(true));
     assert_eq!(run(src, "text", &[]), Value::Str("{}".into()));
 }
+
+#[test]
+fn calls_in_tail_position_run_in_constant_stack() {
+    // A million calls deep, which a stack of frames would not hold: a
+    // direct call in tail position is a `return_call`, through `if`,
+    // `cond`, and between members of a cycle.
+    let src = "(define (down n acc) (if (= n 0) acc (down (- n 1) acc: (+ acc 1))))
+               (define (even? n) (if (= n 0) true (odd? (- n 1))))
+               (define (odd? n) (if (= n 0) false (even? (- n 1))))
+               (define (steps n) (cond (= n 0) :done (= (rem n 2) 0) (steps (- n 1)) :else (steps (- n 1))))
+               (define out [(down 1000000 acc: 0) (even? 1000001) (steps 1000000)])";
+    assert_eq!(
+        run(src, "out", &[]),
+        Value::List(vec![Value::Int(1_000_000), Value::Bool(false), Value::Keyword("done".into())])
+    );
+}
