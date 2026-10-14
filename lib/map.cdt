@@ -16,7 +16,8 @@
 ;;
 ;; The digest never runs out. It is read 32 bits at a time: frame 0 is
 ;; `(hash key)`, and once six levels have read 30 of its bits, the next
-;; level reads frame 1, `(hash-frame key at: 1)`, and so on. Keys that
+;; level reads frame 1, `(hash [1 key])`: the key with the frame number
+;; added, hashed again, as perma-map's UnixFS path appends it. Keys that
 ;; are not equal part at some frame, because `hash` reads all that `=`
 ;; compares, so there are no buckets of colliding keys, as in perma-map's
 ;; UnixFS configuration and in Bagwell's original tries. A key's place
@@ -65,7 +66,9 @@
   (shift-left 1 (bit-and (shift-right h (* slot-bits (rem depth levels-per-frame))) slot-mask)))
 
 ;; The frame of `key`'s digest that `depth` reads.
-(define (frame-at key depth) (hash-frame key at: (quot depth levels-per-frame)))
+(define (frame-at key depth)
+  (let [frame (quot depth levels-per-frame)]
+    (if (= frame 0) (hash key) (hash [frame key]))))
 
 ;; The frame the level below `depth` reads, given `h`, the one `depth`
 ;; reads: the same frame, until a new one starts.

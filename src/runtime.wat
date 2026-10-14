@@ -279,12 +279,12 @@
     ;; dictionaries: their pairs, a key then its value. Functions: their
     ;; code, then the values they captured. Everything `=` compares is
     ;; hashed, so values that are not equal can always be told apart by
-    ;; hashing them again with another frame (`$hash_frame`).
+    ;; hashing them again with something added, as conduct.map does.
     (if (i32.or (i32.eq (local.get $k) (i32.const 3)) (i32.eq (local.get $k) (i32.const 4)))
       (then (local.set $n (i32.shl (local.get $n) (i32.const 1)))))
     (if (i32.eq (local.get $k) (i32.const 5))
       (then
-        (local.set $h (call $fnv_word (local.get $h) (i64.load offset=8 (local.get $p))))
+        (local.set $h (call $fnv_word (local.get $h) (call $code_id (local.get $p))))
         (local.set $p (i32.add (local.get $p) (i32.const 8)))))
     (block $done (loop $next
       (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
@@ -325,16 +325,6 @@
   (func $hash (param $v i64) (result i64)
     (i64.or
       (i64.shl (i64.extend_i32_u (call $hash_into (i32.const 0x811c9dc5) (local.get $v))) (i64.const 1))
-      (i64.const 1)))
-  ;; `(hash-frame v at: n)`: frame `n` of an endless digest of `v`, 32
-  ;; bits at a time. Frame 0 is `(hash v)`; frame `n` hashes `v` after
-  ;; `n`, as if `n` were put before it, so values whose frame 0 collides
-  ;; part at a later frame unless they are equal.
-  (func $hash_frame (param $v i64) (param $n i64) (result i64)
-    (if (i64.eq (local.get $n) (i64.const 1)) (then (return (call $hash (local.get $v)))))
-    (i64.or
-      (i64.shl (i64.extend_i32_u
-        (call $hash_into (call $fnv_word (i32.const 0x811c9dc5) (local.get $n)) (local.get $v))) (i64.const 1))
       (i64.const 1)))
 
   ;; Strings
@@ -462,6 +452,12 @@
         (return (call $concat_owned (local.get $out) (call $lit (i32.const 10) (i32.const 1))))))
     (call $lit (i32.const 12) (i32.const 7)))
 
+  ;; What identifies the code of the closure at `p`, wherever it is
+  ;; compiled: its definition's hash, or a lambda's own (see `codegen`),
+  ;; not its place in this module's table.
+  (func $code_id (param $p i32) (result i64)
+    (i64.load (i32.add (global.get $code_ids) (i32.shl (i32.load offset=8 (local.get $p)) (i32.const 3)))))
+
   ;; Structural equality: every value can be compared, functions
   ;; included (by code and captured values).
   (func $eq (param $a i64) (param $b i64) (result i32)
@@ -489,7 +485,7 @@
     (if (i32.eq (local.get $k) (i32.const 3)) (then (local.set $n (i32.shl (local.get $n) (i32.const 1)))))
     (if (i32.eq (local.get $k) (i32.const 5))
       (then
-        (if (i64.ne (i64.load offset=8 (local.get $pa)) (i64.load offset=8 (local.get $pb))) (then (return (i32.const 0))))
+        (if (i64.ne (call $code_id (local.get $pa)) (call $code_id (local.get $pb))) (then (return (i32.const 0))))
         (local.set $pa (i32.add (local.get $pa) (i32.const 8)))
         (local.set $pb (i32.add (local.get $pb) (i32.const 8)))))
     (block $done
@@ -557,7 +553,7 @@
     ;; A closure's code first.
     (if (i32.eq (local.get $k) (i32.const 5))
       (then
-        (local.set $c (call $order_i64 (i64.load offset=8 (local.get $pa)) (i64.load offset=8 (local.get $pb))))
+        (local.set $c (call $order_i64 (call $code_id (local.get $pa)) (call $code_id (local.get $pb))))
         (if (local.get $c) (then (return (local.get $c))))
         (local.set $pa (i32.add (local.get $pa) (i32.const 8)))
         (local.set $pb (i32.add (local.get $pb) (i32.const 8)))))

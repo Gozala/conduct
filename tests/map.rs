@@ -294,7 +294,8 @@ fn colliding_keys_part_at_the_next_frame() {
     let pairs = colliding_pairs(4);
     let frames: Vec<String> = pairs
         .iter()
-        .map(|(a, b)| format!("[(hash-frame {a} at: 0) (hash {a}) (hash-frame {a} at: 1) (hash-frame {b} at: 1)]"))
+        // Six levels read frame 0; the seventh reads frame 1, `(hash [1 key])`.
+        .map(|(a, b)| format!("[(frame-at {a} depth: 5) (hash {a}) (frame-at {a} depth: 6) (frame-at {b} depth: 6)]"))
         .collect();
     let cb = codebase(&format!("(define out [{}])", frames.join(" ")));
     let Value::List(rows) = run(&cb, "out") else { panic!() };

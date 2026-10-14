@@ -7,8 +7,10 @@ it. Newest first.
 
 - **A key's digest never runs out.** conduct.map reads 32 bits at a
   time: frame 0 is `(hash key)`, and after six levels of five bits the
-  next level reads `(hash-frame key at: 1)`, which hashes the key after
-  the frame number. Keys that collide in one frame part in a later one,
+  next level reads `(hash [1 key])`: the key with the frame number
+  added, hashed again. Depth stays the trie's concern, which frame a
+  level reads; `hash` stays one function of one value. Keys that collide
+  in one frame part in a later one,
   so there are no collision buckets. This is perma-map's UnixFS
   configuration, which hashes the key with the frame number appended,
   and Bagwell's original suggestion for a hash that is used up.
@@ -25,6 +27,14 @@ it. Newest first.
   functions that differed in what they captured hashed alike. It now
   reads a function's code and captured values and the values of the
   others, and a test keeps functions as keys.
+- **A function is its code's hash and what it captured,** as Unison
+  identifies terms. `=` compared, and `hash` would have read, a
+  closure's place in its module's function table, which another module
+  numbers differently. Each module now carries a code id per table
+  entry: a definition's hash, or for a lambda the hash of its term with
+  captured locals renumbered by slot, so the same lambda written in two
+  definitions is one function. Tests compile one closure into two
+  modules that place it differently and get one hash.
 - **What it does not fix:** FNV-1a over 32 bits with no key is weak, and
   frames of it are related. A seeded, stronger hash is the next step
   before maps hold keys from untrusted peers in earnest.

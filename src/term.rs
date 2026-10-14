@@ -106,9 +106,6 @@ pub enum Op {
     /// `(natural x or: d)`: an integer as a natural, or the default when
     /// it is negative.
     Natural,
-    /// `(hash-frame v at: n)`: frame `n` of `v`'s endless digest; frame
-    /// 0 is `(hash v)`.
-    HashFrame,
     /// `(compare a b)`: -1, 0 or 1, by a total order over every value
     /// that agrees with `=`.
     Compare,
@@ -178,7 +175,6 @@ impl Op {
         Op::Item,
         Op::Natural,
         Op::Compare,
-        Op::HashFrame,
     ];
 
     pub fn name(self) -> &'static str {
@@ -232,7 +228,6 @@ impl Op {
             Op::Item => "item",
             Op::Natural => "natural",
             Op::Compare => "compare",
-            Op::HashFrame => "hash-frame",
             Op::HasField => "has-field?",
             Op::WithEnv => "with-env",
             Op::Nth => "nth",

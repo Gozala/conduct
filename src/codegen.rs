@@ -172,6 +172,10 @@ pub struct Builder<'a> {
     funcs: Vec<String>,
     /// Function names in table order.
     table: Vec<String>,
+    /// Each table entry's code id: what identifies its code wherever it
+    /// is compiled, which `=`, `hash` and `compare` read in place of its
+    /// place in this module's table.
+    code_ids: Vec<[u8; 8]>,
     data: Vec<(u32, Vec<u8>)>,
     next_addr: u32,
     strings: HashMap<String, u32>,
@@ -202,6 +206,7 @@ impl<'a> Builder<'a> {
             imports: vec![],
             funcs: vec![],
             table: vec![],
+            code_ids: vec![],
             data: vec![],
             next_addr: STATIC_START,
             strings: HashMap::new(),
@@ -338,6 +343,8 @@ impl<'a> Builder<'a> {
                 let arity = &(labels.len() as u32);
                 let index = self.table.len() as u32;
                 self.table.push(Self::def_name(&hash));
+                // A definition's code is identified by its hash.
+                self.code_ids.push(hash.0[..8].try_into().unwrap());
                 self.max_arity = self.max_arity.max(*arity as usize);
                 let mut bytes = KIND_CLOSURE.to_le_bytes().to_vec();
                 bytes.extend_from_slice(&0u32.to_le_bytes());
@@ -650,9 +657,9 @@ impl<'a> Builder<'a> {
             },
             Term::Ref(h) => self.value_of(*h)?,
             Term::CycleRef(i) => self.value_of(cycle[*i as usize])?,
-            Term::Fn(labels, body) => self.lambda(labels.len() as u32, body, env, frame, cycle, live)?,
+            Term::Fn(labels, body) => self.lambda(labels, body, env, frame, cycle, live)?,
             // A task is a closure of no parameters; performing it calls it.
-            Term::Task(body) => self.lambda(0, body, env, frame, cycle, live)?,
+            Term::Task(body) => self.lambda(&[], body, env, frame, cycle, live)?,
             Term::Perform(task) => {
                 let direct = |t: &Term| match t {
                     Term::Ref(h) => Some(*h),
@@ -688,7 +695,7 @@ impl<'a> Builder<'a> {
                 let record =
                     Term::Record(provided.iter().map(|(cap, ops)| (cap.clone(), Term::Record(ops.clone()))).collect());
                 let body = Term::Prim(Op::WithEnv, vec![record, (**task).clone()]);
-                self.lambda(0, &body, env, frame, cycle, live)?
+                self.lambda(&[], &body, env, frame, cycle, live)?
             }
             Term::App(callee, args, _) => {
                 let direct = match &**callee {
@@ -880,7 +887,7 @@ impl<'a> Builder<'a> {
 
     fn lambda(
         &mut self,
-        arity: u32,
+        labels: &[String],
         body: &Term,
         env: &mut Vec<Slot>,
         frame: &mut Frame,
@@ -889,9 +896,11 @@ impl<'a> Builder<'a> {
     ) -> Result<String> {
         // The locals of the enclosing function this lambda mentions, as
         // de Bruijn indices from outside it.
+        let arity = labels.len() as u32;
         let mut free = BTreeSet::new();
         free_locals(body, arity, &mut free);
         let free: Vec<u32> = free.into_iter().collect();
+        let code_id = lambda_code_id(labels, body, &free, cycle);
         let mut inner: Vec<Slot> = vec![Slot::Absent; env.len()];
         for (k, d) in free.iter().enumerate() {
             let pos = env.len() - 1 - *d as usize;
@@ -902,6 +911,7 @@ impl<'a> Builder<'a> {
         self.lambdas += 1;
         let index = self.table.len();
         self.table.push(name.clone());
+        self.code_ids.push(code_id);
         self.max_arity = self.max_arity.max(arity as usize);
         let (code, inner_frame) = self.function_body(body, inner, cycle)?;
         let params: String = (0..arity).map(|i| format!(" (param $p{i} i64)")).collect();
@@ -935,11 +945,14 @@ impl<'a> Builder<'a> {
         for i in &self.imports {
             let _ = writeln!(m, "  {i}");
         }
+        let ids: Vec<u8> = self.code_ids.iter().flatten().copied().collect();
+        let code_ids = self.static_bytes(ids);
         let heap_start = (self.next_addr + 7) & !7;
         let pages = heap_start / 65536 + 1;
         let _ = writeln!(m, "  (memory (export \"memory\") {pages})");
         let _ = writeln!(m, "  (global $hp (mut i32) (i32.const {heap_start}))");
         let _ = writeln!(m, "  (global $rtdata i32 (i32.const {}))", self.rtdata);
+        let _ = writeln!(m, "  (global $code_ids i32 (i32.const {code_ids}))");
         let _ = writeln!(m, "  (table $fns {} funcref)", self.table.len().max(1));
         if !self.table.is_empty() {
             let _ = writeln!(m, "  (elem (table $fns) (i32.const 0) func {})", self.table.join(" "));
@@ -1053,7 +1066,6 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::Item => format!("(call $item {} {} {})", a[0], a[1], a[2]),
         Op::Natural => format!("(call $natural_or {} {})", a[0], a[1]),
         Op::Compare => format!("(call $compare {} {})", a[0], a[1]),
-        Op::HashFrame => format!("(call $hash_frame {} {})", a[0], a[1]),
         Op::HasField => unreachable!("a field test is compiled where it is met"),
         Op::Without => unreachable!("a record's rest is compiled where it is met"),
         Op::WithEnv => format!("(call $with_env {} {})", a[0], a[1]),
@@ -1152,6 +1164,63 @@ fn pattern_test(value: Term, pattern: &Pattern) -> Term {
             let first = tests.next().expect("a record pattern has a field");
             tests.fold(first, |acc, t| Term::And(Box::new(acc), Box::new(t)))
         }
+    }
+}
+
+/// A lambda's code id, as a definition's is its hash: the hash of the
+/// lambda with each captured local numbered by its slot among the
+/// captures, so the id depends on the lambda and not on where it is
+/// written. A lambda in a recursive definition is hashed with the hashes
+/// of the cycle it refers to. `free` holds the captured locals, as
+/// indices from outside the lambda, in slot order.
+fn lambda_code_id(labels: &[String], body: &Term, free: &[u32], cycle: &[Hash]) -> [u8; 8] {
+    let arity = labels.len() as u32;
+    let slots = |i: u32| arity + free.iter().position(|d| *d == i).expect("a captured local") as u32;
+    let closed = Term::Fn(labels.to_vec(), Box::new(relocal(body, arity, &slots)));
+    let mut bytes = b"lambda".to_vec();
+    closed.encode(&mut bytes, &|i| i);
+    if closed.is_recursive() {
+        cycle.iter().for_each(|h| bytes.extend_from_slice(&h.0));
+    }
+    Hash::of(&bytes).0[..8].try_into().unwrap()
+}
+
+/// `term` with every local at or above `cutoff`, under that many binders,
+/// renumbered: local `cutoff + i` becomes `cutoff + map(i)`.
+fn relocal(term: &Term, cutoff: u32, map: &dyn Fn(u32) -> u32) -> Term {
+    let s = |t: &Term| Box::new(relocal(t, cutoff, map));
+    let all = |ts: &[Term]| ts.iter().map(|t| relocal(t, cutoff, map)).collect::<Vec<_>>();
+    let entries =
+        |fs: &[(String, Term)]| fs.iter().map(|(k, t)| (k.clone(), relocal(t, cutoff, map))).collect::<Vec<_>>();
+    match term {
+        Term::Local(i) if *i >= cutoff => Term::Local(cutoff + map(i - cutoff)),
+        Term::Fn(labels, body) => Term::Fn(labels.clone(), Box::new(relocal(body, cutoff + labels.len() as u32, map))),
+        Term::App(c, args, labels) => Term::App(s(c), all(args), labels.clone()),
+        Term::Let(v, body) => Term::Let(s(v), Box::new(relocal(body, cutoff + 1, map))),
+        Term::If(a, b, c) => Term::If(s(a), s(b), s(c)),
+        Term::And(a, b) => Term::And(s(a), s(b)),
+        Term::Or(a, b) => Term::Or(s(a), s(b)),
+        Term::Record(fs) => Term::Record(entries(fs)),
+        Term::Dict(fs) => Term::Dict(entries(fs)),
+        Term::Field(k, t) => Term::Field(k.clone(), s(t)),
+        Term::Update(r, k, v) => Term::Update(s(r), k.clone(), s(v)),
+        Term::List(items) => Term::List(all(items)),
+        Term::Prim(op, args) => Term::Prim(*op, all(args)),
+        Term::Host(name, args) => Term::Host(name.clone(), all(args)),
+        Term::Task(t) => Term::Task(s(t)),
+        Term::Perform(t) => Term::Perform(s(t)),
+        Term::Handle(t, caps) => Term::Handle(
+            s(t),
+            caps.iter()
+                .map(|(c, ops)| (c.clone(), ops.iter().map(|(o, i)| (o.clone(), relocal(i, cutoff, map))).collect()))
+                .collect(),
+        ),
+        Term::Match(x, clauses, default) => Term::Match(
+            s(x),
+            clauses.iter().map(|(p, r)| (p.clone(), relocal(r, cutoff + p.binders().len() as u32, map))).collect(),
+            default.as_ref().map(|d| s(d)),
+        ),
+        other => other.clone(),
     }
 }
 
