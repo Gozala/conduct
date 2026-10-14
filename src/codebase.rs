@@ -1197,6 +1197,7 @@ fn builtin_labels(op: Op) -> Option<(&'static [&'static str], &'static [usize])>
         Op::Map => Some((&["each"], &[1, 0])),
         Op::Filter => Some((&["where"], &[1, 0])),
         Op::Item => Some((&["at", "or"], &[0, 1, 2])),
+        Op::Natural => Some((&["or"], &[0, 1])),
         _ => None,
     }
 }

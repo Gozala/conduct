@@ -1,0 +1,227 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at https://mozilla.org/MPL/2.0/.
+;;
+;; conduct.map: a persistent hash map. A port of perma-map
+;; (https://github.com/Gozala/perma-map), a hash array mapped trie after
+;; CHAMP (Steindorfer and Vinju, "Optimizing Hash-Array Mapped Tries for
+;; Fast and Lean Immutable JVM Collections", OOPSLA 2015).
+;;
+;; A node has two 32-bit bitmaps. `datamap` marks the slots that hold an
+;; entry in the node itself, and `nodemap` the slots that hold a child
+;; node. The entries and the children are kept in two lists, in slot
+;; order, so the place of a slot's item in its list is the number of
+;; bits set below the slot. Each level reads the next five bits of the
+;; key's hash. A 32-bit hash is used up after seven levels, so a node at
+;; that depth keeps its entries, whose keys all hash alike, in a list.
+;;
+;; A node is canonical, as CHAMP's are: removing an entry pulls a child
+;; that is left with one entry back into its parent. So two maps of the
+;; same entries have the same nodes, except where keys collide, where
+;; entries keep the order they were added in.
+;;
+;; perma-map's transient builders have no counterpart here: a map that
+;; nothing else holds is updated in place, as every unique value is.
+
+(domain conduct.map)
+
+(type datamap : (conduct.map/datamap natural))
+(type nodemap : (conduct.map/nodemap natural))
+(type leaves : (conduct.map/leaves (list ?entry)))
+(type branches : (conduct.map/branches (list ?node)))
+(type entry-key : (conduct.map/key ?key))
+(type entry-value : (conduct.map/value ?value))
+(type map-root : (conduct.map/root ?node))
+(type map-size : (conduct.map/size integer))
+
+;; An entry, a node of the trie, and a map, of keys `?k` and values `?v`.
+(type (entry ?k value: ?v) : {entry-key: ?k, entry-value: ?v})
+(type (node ?k value: ?v) : (rec ?n {datamap: natural, nodemap: natural, leaves: (list (entry ?k value: ?v)), branches: (list ?n)}))
+(type (map ?k value: ?v) : {map-root: (node ?k value: ?v), map-size: integer})
+
+;; How many bits of the hash one level reads, and the shift past which
+;; the hash is used up.
+(define slot-bits 5)
+(define slot-mask 0x1f)
+(define used-up 35)
+
+(claim empty-node : (node nothing value: nothing))
+(define empty-node {datamap: 0, nodemap: 0, leaves: [], branches: []})
+
+;; The map with no entries.
+(claim empty : (map nothing value: nothing))
+(define empty {map-root: empty-node, map-size: 0})
+
+;; The bit of `h`'s slot at `shift`.
+(define (bit-of h shift) (shift-left 1 (bit-and (shift-right h shift) slot-mask)))
+
+(define (has? bits bit) (not= (bit-and bits bit) 0))
+
+;; Where in its list the item of `bit`'s slot is: how many slots below
+;; it `bits` marks.
+(define (rank bits bit) (count-ones (bit-and bits (natural (- bit 1) or: 0))))
+
+(define (deeper shift) (natural (+ shift slot-bits) or: 0))
+
+;; The value of `key` in a list of entries, or `default`.
+(claim (find-in (list (entry ?k value: ?v)) key: ?k default: ?v) : ?v)
+(define (find-in entries key default)
+  (match entries
+    [] default
+    [e rest ...] (if (= (entry-key e) key) (entry-value e) (find-in rest key: key default: default))))
+
+(claim (find (node ?k value: ?v) h: natural shift: natural key: ?k default: ?v) : ?v)
+(define (find node h shift key default)
+  (if (>= shift used-up)
+    (find-in (leaves node) key: key default: default)
+    (let [bit (bit-of h shift: shift)]
+      (cond
+        (has? (datamap node) bit: bit)
+        (let [e (item (leaves node) at: (rank (datamap node) bit: bit) or: {entry-key: key, entry-value: default})]
+          (if (= (entry-key e) key) (entry-value e) default))
+        (has? (nodemap node) bit: bit)
+        (find (item (branches node) at: (rank (nodemap node) bit: bit) or: empty-node)
+              h: h shift: (deeper shift) key: key default: default)
+        :else default))))
+
+;; The value `m` has for `key`, or `or` when it has none.
+(claim (lookup (map ?k value: ?v) key: ?k or: ?v) : ?v)
+(define (lookup m key or: default)
+  (find (map-root m) h: (hash key) shift: 0 key: key default: default))
+
+;; The entries with `e` in place of the one with its key, or added last.
+(claim (put-in (list (entry ?k value: ?v)) e: (entry ?k value: ?v)) : (list (entry ?k value: ?v)))
+(define (put-in entries e)
+  (match entries
+    [] [e]
+    [first rest ...] (if (= (entry-key first) (entry-key e))
+                       (concat [e] rest)
+                       (concat [first] (put-in rest e: e)))))
+
+;; A node of two entries whose keys differ, hashed `h1` and `h2`, at
+;; `shift`.
+(claim (pair (entry ?k value: ?v) h1: natural b: (entry ?k value: ?v) h2: natural shift: natural) : (node ?k value: ?v))
+(define (pair a h1 b h2 shift)
+  (if (>= shift used-up)
+    {datamap: 0, nodemap: 0, leaves: [a b], branches: []}
+    (let [b1 (bit-of h1 shift: shift)
+          b2 (bit-of h2 shift: shift)]
+      (if (= b1 b2)
+        {datamap: 0, nodemap: b1, leaves: [],
+         branches: [(pair a h1: h1 b: b h2: h2 shift: (deeper shift))]}
+        {datamap: (bit-or b1 b2), nodemap: 0, branches: [],
+         leaves: (if (< b1 b2) [a b] [b a])}))))
+
+(claim (place (node ?k value: ?v) h: natural shift: natural e: (entry ?k value: ?v)) : (node ?k value: ?v))
+(define (place node h shift e)
+  (if (>= shift used-up)
+    (assoc node leaves: (put-in (leaves node) e: e))
+    (let [bit (bit-of h shift: shift)
+          data (datamap node)
+          nodes (nodemap node)]
+      (cond
+        (has? data bit: bit)
+        (let [i (rank data bit: bit)
+              old (item (leaves node) at: i or: e)]
+          (if (= (entry-key old) (entry-key e))
+            (assoc node leaves: (set-at (leaves node) i e))
+            ;; Two keys in one slot: they move down into a child.
+            (let [child (pair old h1: (hash (entry-key old)) b: e h2: h shift: (deeper shift))
+                  nodes (bit-or nodes bit)]
+              {datamap: (bit-xor data bit),
+               nodemap: nodes,
+               leaves: (remove-at (leaves node) i),
+               branches: (insert-at (branches node) (rank nodes bit: bit) child)})))
+        (has? nodes bit: bit)
+        (let [j (rank nodes bit: bit)
+              child (item (branches node) at: j or: empty-node)]
+          (assoc node branches: (set-at (branches node) j (place child h: h shift: (deeper shift) e: e))))
+        :else
+        (assoc (assoc node leaves: (insert-at (leaves node) (rank data bit: bit) e))
+               datamap: (bit-or data bit))))))
+
+;; Whether `m` has an entry for `key`. The default is a fresh list, which
+;; no value of the map is.
+(claim (contains? (map ?k value: any) key: ?k) : boolean)
+(define (contains? m key)
+  (let [missing [:conduct.map/missing]]
+    (not= (lookup m key: key or: missing) missing)))
+
+;; `m` with `key` set to `value`.
+(claim (put (map ?k value: ?v) key: ?k value: ?v) : (map ?k value: ?v))
+(define (put m key value)
+  (let [e {entry-key: key, entry-value: value}
+        size (if (contains? m key: key) (map-size m) (+ (map-size m) 1))]
+    {map-root: (place (map-root m) h: (hash key) shift: 0 e: e), map-size: size}))
+
+(claim (drop-in (list (entry ?k value: ?v)) key: ?k) : (list (entry ?k value: ?v)))
+(define (drop-in entries key)
+  (match entries
+    [] []
+    [e rest ...] (if (= (entry-key e) key) rest (concat [e] (drop-in rest key: key)))))
+
+;; Whether a node holds one entry and no children: what a parent pulls
+;; back into itself.
+(define (single? node)
+  (and (= (nodemap node) 0) (= (count (leaves node)) 1)))
+
+(claim (unplace (node ?k value: ?v) h: natural shift: natural key: ?k) : (node ?k value: ?v))
+(define (unplace node h shift key)
+  (if (>= shift used-up)
+    (assoc node leaves: (drop-in (leaves node) key: key))
+    (let [bit (bit-of h shift: shift)
+          data (datamap node)
+          nodes (nodemap node)]
+      (cond
+        (has? data bit: bit)
+        (let [i (rank data bit: bit)
+              e (item (leaves node) at: i or: {entry-key: key})]
+          (if (= (entry-key e) key)
+            (assoc (assoc node leaves: (remove-at (leaves node) i)) datamap: (bit-xor data bit))
+            node))
+        (has? nodes bit: bit)
+        (let [j (rank nodes bit: bit)
+              child (unplace (item (branches node) at: j or: empty-node) h: h shift: (deeper shift) key: key)]
+          (match (if (single? child) (leaves child) [])
+            ;; The child's one entry comes back up into this node.
+            [e] (let [data (bit-or data bit)]
+                  {datamap: data,
+                   nodemap: (bit-xor nodes bit),
+                   leaves: (insert-at (leaves node) (rank data bit: bit) e),
+                   branches: (remove-at (branches node) j)})
+            _ (assoc node branches: (set-at (branches node) j child))))
+        :else node))))
+
+;; `m` without an entry for `key`.
+(claim (remove (map ?k value: ?v) key: ?k) : (map ?k value: ?v))
+(define (remove m key)
+  (if (contains? m key: key)
+    {map-root: (unplace (map-root m) h: (hash key) shift: 0 key: key), map-size: (- (map-size m) 1)}
+    m))
+
+;; How many entries `m` has.
+(claim (size (map any value: any)) : integer)
+(define (size m) (map-size m))
+
+(claim (node-entries (node ?k value: ?v)) : (list (entry ?k value: ?v)))
+(define (node-entries node)
+  (concat (leaves node) (all-entries (branches node))))
+
+(claim (all-entries (list (node ?k value: ?v))) : (list (entry ?k value: ?v)))
+(define (all-entries nodes)
+  (match nodes
+    [] []
+    [n rest ...] (concat (node-entries n) (all-entries rest))))
+
+;; `m`'s entries, each `{entry-key entry-value}`, in no order a caller
+;; may rely on.
+(claim (entries (map ?k value: ?v)) : (list (entry ?k value: ?v)))
+(define (entries m) (node-entries (map-root m)))
+
+;; A map of the entries `es`, each `{entry-key entry-value}`; a later
+;; entry for a key wins.
+(claim (from-entries (list (entry ?k value: ?v))) : (map ?k value: ?v))
+(define (from-entries es)
+  (match es
+    [] empty
+    [e rest ...] (put (from-entries rest) key: (entry-key e) value: (entry-value e))))

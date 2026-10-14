@@ -381,6 +381,7 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
             let a = var();
             (vec![Ty::list(a.clone()), Ty::nat(), a.clone()], Ty::list(a))
         }
+        Op::Natural => (vec![Ty::int(), Ty::nat()], Ty::nat()),
         // The default comes back for an index past the end.
         Op::Item => {
             let a = var();

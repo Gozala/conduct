@@ -103,6 +103,9 @@ pub enum Op {
     RemoveAt,
     /// `(item xs at: i or: d)`: the item at an index, or the default.
     Item,
+    /// `(natural x or: d)`: an integer as a natural, or the default when
+    /// it is negative.
+    Natural,
     /// Whether a value is a record with a field: only `match` uses it,
     /// so it has no name in source and is not in [`Op::ALL`].
     HasField,
@@ -167,6 +170,7 @@ impl Op {
         Op::InsertAt,
         Op::RemoveAt,
         Op::Item,
+        Op::Natural,
     ];
 
     pub fn name(self) -> &'static str {
@@ -218,6 +222,7 @@ impl Op {
             Op::InsertAt => "insert-at",
             Op::RemoveAt => "remove-at",
             Op::Item => "item",
+            Op::Natural => "natural",
             Op::HasField => "has-field?",
             Op::WithEnv => "with-env",
             Op::Nth => "nth",

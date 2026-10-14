@@ -3,6 +3,50 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## A hash map, written in conduct
+
+- **The first library is written in the language, not built in.**
+  `conduct.map` (`lib/map.cdt`) is a port of perma-map: a hash array
+  mapped trie after CHAMP, five bits of a 32-bit `hash` a level, two
+  bitmaps a node, and a list of entries where the hash is used up after
+  seven levels. It needed only what the runtime already had for it:
+  bits, `hash`, lists updated by index, and `natural`, a total way from
+  an integer to a natural (`(natural (- bit 1) or: 0)`).
+- **Nodes are canonical,** as CHAMP's are: removing pulls a child left
+  with one entry back into its parent, at every level. So maps of the
+  same entries are `=` whatever order they were made in (keys whose
+  whole hashes collide keep the order they came in).
+- **No transient builders and no configurable hash.** perma-map has
+  both; here a map nothing else holds is updated in place, and there is
+  one `hash`, over a value's structure.
+- **Size costs a second walk.** `put` and `remove` ask `contains?`
+  first. Having `place` answer whether it added an entry would save it;
+  that needs a pair of results, which is a record, and a record is
+  allocated. Not measured yet.
+- **Claimed types are not yet shown by their names.** The library
+  declares `(map ?k value: ?v)` and claims every definition with it, so
+  the checker holds the code to those types, but what it shows is the
+  type expanded: `{map-root: (rec ?a {..}), map-size: integer}`. Showing
+  a type by the name it was declared under is the next thing an editor
+  needs from the checker.
+- **Tested against a model:** 1500 random puts and removes compared with
+  Rust's `BTreeMap`, removal down to `empty`, `=` across orders, keys
+  whose whole hashes collide, and every run checked for leaks. FNV-1a
+  spreads small integers well: no two integers below 2^25 hash alike,
+  so the colliding pairs are written into the test.
+- **Two bugs in perma-map's 32-bit path, found while porting.** Its
+  tests use only the 8-bit `Uint8Array` configuration, so neither shows
+  there. `Uint32` `unset` masks with `0xff ^ (1 << index)`, which clears
+  every bit from 8 up, so a node loses its entries in slots 8 to 31 the
+  first time any bit is unset, which an insert does too when two keys
+  meet in a slot. And `popcount(bits)` with no index counts the bits
+  below 31, so slot 31 never counts toward a node's arity: a child
+  holding slots 29 and 31 reads as one entry, and the parent inlines it
+  and drops the other. With both fixed, the 32-bit path agrees with a
+  model over 40,000 operations. Separately, its default hasher is
+  `murmur.x64.hash126`, which does not exist, so the default
+  configuration cannot hash a key without a hasher passed in.
+
 ## Names are pointers, in domains
 
 - **Every definition is its hash, and a name is only a pointer to one.**

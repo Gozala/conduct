@@ -160,3 +160,12 @@ fn lists_updated_by_index() {
     assert_eq!(items.len(), 40);
     assert_eq!(items[0], Value::Int(1));
 }
+
+#[test]
+fn an_integer_becomes_a_natural_or_a_default() {
+    let cb = types("(define (count-down n) (natural (- n 1) or: 0))");
+    assert_eq!(cb.type_of("count-down").unwrap(), "((\\ integer) : natural)");
+    let src = "(define r [(natural 5 or: 0) (natural (- 0 3) or: 7) (natural 0 or: 9)])";
+    assert_eq!(run(src, "r"), ints(&[5, 7, 0]));
+    assert!(error("(define r (natural 1 or: (- 0 1)))").contains("natural"));
+}

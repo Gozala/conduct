@@ -236,6 +236,9 @@
     (local.set $k (i64.shr_u (local.get $n) (i64.const 1)))
     (if (i64.ge_u (local.get $k) (i64.const 62)) (then (return (i64.const 1))))
     (i64.or (i64.shl (i64.shr_u (i64.shr_u (local.get $a) (i64.const 1)) (local.get $k)) (i64.const 1)) (i64.const 1)))
+  (func $natural_or (param $x i64) (param $d i64) (result i64)
+    ;; `(natural x or: d)`: a tagged integer is negative when its value is.
+    (select (local.get $x) (local.get $d) (i64.ge_s (local.get $x) (i64.const 0))))
   (func $count_ones (param $a i64) (result i64)
     (i64.or (i64.shl (i64.popcnt (i64.shr_u (local.get $a) (i64.const 1))) (i64.const 1)) (i64.const 1)))
 
