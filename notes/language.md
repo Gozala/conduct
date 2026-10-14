@@ -418,8 +418,9 @@ greedy, so it is not complete.
    by one space; `{name (? phone)}` would not.
 3. **Record composition.** Spelling for "a person plus a phone", since
    a record type lists only attributes, never another record type.
-4. **Modules.** How a module is declared, and how its namespace relates
-   to the attributes' global names.
+4. **Modules** are decided: there are none. Definitions are hashes,
+   names point at them, and a source names its domain (see README,
+   "Names and domains").
 5. **Handlers that do not resume** (abort, retry), implementations that
    need capabilities, environments held in values, and the coroutine
    compilation they need.

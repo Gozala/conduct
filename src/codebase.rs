@@ -51,7 +51,13 @@ pub struct Codebase {
     pub macros: BTreeMap<String, macros::Macro>,
     /// The last mark an expansion gave its template's symbols.
     marks: u64,
+    /// The domain of the source being added, if it names one.
+    domain: Option<String>,
 }
+
+/// The domain a built-in's whole name is in: `conduct/count` is the
+/// built-in `count`, whatever else is named `count`.
+pub const BUILTIN_DOMAIN: &str = "conduct";
 
 /// How many expansions deep one form may go: a macro whose expansion
 /// always calls it again is an error, not a hang.
@@ -174,11 +180,89 @@ impl Codebase {
     pub fn add_source(&mut self, source: &str) -> Result<Vec<Added>, Error> {
         let forms = reader::read(source).map_err(Error::Read)?;
         let saved = (self.claims.clone(), self.names.clone(), self.macros.clone());
-        let out = self.add_forms(&forms);
+        let out = self.scoped(&forms).and_then(|rest| self.add_forms(rest));
+        self.domain = None;
         if out.is_err() {
             (self.claims, self.names, self.macros) = saved;
         }
         out
+    }
+
+    /// Read the `domain` form a source may start with, which names the
+    /// domain its definitions go in, and answer the source's other forms.
+    fn scoped<'f>(&mut self, forms: &'f [Sexp]) -> Result<&'f [Sexp], Error> {
+        let heads = |form: &Sexp| match form {
+            Sexp::List(items, _) => items.first().and_then(Sexp::as_symbol) == Some("domain"),
+            _ => false,
+        };
+        let leading = forms.iter().take_while(|f| heads(f)).count();
+        let misplaced = forms[leading..].iter().find(|f| heads(f)).or(if leading > 1 { forms.get(1) } else { None });
+        if let Some(form) = misplaced {
+            return Err(Error::Syntax(syntax::SyntaxError {
+                message: "a source names one domain, first: `(domain io.gozala.parser)`".into(),
+                span: form.span(),
+            }));
+        }
+        if let Some(form) = forms[..leading].first() {
+            let Item::Domain(name) = syntax::item(form).map_err(Error::Syntax)? else {
+                unreachable!("only `domain` leads")
+            };
+            self.domain = Some(name);
+        }
+        Ok(&forms[leading..])
+    }
+
+    /// The whole name of a definition of the source being added: `./x`
+    /// and a name with no domain go in the source's domain.
+    fn full_name(&self, name: &str) -> String {
+        let local = name.strip_prefix("./").unwrap_or(name);
+        match &self.domain {
+            Some(domain) if !local.contains('/') => format!("{domain}/{local}"),
+            _ => local.to_string(),
+        }
+    }
+
+    /// The whole names `written` may stand for among the definitions of
+    /// the source being added: in its domain, or as written.
+    fn spellings(&self, written: &str) -> Vec<String> {
+        if let Some(local) = written.strip_prefix("./") {
+            return self.domain.iter().map(|d| format!("{d}/{local}")).collect();
+        }
+        if written.contains('/') {
+            return vec![written.to_string()];
+        }
+        let mut out: Vec<String> = self.domain.iter().map(|d| format!("{d}/{written}")).collect();
+        out.push(written.to_string());
+        out
+    }
+
+    /// The whole name in the codebase that `written` refers to. `./x` is
+    /// `x` in the source's domain, and `io.gozala.parser/x` is itself. A
+    /// name with no domain is the definition of that name with no
+    /// domain, if there is one; else the one definition of that name in
+    /// any domain. When the name is in several domains, or in one and
+    /// also built in, it is ambiguous, and the error lists each whole
+    /// name to write instead.
+    fn resolve_name(&self, written: &str, defined: &dyn Fn(&str) -> bool) -> Result<Option<String>, Vec<String>> {
+        if let Some(local) = written.strip_prefix("./") {
+            return Ok(self.domain.as_ref().map(|d| format!("{d}/{local}")).filter(|n| defined(n)));
+        }
+        if written.contains('/') || defined(written) {
+            return Ok(Some(written.to_string()).filter(|n| defined(n)));
+        }
+        let suffix = format!("/{written}");
+        let mut candidates: Vec<String> = self.names.keys().filter(|n| n.ends_with(&suffix)).cloned().collect();
+        let builtin = Op::from_name(written).is_some();
+        match (candidates.len(), builtin) {
+            (0, _) => Ok(None),
+            (1, false) => Ok(candidates.pop()),
+            _ => {
+                if builtin {
+                    candidates.push(format!("{BUILTIN_DOMAIN}/{written}"));
+                }
+                Err(candidates)
+            }
+        }
     }
 
     fn add_forms(&mut self, forms: &[Sexp]) -> Result<Vec<Added>, Error> {
@@ -299,7 +383,14 @@ impl Codebase {
                 Item::Claim(c) => claims.push(c),
                 Item::Type(t) => types.push(t),
                 Item::Macro(_) => unreachable!("macro rules are closed before anything else"),
+                Item::Domain(_) => unreachable!("a source's domain is read first"),
             }
+        }
+        for d in &mut defs {
+            d.name = self.full_name(&d.name);
+        }
+        for c in &mut claims {
+            c.name = self.full_name(&c.name);
         }
         for name in defs.iter().map(|d| &d.name).chain(types.iter().map(|t| &t.name)) {
             if self.macros.contains_key(name) || self.macros.contains_key(&format!("{name}!")) {
@@ -532,7 +623,10 @@ impl Codebase {
             .map(|d| {
                 let mut names = Vec::new();
                 free_names(&d.body, &mut Vec::new(), &mut names);
-                let mut out: Vec<usize> = names.iter().filter_map(|n| index.get(n.as_str()).copied()).collect();
+                let mut out: Vec<usize> = names
+                    .iter()
+                    .filter_map(|n| self.spellings(n).iter().find_map(|s| index.get(s.as_str()).copied()))
+                    .collect();
                 out.sort();
                 out.dedup();
                 out
@@ -550,6 +644,7 @@ impl Codebase {
             // Resolve with provisional cycle indices: positions in
             // `members`.
             let mut terms = Vec::new();
+            let ambiguous: std::cell::RefCell<Option<(String, Vec<String>)>> = std::cell::RefCell::new(None);
             for d in &members {
                 let lookup = |name: &str| -> Option<Target> {
                     // A name a macro's template wrote may be pinned to the
@@ -561,7 +656,22 @@ impl Codebase {
                         };
                         return Some(Target::Hash(h, labels));
                     }
-                    let name = bare(name);
+                    let written = bare(name);
+                    // A definition of this source, in its namespace or as
+                    // written, comes before what the codebase holds.
+                    let in_batch = self.spellings(written).into_iter().find(|s| index.contains_key(s.as_str()));
+                    let name = match in_batch {
+                        Some(full) => full,
+                        None => match self.resolve_name(written, &|n| self.names.contains_key(n)) {
+                            Ok(Some(full)) => full,
+                            Ok(None) => return None,
+                            Err(candidates) => {
+                                ambiguous.replace(Some((written.to_string(), candidates)));
+                                return None;
+                            }
+                        },
+                    };
+                    let name = name.as_str();
                     if let Some(i) = names_in_cycle.iter().position(|n| *n == name)
                         && recursive
                     {
@@ -585,7 +695,24 @@ impl Codebase {
                     Some(Target::Hash(*h, labels))
                 };
                 let names = Names { lookup: &lookup, claims: &self.claims, macros: &self.macros };
-                let term = resolve(&d.body, &mut Vec::new(), &names).map_err(|e| match e {
+                let resolved_term = resolve(&d.body, &mut Vec::new(), &names);
+                // A name that could be several things is an error even
+                // where resolution went on to read it as a built-in.
+                let resolved_term = match (resolved_term, ambiguous.borrow().clone()) {
+                    (Ok(_), Some((name, _))) => Err(ResolveError::Unbound(name)),
+                    (other, _) => other,
+                };
+                let term = resolved_term.map_err(|e| match e {
+                    ResolveError::Unbound(name) if ambiguous.borrow().as_ref().is_some_and(|(n, _)| *n == name) => {
+                        let (_, candidates) = ambiguous.take().unwrap();
+                        Error::Resolve {
+                            def: d.name.clone(),
+                            message: format!(
+                                "`{name}` could be any of {}: write which",
+                                candidates.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ")
+                            ),
+                        }
+                    }
                     ResolveError::Unbound(name) => Error::Unbound { name, def: d.name.clone() },
                     ResolveError::Invalid(message) => Error::Resolve { def: d.name.clone(), message },
                 })?;
@@ -1328,7 +1455,7 @@ fn app(callee: &Expr, args: &[Arg], scope: &mut Vec<String>, names: &Names) -> R
                 if let Some(attribute) = names.attribute(name) {
                     return read(name, attribute, resolved);
                 }
-                if let Some(op) = Op::from_name(name) {
+                if let Some(op) = Op::from_name(name.strip_prefix("conduct/").unwrap_or(name)) {
                     return builtin(op, resolved);
                 }
                 return Err(ResolveError::Unbound(name.to_string()));

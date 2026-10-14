@@ -308,6 +308,9 @@ pub enum Item {
     /// `(type name : type)`: what a name is, an attribute, a record type,
     /// a variant, or a constructor of one, written as a claim is.
     Type(Claim),
+    /// `(domain io.gozala.parser)`: the domain the source's definitions
+    /// are named in, as Dialog names attributes.
+    Domain(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -332,7 +335,7 @@ fn err<T>(message: impl Into<String>, span: Span) -> Result<T> {
 
 /// Words that cannot name a definition or a local.
 const RESERVED: &[&str] =
-    &["define", "claim", "type", "macro", "fn", "let", "do", "if", "match", "nil", "true", "false"];
+    &["define", "claim", "type", "macro", "domain", "fn", "let", "do", "if", "match", "nil", "true", "false"];
 
 /// Whether `name` is a word of the language: a form, or a name no
 /// definition may take.
@@ -364,7 +367,7 @@ pub fn items(forms: &[Sexp]) -> Result<Vec<Item>> {
 }
 
 const TOP: &str = "a top-level form is `(define name value)`, `(define (name params ..) body)`, a `claim` of one, \
-                   a `type`, or a `macro`";
+                   a `type`, a `macro`, or, first in a source, `(domain name)`";
 
 pub fn item(form: &Sexp) -> Result<Item> {
     let Sexp::List(items, span) = form else {
@@ -383,9 +386,35 @@ pub fn item(form: &Sexp) -> Result<Item> {
             }
             Ok(Item::Type(c))
         }
+        Some("domain") => match &items[1..] {
+            [name] => domain_name(name).map(Item::Domain),
+            _ => err("a source names one domain: `(domain io.gozala.parser)`", *span),
+        },
         Some(name) if retired(name).is_some() => err(retired(name).unwrap(), *span),
         _ => err(TOP, *span),
     }
+}
+
+/// A domain as Dialog writes one: lowercase letters, digits, `-` and
+/// `.`, starting with a letter and ending with a letter or a digit, such
+/// as `io.gozala.parser`.
+pub fn domain_name(form: &Sexp) -> Result<String> {
+    match form {
+        Sexp::Symbol(name, span) => {
+            let name = bare(name);
+            if is_domain(name) { Ok(name.to_string()) } else { err(format!("`{name}` is not a domain"), *span) }
+        }
+        other => err("a domain is a name such as `io.gozala.parser`", other.span()),
+    }
+}
+
+/// Whether `name` is a domain, by Dialog's grammar.
+pub fn is_domain(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes[0].is_ascii_lowercase()
+        && bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'.' || *b == b'-')
+        && bytes.last().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
 /// A name as a definition's head or a claim writes it: `show!` marks a

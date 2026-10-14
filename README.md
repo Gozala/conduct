@@ -567,6 +567,27 @@ ordered by their name-free encoding.
 Adding source that the codebase already holds, under any names, finds
 the hashes present and checks nothing.
 
+### Names and domains
+
+A definition is its hash; a name only points at one. A source may start
+with `(domain io.gozala.parser)`, as Dialog names attributes, and its
+definitions are then named in it: `(define (succeed v) ..)` is
+`io.gozala.parser/succeed`. A name is written three ways:
+
+```
+io.gozala.parser/succeed     ; whole
+./succeed                    ; in this source's domain
+succeed                      ; bare: the one definition of that name
+```
+
+A bare name is a definition with no domain if there is one, or else the
+one definition of that name in any domain. Two domains with the name,
+or one and a built-in, make it ambiguous, and the error lists each whole
+name to write instead; a built-in's whole name is `conduct/count`. There
+are no imports: what a name refers to is decided when its source is
+added, and stored as a hash, so a definition added later never changes
+what an earlier one meant.
+
 ### Compiled code
 
 `codegen` writes WebAssembly text and assembles it with the `wat` crate.
