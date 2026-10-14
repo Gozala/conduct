@@ -1198,6 +1198,10 @@ fn builtin_labels(op: Op) -> Option<(&'static [&'static str], &'static [usize])>
         Op::Filter => Some((&["where"], &[1, 0])),
         Op::Item => Some((&["at", "or"], &[0, 1, 2])),
         Op::Natural => Some((&["or"], &[0, 1])),
+        Op::ByteAt | Op::CodePointAt => Some((&["at", "or"], &[0, 1, 2])),
+        Op::Slice => Some((&["from", "to"], &[0, 1, 2])),
+        Op::Occurs => Some((&["in", "at"], &[0, 1, 2])),
+        Op::IndexOf => Some((&["in", "from", "or"], &[0, 1, 2, 3])),
         _ => None,
     }
 }

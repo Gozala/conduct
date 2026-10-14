@@ -3,6 +3,26 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Text by byte offset
+
+- **Text is UTF-8, and positions in it are byte offsets,** as Rust and
+  Roc index strings: `(slice t from: a to: b)`, `(byte-at t at: i or:
+  d)`, `(code-point-at t at: i or: d)`, `(occurs? small in: t at: i)`,
+  `(index-of small in: t from: i or: d)`, `(from-code-point c)`. A parser
+  walks its source by offsets, and a byte offset is followed in one
+  step; a count of code points would make each step a scan. elm/parser's
+  kernel (`isSubString`, `isSubChar`, `findSubString`) is these.
+- **What can be missing takes a default,** as `item` does: a code point
+  is missing past the end, in the middle of one, or where the bytes are
+  not UTF-8. The default may be any value, so `(code-point-at t at: i
+  or: :end)` answers `[natural :end]`.
+- **A slice clamps** to the text and is never negative, and may cut a
+  character in half; a parser slices only at offsets it reached by
+  stepping over whole characters. `(from-code-point c)` writes U+FFFD
+  for a surrogate or a number past U+10FFFF.
+- **Offsets are naturals,** so the checker refuses `(byte-at t at: (- i
+  1) or: d)` until the caller says what a negative offset means.
+
 ## Keys are rehashed, not bucketed
 
 - **A key's digest never runs out.** conduct.map reads 32 bits at a
