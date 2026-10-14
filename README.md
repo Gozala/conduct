@@ -580,6 +580,14 @@ ordered by their name-free encoding.
 Adding source that the codebase already holds, under any names, finds
 the hashes present and checks nothing.
 
+A function value is identified the same way at run time: by its code's
+hash and the values it captured. A definition's code is its hash; a
+lambda's is the hash of the lambda with its captures numbered by slot,
+so `(fn [x] (+ x n))` is one function wherever it is written and
+whatever its capture is called. `=`, `hash` and `compare` read that, not
+where a compiled module keeps the code, so a closure hashes alike in
+every module.
+
 ### Names and domains
 
 A definition is its hash; a name only points at one. A source may start

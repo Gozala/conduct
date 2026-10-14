@@ -3,6 +3,44 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Keys are rehashed, not bucketed
+
+- **A key's digest never runs out.** conduct.map reads 32 bits at a
+  time: frame 0 is `(hash key)`, and after six levels of five bits the
+  next level reads `(hash [1 key])`: the key with the frame number
+  added, hashed again. Depth stays the trie's concern, which frame a
+  level reads; `hash` stays one function of one value. Keys that collide
+  in one frame part in a later one,
+  so there are no collision buckets. This is perma-map's UnixFS
+  configuration, which hashes the key with the frame number appended,
+  and Bagwell's original suggestion for a hash that is used up.
+- **Why over sorted buckets:** a key's place is a function of the key
+  alone, so the trie is canonical with no order over keys; there is no
+  bucket code (seven of perma-map's nine bugs were in it); and keys
+  chosen to collide cost an attacker one more frame per level instead of
+  turning lookups into scans of a bucket, which matters for keys synced
+  from peers.
+- **What it needs: `hash` reads everything `=` compares.** Otherwise two
+  keys that are not equal hash alike in every frame, and the trie
+  descends forever looking for a bit that tells them apart. `hash` read
+  only the kind and length of functions, views, emits and fetches;
+  functions that differed in what they captured hashed alike. It now
+  reads a function's code and captured values and the values of the
+  others, and a test keeps functions as keys.
+- **A function is its code's hash and what it captured,** as Unison
+  identifies terms. `=` compared, and `hash` would have read, a
+  closure's place in its module's function table, which another module
+  numbers differently. Each module now carries a code id per table
+  entry: a definition's hash, or for a lambda the hash of its term with
+  captured locals renumbered by slot, so the same lambda written in two
+  definitions is one function. Tests compile one closure into two
+  modules that place it differently and get one hash.
+- **What it does not fix:** FNV-1a over 32 bits with no key is weak, and
+  frames of it are related. A seeded, stronger hash is the next step
+  before maps hold keys from untrusted peers in earnest.
+- **`compare` stays,** for sorted maps and sets, but conduct.map no
+  longer uses it.
+
 ## Arithmetic is precise
 
 - **`+`, `*` and `quot` keep what they are given:** each argument flows
@@ -41,8 +79,9 @@ it. Newest first.
   "depends on dynamic insertion and deletion order", are compared as
   sets (Steindorfer and Vinju, OOPSLA 2015, section 4.3; Clojure's way is
   its footnote's alternative).
-- **conduct goes one step past CHAMP: buckets are sorted too,** by
-  `compare`, as perma-map sorts them. Every part of the trie is then a
+- **conduct went one step past CHAMP: buckets were sorted too,** by
+  `compare`, as perma-map sorts them. ("Keys are rehashed, not
+  bucketed" then removed the buckets.) Every part of the trie is then a
   function of its entries, so the one structural `=` and `hash` are
   right for maps with no dispatch, and a content hash of a map (a merkle
   reference, once values are stored in Dialog) agrees with `=`. The

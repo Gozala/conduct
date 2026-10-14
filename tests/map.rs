@@ -288,3 +288,49 @@ fn the_readme_example() {
     );
     assert_eq!(run(&cb, "out"), Value::List(vec![Value::Int(1), Value::Bool(false), Value::Int(1), Value::Bool(true)]));
 }
+
+#[test]
+fn colliding_keys_part_at_the_next_frame() {
+    let pairs = colliding_pairs(4);
+    let frames: Vec<String> = pairs
+        .iter()
+        // Six levels read frame 0; the seventh reads frame 1, `(hash [1 key])`.
+        .map(|(a, b)| format!("[(frame-at {a} depth: 5) (hash {a}) (frame-at {a} depth: 6) (frame-at {b} depth: 6)]"))
+        .collect();
+    let cb = codebase(&format!("(define out [{}])", frames.join(" ")));
+    let Value::List(rows) = run(&cb, "out") else { panic!() };
+    for (row, (a, b)) in rows.iter().zip(&pairs) {
+        let r = ints(row);
+        assert_eq!(r[0], r[1], "frame 0 of {a} is its hash");
+        assert_eq!(r[0], hash(*a) as i64);
+        assert_ne!(r[2], r[3], "{a} and {b} collide at frame 0 but not at frame 1");
+    }
+}
+
+#[test]
+fn functions_are_keys() {
+    // `hash` reads a function's code and what it captured, as `=` does, so
+    // functions that differ only in what they captured part in the trie.
+    let cb = codebase(
+        "(define (adder n) (fn [x] (+ x n)))
+         (define m (put (put (put empty key: (adder 1) value: :one) key: (adder 2) value: :two)
+                        key: (adder 3) value: :three))
+         (define out [(= (hash (adder 1)) (hash (adder 1)))
+                      (= (hash (adder 1)) (hash (adder 2)))
+                      (size m)
+                      (lookup m key: (adder 2) or: :none)
+                      (lookup m key: (adder 4) or: :none)
+                      (size (remove m key: (adder 1)))])",
+    );
+    assert_eq!(
+        run(&cb, "out"),
+        Value::List(vec![
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Int(3),
+            Value::Keyword("two".into()),
+            Value::Keyword("none".into()),
+            Value::Int(2),
+        ])
+    );
+}
