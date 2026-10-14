@@ -308,6 +308,12 @@ pub enum Item {
     /// `(type name : type)`: what a name is, an attribute, a record type,
     /// a variant, or a constructor of one, written as a claim is.
     Type(Claim),
+    /// `(namespace parser)`: the namespace the source's definitions are
+    /// named in.
+    Namespace(String),
+    /// `(use parser json)`: namespaces whose names the source may write
+    /// without their namespace.
+    Use(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -331,8 +337,22 @@ fn err<T>(message: impl Into<String>, span: Span) -> Result<T> {
 }
 
 /// Words that cannot name a definition or a local.
-const RESERVED: &[&str] =
-    &["define", "claim", "type", "macro", "fn", "let", "do", "if", "match", "nil", "true", "false"];
+const RESERVED: &[&str] = &[
+    "define",
+    "claim",
+    "type",
+    "macro",
+    "namespace",
+    "use",
+    "fn",
+    "let",
+    "do",
+    "if",
+    "match",
+    "nil",
+    "true",
+    "false",
+];
 
 /// Whether `name` is a word of the language: a form, or a name no
 /// definition may take.
@@ -364,7 +384,7 @@ pub fn items(forms: &[Sexp]) -> Result<Vec<Item>> {
 }
 
 const TOP: &str = "a top-level form is `(define name value)`, `(define (name params ..) body)`, a `claim` of one, \
-                   a `type`, or a `macro`";
+                   a `type`, a `macro`, or, first in a source, `(namespace name)` and `(use name ..)`";
 
 pub fn item(form: &Sexp) -> Result<Item> {
     let Sexp::List(items, span) = form else {
@@ -383,8 +403,28 @@ pub fn item(form: &Sexp) -> Result<Item> {
             }
             Ok(Item::Type(c))
         }
+        Some("namespace") => match &items[1..] {
+            [name] => namespace_name(name).map(Item::Namespace),
+            _ => err("a source names one namespace: `(namespace name)`", *span),
+        },
+        Some("use") if items.len() > 1 => items[1..].iter().map(namespace_name).collect::<Result<_>>().map(Item::Use),
+        Some("use") => err("`use` names the namespaces to use: `(use name ..)`", *span),
         Some(name) if retired(name).is_some() => err(retired(name).unwrap(), *span),
         _ => err(TOP, *span),
+    }
+}
+
+/// A namespace as `namespace` and `use` write it: a name, or a path of
+/// names separated by `/`, such as `json/decode`.
+fn namespace_name(form: &Sexp) -> Result<String> {
+    match form {
+        Sexp::Symbol(name, span) => {
+            let name = bare(name);
+            let valid = !name.is_empty()
+                && name.split('/').all(|segment| !segment.is_empty() && !reserved(segment) && !segment.ends_with('!'));
+            if valid { Ok(name.to_string()) } else { err(format!("`{name}` is not a namespace"), *span) }
+        }
+        other => err("a namespace is a name, such as `parser` or `json/decode`", other.span()),
     }
 }
 

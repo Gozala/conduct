@@ -51,6 +51,17 @@ pub struct Codebase {
     pub macros: BTreeMap<String, macros::Macro>,
     /// The last mark an expansion gave its template's symbols.
     marks: u64,
+    /// The namespace and the namespaces in use of the source being
+    /// added.
+    scope: Scope,
+}
+
+/// What a source's `namespace` and `use` say: where its definitions are
+/// named, and which namespaces its names may leave out.
+#[derive(Default, Clone)]
+struct Scope {
+    namespace: Option<String>,
+    uses: Vec<String>,
 }
 
 /// How many expansions deep one form may go: a macro whose expansion
@@ -174,11 +185,97 @@ impl Codebase {
     pub fn add_source(&mut self, source: &str) -> Result<Vec<Added>, Error> {
         let forms = reader::read(source).map_err(Error::Read)?;
         let saved = (self.claims.clone(), self.names.clone(), self.macros.clone());
-        let out = self.add_forms(&forms);
+        let out = self.scoped(&forms).and_then(|rest| self.add_forms(rest));
+        self.scope = Scope::default();
         if out.is_err() {
             (self.claims, self.names, self.macros) = saved;
         }
         out
+    }
+
+    /// Read the `namespace` and `use` forms a source starts with into the
+    /// scope its other forms are added in, and answer those forms.
+    fn scoped<'f>(&mut self, forms: &'f [Sexp]) -> Result<&'f [Sexp], Error> {
+        let heads = |form: &Sexp| match form {
+            Sexp::List(items, _) => matches!(items.first().and_then(Sexp::as_symbol), Some("namespace" | "use")),
+            _ => false,
+        };
+        let leading = forms.iter().take_while(|f| heads(f)).count();
+        for form in &forms[leading..] {
+            if heads(form) {
+                return Err(Error::Syntax(syntax::SyntaxError {
+                    message: "`namespace` and `use` come first in a source, before what they apply to".into(),
+                    span: form.span(),
+                }));
+            }
+        }
+        for form in &forms[..leading] {
+            match syntax::item(form).map_err(Error::Syntax)? {
+                Item::Namespace(name) if self.scope.namespace.is_none() => self.scope.namespace = Some(name),
+                Item::Namespace(_) => {
+                    return Err(Error::Syntax(syntax::SyntaxError {
+                        message: "a source names one namespace".into(),
+                        span: form.span(),
+                    }));
+                }
+                Item::Use(names) => self.scope.uses.extend(names),
+                _ => unreachable!("only `namespace` and `use` lead"),
+            }
+        }
+        Ok(&forms[leading..])
+    }
+
+    /// The name a definition of the source being added is given: in its
+    /// namespace, unless written with one.
+    fn full_name(&self, name: &str) -> String {
+        match &self.scope.namespace {
+            Some(ns) if !name.contains('/') => format!("{ns}/{name}"),
+            _ => name.to_string(),
+        }
+    }
+
+    /// The names `written` may stand for in the source being added, most
+    /// specific first: in its namespace, in the namespaces it uses, and
+    /// as written.
+    fn spellings(&self, written: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(ns) = &self.scope.namespace {
+            out.push(format!("{ns}/{written}"));
+        }
+        out.extend(self.scope.uses.iter().map(|u| format!("{u}/{written}")));
+        out.push(written.to_string());
+        out
+    }
+
+    /// The full name in the codebase that `written` refers to in the
+    /// source being added: the first of its spellings that names
+    /// something, or else the one name that ends with it. Two namespaces
+    /// in use that both have it, or two names that end with it, make it
+    /// ambiguous, and the error lists them.
+    fn resolve_name(&self, written: &str, defined: &dyn Fn(&str) -> bool) -> Result<Option<String>, Vec<String>> {
+        if let Some(ns) = &self.scope.namespace {
+            let local = format!("{ns}/{written}");
+            if defined(&local) {
+                return Ok(Some(local));
+            }
+        }
+        let used: Vec<String> =
+            self.scope.uses.iter().map(|u| format!("{u}/{written}")).filter(|n| defined(n)).collect();
+        match used.len() {
+            0 => {}
+            1 => return Ok(used.into_iter().next()),
+            _ => return Err(used),
+        }
+        if defined(written) {
+            return Ok(Some(written.to_string()));
+        }
+        let suffix = format!("/{written}");
+        let ending: Vec<String> = self.names.keys().filter(|n| n.ends_with(&suffix)).cloned().collect();
+        match ending.len() {
+            0 => Ok(None),
+            1 => Ok(ending.into_iter().next()),
+            _ => Err(ending),
+        }
     }
 
     fn add_forms(&mut self, forms: &[Sexp]) -> Result<Vec<Added>, Error> {
@@ -299,7 +396,14 @@ impl Codebase {
                 Item::Claim(c) => claims.push(c),
                 Item::Type(t) => types.push(t),
                 Item::Macro(_) => unreachable!("macro rules are closed before anything else"),
+                Item::Namespace(_) | Item::Use(_) => unreachable!("a source's scope is read first"),
             }
+        }
+        for d in &mut defs {
+            d.name = self.full_name(&d.name);
+        }
+        for c in &mut claims {
+            c.name = self.full_name(&c.name);
         }
         for name in defs.iter().map(|d| &d.name).chain(types.iter().map(|t| &t.name)) {
             if self.macros.contains_key(name) || self.macros.contains_key(&format!("{name}!")) {
@@ -532,7 +636,10 @@ impl Codebase {
             .map(|d| {
                 let mut names = Vec::new();
                 free_names(&d.body, &mut Vec::new(), &mut names);
-                let mut out: Vec<usize> = names.iter().filter_map(|n| index.get(n.as_str()).copied()).collect();
+                let mut out: Vec<usize> = names
+                    .iter()
+                    .filter_map(|n| self.spellings(n).iter().find_map(|s| index.get(s.as_str()).copied()))
+                    .collect();
                 out.sort();
                 out.dedup();
                 out
@@ -550,6 +657,7 @@ impl Codebase {
             // Resolve with provisional cycle indices: positions in
             // `members`.
             let mut terms = Vec::new();
+            let ambiguous: std::cell::RefCell<Option<(String, Vec<String>)>> = std::cell::RefCell::new(None);
             for d in &members {
                 let lookup = |name: &str| -> Option<Target> {
                     // A name a macro's template wrote may be pinned to the
@@ -561,7 +669,22 @@ impl Codebase {
                         };
                         return Some(Target::Hash(h, labels));
                     }
-                    let name = bare(name);
+                    let written = bare(name);
+                    // A definition of this source, in its namespace or as
+                    // written, comes before what the codebase holds.
+                    let in_batch = self.spellings(written).into_iter().find(|s| index.contains_key(s.as_str()));
+                    let name = match in_batch {
+                        Some(full) => full,
+                        None => match self.resolve_name(written, &|n| self.names.contains_key(n)) {
+                            Ok(Some(full)) => full,
+                            Ok(None) => return None,
+                            Err(candidates) => {
+                                ambiguous.replace(Some((written.to_string(), candidates)));
+                                return None;
+                            }
+                        },
+                    };
+                    let name = name.as_str();
                     if let Some(i) = names_in_cycle.iter().position(|n| *n == name)
                         && recursive
                     {
@@ -586,6 +709,16 @@ impl Codebase {
                 };
                 let names = Names { lookup: &lookup, claims: &self.claims, macros: &self.macros };
                 let term = resolve(&d.body, &mut Vec::new(), &names).map_err(|e| match e {
+                    ResolveError::Unbound(name) if ambiguous.borrow().as_ref().is_some_and(|(n, _)| *n == name) => {
+                        let (_, candidates) = ambiguous.take().unwrap();
+                        Error::Resolve {
+                            def: d.name.clone(),
+                            message: format!(
+                                "`{name}` could be any of {}: write which, or `use` its namespace",
+                                candidates.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ")
+                            ),
+                        }
+                    }
                     ResolveError::Unbound(name) => Error::Unbound { name, def: d.name.clone() },
                     ResolveError::Invalid(message) => Error::Resolve { def: d.name.clone(), message },
                 })?;
