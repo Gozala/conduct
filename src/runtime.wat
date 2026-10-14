@@ -282,8 +282,37 @@
     (if (i32.gt_u (local.get $k) (i32.const 4)) (then (return (local.get $h))))
     (block $done (loop $next
       (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
-      (local.set $h (call $hash_into (local.get $h)
-        (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 3))))))
+      (local.set $h
+        (if (result i32) (call $raw_slot (local.get $k) (local.get $i))
+          (then (call $fnv_word (local.get $h)
+            (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 3))))))
+          (else (if (result i32) (call $key_slot (local.get $k) (local.get $i))
+            (then (call $hash_text (local.get $h)
+              (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 3))))))
+            (else (call $hash_into (local.get $h)
+              (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 3))))))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    (local.get $h))
+  ;; Whether slot `i` of an object of kind `k` holds a raw word and not a
+  ;; value: a record's field ids, which are not tagged, and may look
+  ;; like pointers.
+  (func $raw_slot (param $k i32) (param $i i32) (result i32)
+    (i32.and (i32.eq (local.get $k) (i32.const 3)) (i32.eqz (i32.and (local.get $i) (i32.const 1)))))
+  ;; Whether slot `i` of an object of kind `k` is a dictionary's key. A
+  ;; key is text in a literal and a keyword once `assoc` puts it, and
+  ;; dictionaries find keys by their bytes, so a key hashes and orders
+  ;; by its bytes alone, as text.
+  (func $key_slot (param $k i32) (param $i i32) (result i32)
+    (i32.and (i32.eq (local.get $k) (i32.const 4)) (i32.eqz (i32.and (local.get $i) (i32.const 1)))))
+  (func $hash_text (param $h i32) (param $v i64) (result i32)
+    (local $n i32) (local $i i32) (local $p i32)
+    (local.set $n (call $len (local.get $v)))
+    (local.set $p (call $ptr (local.get $v)))
+    (local.set $h (call $fnv_word (local.get $h) (i64.or (i64.shl (i64.const 1) (i64.const 32)) (i64.extend_i32_u (local.get $n)))))
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $h (call $fnv (local.get $h) (i32.load8_u offset=8 (i32.add (local.get $p) (local.get $i)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $next)))
     (local.get $h))
@@ -450,13 +479,96 @@
     (block $done
       (loop $next
         (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
-        (if (i32.eqz (call $eq
-              (i64.load offset=8 (i32.add (local.get $pa) (i32.shl (local.get $i) (i32.const 3))))
-              (i64.load offset=8 (i32.add (local.get $pb) (i32.shl (local.get $i) (i32.const 3))))))
+        (if (i32.eqz
+              (if (result i32) (call $raw_slot (local.get $k) (local.get $i))
+                (then (i64.eq
+                  (i64.load offset=8 (i32.add (local.get $pa) (i32.shl (local.get $i) (i32.const 3))))
+                  (i64.load offset=8 (i32.add (local.get $pb) (i32.shl (local.get $i) (i32.const 3))))))
+                (else (call $eq
+                  (i64.load offset=8 (i32.add (local.get $pa) (i32.shl (local.get $i) (i32.const 3))))
+                  (i64.load offset=8 (i32.add (local.get $pb) (i32.shl (local.get $i) (i32.const 3))))))))
           (then (return (i32.const 0))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $next)))
     (i32.const 1))
+
+  ;; A total order over every value, which agrees with `=`: `$cmp` is 0
+  ;; exactly when `$eq` is 1. Values of different sorts order by sort:
+  ;; numbers, then Booleans (false first), text, keywords, lists,
+  ;; records and dictionaries, functions, views, emits, fetches. Within
+  ;; a sort, numbers by value, text and keywords by their bytes, and
+  ;; the rest by their contents in order, a prefix first. Records and
+  ;; dictionaries keep their keys sorted, so equal ones hold the same
+  ;; contents in the same order; `{}` is both, and comes first.
+  (func $rank (param $v i64) (result i32)
+    (local $k i32)
+    (if (i64.eq (local.get $v) (i64.const 0x02)) (then (return (i32.const 0))))
+    (if (i64.eq (i64.and (local.get $v) (i64.const 1)) (i64.const 1)) (then (return (i32.const 1))))
+    (if (i32.eqz (call $is_obj (local.get $v))) (then (return (i32.const 2))))
+    (local.set $k (call $kind (local.get $v)))
+    (if (i32.eq (local.get $k) (i32.const 1)) (then (return (i32.const 3))))
+    (if (i32.eq (local.get $k) (i32.const 9)) (then (return (i32.const 4))))
+    (if (i32.eq (local.get $k) (i32.const 2)) (then (return (i32.const 5))))
+    (if (i32.or (i32.eq (local.get $k) (i32.const 3)) (i32.eq (local.get $k) (i32.const 4))) (then (return (i32.const 6))))
+    (i32.add (local.get $k) (i32.const 2)))
+  (func $order_i64 (param $a i64) (param $b i64) (result i32)
+    (i32.sub (i64.gt_s (local.get $a) (local.get $b)) (i64.lt_s (local.get $a) (local.get $b))))
+  (func $order_u32 (param $a i32) (param $b i32) (result i32)
+    (i32.sub (i32.gt_u (local.get $a) (local.get $b)) (i32.lt_u (local.get $a) (local.get $b))))
+  (func $cmp (param $a i64) (param $b i64) (result i32)
+    (local $r i32) (local $k i32) (local $kb i32) (local $na i32) (local $nb i32) (local $n i32)
+    (local $i i32) (local $pa i32) (local $pb i32) (local $c i32) (local $slots i32)
+    (if (i64.eq (local.get $a) (local.get $b)) (then (return (i32.const 0))))
+    (local.set $r (call $rank (local.get $a)))
+    (local.set $c (call $order_u32 (local.get $r) (call $rank (local.get $b))))
+    (if (local.get $c) (then (return (local.get $c))))
+    ;; Numbers keep their order tagged; false (0x0a) is below true (0x12).
+    (if (i32.le_u (local.get $r) (i32.const 2)) (then (return (call $order_i64 (local.get $a) (local.get $b)))))
+    (if (i32.le_u (local.get $r) (i32.const 4)) (then (return (call $str_cmp (local.get $a) (local.get $b)))))
+    (local.set $k (call $kind (local.get $a)))
+    (local.set $kb (call $kind (local.get $b)))
+    (local.set $na (call $len (local.get $a)))
+    (local.set $nb (call $len (local.get $b)))
+    (if (i32.eq (local.get $r) (i32.const 6))
+      (then
+        ;; `{}` first; then records before dictionaries.
+        (if (i32.or (i32.eqz (local.get $na)) (i32.eqz (local.get $nb)))
+          (then (return (call $order_u32 (local.get $na) (local.get $nb)))))
+        (local.set $c (call $order_u32 (local.get $k) (local.get $kb)))
+        (if (local.get $c) (then (return (local.get $c))))))
+    (local.set $pa (call $ptr (local.get $a)))
+    (local.set $pb (call $ptr (local.get $b)))
+    ;; A closure's code first.
+    (if (i32.eq (local.get $k) (i32.const 5))
+      (then
+        (local.set $c (call $order_i64 (i64.load offset=8 (local.get $pa)) (i64.load offset=8 (local.get $pb))))
+        (if (local.get $c) (then (return (local.get $c))))
+        (local.set $pa (i32.add (local.get $pa) (i32.const 8)))
+        (local.set $pb (i32.add (local.get $pb) (i32.const 8)))))
+    (local.set $n (select (local.get $na) (local.get $nb) (i32.lt_u (local.get $na) (local.get $nb))))
+    (local.set $slots (select (i32.const 2) (i32.const 1) (i32.or (i32.eq (local.get $k) (i32.const 3)) (i32.eq (local.get $k) (i32.const 4)))))
+    (local.set $n (i32.mul (local.get $n) (local.get $slots)))
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (local.set $c
+          (if (result i32) (call $raw_slot (local.get $k) (local.get $i))
+            (then (call $order_i64
+              (i64.load offset=8 (i32.add (local.get $pa) (i32.shl (local.get $i) (i32.const 3))))
+              (i64.load offset=8 (i32.add (local.get $pb) (i32.shl (local.get $i) (i32.const 3))))))
+            (else (if (result i32) (call $key_slot (local.get $k) (local.get $i))
+              (then (call $str_cmp
+                (i64.load offset=8 (i32.add (local.get $pa) (i32.shl (local.get $i) (i32.const 3))))
+                (i64.load offset=8 (i32.add (local.get $pb) (i32.shl (local.get $i) (i32.const 3))))))
+              (else (call $cmp
+                (i64.load offset=8 (i32.add (local.get $pa) (i32.shl (local.get $i) (i32.const 3))))
+                (i64.load offset=8 (i32.add (local.get $pb) (i32.shl (local.get $i) (i32.const 3))))))))))
+        (if (local.get $c) (then (return (local.get $c))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))
+    (call $order_u32 (local.get $na) (local.get $nb)))
+  (func $compare (param $a i64) (param $b i64) (result i64)
+    (i64.or (i64.shl (i64.extend_i32_s (call $cmp (local.get $a) (local.get $b))) (i64.const 1)) (i64.const 1)))
 
   ;; Lists
   (func $list_get (param $v i64) (param $i i32) (result i64)

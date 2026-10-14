@@ -3,6 +3,50 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Equal maps are the same value
+
+- **The question:** a hash trie's shape is fixed by its entries except
+  in collision buckets, which hold keys whose whole hashes are equal in
+  the order they came. Two maps of the same entries could then differ in
+  structure, so structural `=` and `hash` would call them different.
+- **Clojure does not make the structure canonical; it makes equality a
+  method.** `=` on a map (`APersistentMap.equiv`, ClojureScript's
+  `equiv-map`) checks the other is a map of the same count, then looks
+  up each key; the hash is an order-independent sum over entries
+  (`Murmur3.hashUnordered`, `hash-unordered-coll`). Collision buckets
+  keep insertion order, visible to `seq` and never to `=`. Clojure's
+  tries do not compact on delete either.
+- **CHAMP makes the structure canonical so equality can be
+  structural:** compact on delete, so equal maps have equal bitmaps and
+  shared subtrees short-circuit; only collision buckets, whose layout
+  "depends on dynamic insertion and deletion order", are compared as
+  sets (Steindorfer and Vinju, OOPSLA 2015, section 4.3; Clojure's way is
+  its footnote's alternative).
+- **conduct goes one step past CHAMP: buckets are sorted too,** by
+  `compare`, as perma-map sorts them. Every part of the trie is then a
+  function of its entries, so the one structural `=` and `hash` are
+  right for maps with no dispatch, and a content hash of a map (a merkle
+  reference, once values are stored in Dialog) agrees with `=`. The
+  per-type dispatch Clojure relies on would let `=` and a value's
+  identity disagree, which a hash-addressed language cannot afford.
+  `=` already returns at once for the same object, CHAMP's fast path for
+  a map derived from another.
+- **`compare` is a total order over every value that agrees with `=`:**
+  numbers, Booleans, text, keywords, lists, records and dictionaries,
+  functions, views, emits, fetches, in that order between sorts, and
+  within one by value, by bytes, or by contents in order with a prefix
+  first. Records order by their field ids, which hash the attribute
+  names, so the order between records is fixed but not alphabetical.
+  It also gives sorted maps and sets something to sort by.
+- **Two runtime bugs it found.** A record's field ids are raw words, and
+  `=` and `hash` walked them as values: an id that is a multiple of 8,
+  one name in eight (`conduct.map/root` is one), was read as a pointer,
+  which trapped or read stray memory. And a dictionary's keys are text
+  in a literal but keywords once `assoc` puts them; `=` matched them by
+  bytes, but `hash` did not, so equal dictionaries hashed differently.
+  Field ids are now compared as words, and keys hash and order by their
+  bytes.
+
 ## A hash map, written in conduct
 
 - **The first library is written in the language, not built in.**
@@ -14,8 +58,8 @@ it. Newest first.
   an integer to a natural (`(natural (- bit 1) or: 0)`).
 - **Nodes are canonical,** as CHAMP's are: removing pulls a child left
   with one entry back into its parent, at every level. So maps of the
-  same entries are `=` whatever order they were made in (keys whose
-  whole hashes collide keep the order they came in).
+  same entries are `=` whatever order they were made in (see "Equal maps
+  are the same value" for keys whose whole hashes collide).
 - **No transient builders and no configurable hash.** perma-map has
   both; here a map nothing else holds is updated in place, and there is
   one `hash`, over a value's structure.

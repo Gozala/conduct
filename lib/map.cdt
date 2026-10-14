@@ -16,9 +16,10 @@
 ;; that depth keeps its entries, whose keys all hash alike, in a list.
 ;;
 ;; A node is canonical, as CHAMP's are: removing an entry pulls a child
-;; that is left with one entry back into its parent. So two maps of the
-;; same entries have the same nodes, except where keys collide, where
-;; entries keep the order they were added in.
+;; that is left with one entry back into its parent. Where whole hashes
+;; collide, the entries are kept in the order `compare` puts their keys,
+;; as perma-map keeps them sorted. So two maps of the same entries are
+;; the same value: `=` on them is structural, and so is `hash`.
 ;;
 ;; perma-map's transient builders have no counterpart here: a map that
 ;; nothing else holds is updated in place, as every unique value is.
@@ -89,21 +90,24 @@
 (define (lookup m key or: default)
   (find (map-root m) h: (hash key) shift: 0 key: key default: default))
 
-;; The entries with `e` in place of the one with its key, or added last.
+;; The entries, ordered by key, with `e` in place of the one with its
+;; key, or in its order.
 (claim (put-in (list (entry ?k value: ?v)) e: (entry ?k value: ?v)) : (list (entry ?k value: ?v)))
 (define (put-in entries e)
   (match entries
     [] [e]
-    [first rest ...] (if (= (entry-key first) (entry-key e))
-                       (concat [e] rest)
-                       (concat [first] (put-in rest e: e)))))
+    [first rest ...] (let [order (compare (entry-key e) (entry-key first))]
+                       (cond
+                         (= order 0) (concat [e] rest)
+                         (< order 0) (concat [e first] rest)
+                         :else (concat [first] (put-in rest e: e))))))
 
 ;; A node of two entries whose keys differ, hashed `h1` and `h2`, at
 ;; `shift`.
 (claim (pair (entry ?k value: ?v) h1: natural b: (entry ?k value: ?v) h2: natural shift: natural) : (node ?k value: ?v))
 (define (pair a h1 b h2 shift)
   (if (>= shift used-up)
-    {datamap: 0, nodemap: 0, leaves: [a b], branches: []}
+    {datamap: 0, nodemap: 0, leaves: (if (< (compare (entry-key a) (entry-key b)) 0) [a b] [b a]), branches: []}
     (let [b1 (bit-of h1 shift: shift)
           b2 (bit-of h2 shift: shift)]
       (if (= b1 b2)
