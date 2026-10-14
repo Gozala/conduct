@@ -37,7 +37,7 @@ const NAMES: &[&str] = &[
     "conduct.result/error",
     "conduct.parser/row",
     "conduct.parser/col",
-    "conduct.parser/problem",
+    "conduct.parser/reason",
     "conduct.parser/context-stack",
     "conduct.parser/context",
 ];
@@ -63,7 +63,7 @@ fn dead_ends(v: Value) -> Vec<(i64, i64, Value)> {
     ends.iter()
         .map(|end| {
             let (Value::Int(r), Value::Int(c)) = (field(end, "/row"), field(end, "/col")) else { panic!() };
-            (r, c, field(end, "/problem"))
+            (r, c, field(end, "/reason"))
         })
         .collect()
 }

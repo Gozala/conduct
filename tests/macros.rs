@@ -229,3 +229,22 @@ fn a_variable_matched_once_repeats_with_the_others() {
     let cb = check("(macro (offsets v x ...) [(+ v x) ...]) (define o (offsets 10 1 2))");
     assert_eq!(run(&cb, "o"), Value::List(vec![Value::Int(11), Value::Int(12)]));
 }
+
+#[test]
+fn a_template_writes_the_labels_a_call_names() {
+    // A label named by a pattern variable is the label of the name it
+    // matched, and `...` after a label and a form repeats the pair, so a
+    // macro can build a record of the names it was given.
+    let cb = check(
+        "(type title : (t/title text)) (type done : (t/done boolean))
+         (macro (put-field r name v) (assoc r name: v))
+         (macro (record-of name ...) {name: name ...})
+         (define (make title done) (record-of title done))
+         (define r (put-field (make \"a\" done: false) done true))",
+    );
+    assert_eq!(cb.type_of("make").unwrap(), "((\\ (& ?a text) done: (& ?b boolean)) : {done: ?b, title: ?a})");
+    let Value::Record(fields) = run(&cb, "r") else { panic!() };
+    assert!(fields.iter().any(|(_, v)| *v == Value::Bool(true)));
+    let e = error("(macro (bad r name) (assoc r name: 1)) (define x (bad {} \"title\"))");
+    assert!(e.contains("must be a name"), "{e}");
+}

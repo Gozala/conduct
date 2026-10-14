@@ -3,6 +3,30 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Routes from one description, in both directions
+
+- **`conduct.route` follows subroute:** a route parses a path into
+  typed parameters and formats parameters back into the path, so a link
+  is made from the route it points at. Subroute builds both from a
+  tagged template at run time; here `route` is a macro that walks the
+  description once at compile time and writes a `parsing` pipeline for
+  one direction and a `str` of the same pieces for the other.
+- **Parameters are a record of declared attributes,** `(a
+  natural-segment)` capturing the attribute `a`. Subroute builds an
+  object with dynamic keys and merges objects; conduct has neither, and
+  a record of declared attributes gives each parameter its attribute's
+  type and identity.
+- **Macros write labels:** a template's `name:` is the label of what the
+  pattern variable `name` matched, and `...` after a label and a form
+  repeats the pair. That is what lets `route` build `{a: a, b: b}`.
+  A template that wants a literal label with the same name as one of
+  its pattern variables can no longer have it; renaming the variable
+  is the way out.
+- **Not yet:** methods and query parameters, percent-encoding of
+  segments (a text segment is raw text up to `/`, `?` or `#`), a capture
+  that runs to the next literal rather than the next `/`, and the route
+  world deriving its `pattern` from a route value.
+
 ## A parser library, ported from elm/parser
 
 - **`conduct.parser` is elm/parser's `Parser.Advanced`:** a parser is a

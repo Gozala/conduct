@@ -7,3 +7,7 @@ pub const MAP: &str = include_str!("../lib/map.cdt");
 
 /// `conduct.parser`: parser combinators, a port of elm/parser.
 pub const PARSER: &str = include_str!("../lib/parser.cdt");
+
+/// `conduct.route`: routes that parse and format paths, after subroute.
+/// Needs [`PARSER`].
+pub const ROUTE: &str = include_str!("../lib/route.cdt");

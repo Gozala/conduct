@@ -270,7 +270,7 @@ fn collect(p: &Pat, depth: usize, out: &mut BTreeMap<String, usize>) -> Result<(
 
 fn uses(form: &Sexp, vars: &BTreeMap<String, usize>, out: &mut Vec<String>) {
     match form {
-        Sexp::Symbol(s, _) if vars.contains_key(s.as_str()) => out.push(s.clone()),
+        Sexp::Symbol(s, _) | Sexp::Label(s, _) if vars.contains_key(s.as_str()) => out.push(s.clone()),
         Sexp::List(items, _) | Sexp::Vector(items, _) | Sexp::Map(items, _) => {
             items.iter().for_each(|i| uses(i, vars, out))
         }
@@ -493,7 +493,18 @@ fn substitute(form: &Sexp, bound: &BTreeMap<String, Bound>, mark: u64, span: Spa
         Sexp::Int(n, _) => Sexp::Int(*n, span),
         Sexp::Str(s, _) => Sexp::Str(s.clone(), span),
         Sexp::Keyword(k, _) => Sexp::Keyword(k.clone(), span),
-        Sexp::Label(l, _) => Sexp::Label(l.clone(), span),
+        // A label named by a variable bound to a symbol is that symbol's
+        // label, so a template can write the attribute or parameter a call
+        // names: `(assoc r name: v)` with `name` bound to `title` writes
+        // `title:`.
+        Sexp::Label(l, _) => match bound.get(l.as_str()) {
+            Some(Bound::One(Sexp::Symbol(s, _))) => Sexp::Label(s.clone(), span),
+            Some(Bound::One(other)) => {
+                return Err(format!("`{l}:` names a label, so `{l}` must be a name, not `{other}`"));
+            }
+            Some(Bound::Many(_)) => return Err(format!("`{l}` matched under `...`, so it is used under `...`")),
+            None => Sexp::Label(l.clone(), span),
+        },
     })
 }
 
@@ -501,11 +512,22 @@ fn substitute_all(items: &[Sexp], bound: &BTreeMap<String, Bound>, mark: u64, sp
     let mut out = Vec::new();
     let mut i = 0;
     while i < items.len() {
-        if items.get(i + 1).is_some_and(is_ellipsis) {
-            // Repeat the form once per match of the variables it uses
+        // `...` repeats the form before it, or a label and the form after
+        // it together, as a record's `{name: value ...}` needs.
+        let width = if matches!(items[i], Sexp::Label(..)) && items.get(i + 2).is_some_and(is_ellipsis) {
+            2
+        } else if items.get(i + 1).is_some_and(is_ellipsis) {
+            1
+        } else {
+            0
+        };
+        if width > 0 {
+            // Repeat the forms once per match of the variables they use
             // that were matched under `...`.
+            let group = &items[i..i + width];
             let mut used = Vec::new();
-            uses(&items[i], &bound.keys().map(|k| (k.clone(), 0)).collect(), &mut used);
+            let vars = bound.keys().map(|k| (k.clone(), 0)).collect();
+            group.iter().for_each(|f| uses(f, &vars, &mut used));
             let repeated: Vec<(&String, &Vec<Bound>)> = used
                 .iter()
                 .filter_map(|v| match &bound[v] {
@@ -522,9 +544,11 @@ fn substitute_all(items: &[Sexp], bound: &BTreeMap<String, Bound>, mark: u64, sp
                 for (v, bs) in &repeated {
                     each.insert((*v).clone(), bs[k].clone());
                 }
-                out.push(substitute(&items[i], &each, mark, span)?);
+                for f in group {
+                    out.push(substitute(f, &each, mark, span)?);
+                }
             }
-            i += 2;
+            i += width + 1;
         } else {
             out.push(substitute(&items[i], bound, mark, span)?);
             i += 1;
