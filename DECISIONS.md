@@ -3,6 +3,34 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## A parser library, ported from elm/parser
+
+- **`conduct.parser` is elm/parser's `Parser.Advanced`:** a parser is a
+  function of the parse state answering `(ok {progress parsed after})` or
+  `(error {progress dead-ends})`, and `progress` decides whether
+  `one-of` tries its next branch. Problems and contexts are any values.
+  elm/parser is BSD 3-Clause; its notice is in `lib/LICENSE-elm-parser`.
+- **Pipelines bind names** (`parsing`, a macro over `and-then`) where
+  Elm has `|=` and `|.`: conduct has no infix operators, and a function
+  called through a value must be called with its labels, so `map2` with
+  a two-argument callback would make every caller name its parameters
+  as the library does. `skip` and `keep` remain for the unnamed case.
+- **No `lazy`:** a definition with no parameters is a value, so a
+  recursive parser is a function of the parse state.
+- **One deliberate difference:** `chomp-until` consumes the text it
+  looks for, with a row and column that agree with its offset.
+  elm/parser's kernel leaves the offset at the start of the match but
+  counts rows and columns to its end, so a parser after it sees a
+  position that does not match its offset.
+- **Not ported yet:** `number` (hexadecimal, octal, binary, floats;
+  conduct has no floats), `mapChompedString`, nestable comments, and the
+  simple `Parser` module's fixed problem type, beyond `symbol`'s
+  `(expecting text)`.
+- **Tested** on what it parses and where it fails, backtracking, names
+  with reserved words, every trailing-separator rule, recursion,
+  positions across lines and comments, context stacks, and a list of
+  20,000 items, which needs the tail calls of the previous entry.
+
 ## Calls in tail position are tail calls
 
 - **A loop was a stack of frames.** Recursion is conduct's only loop,

@@ -617,7 +617,7 @@ what an earlier one meant.
 
 Libraries are written in conduct and live in `lib/`; each names its own
 domain, and a codebase adds one as it adds any source
-(`conduct::library::MAP`). There is one so far:
+(`conduct::library::MAP`). So far:
 
 - **`conduct.map`** (`lib/map.cdt`), a persistent hash map: a port of
   [perma-map](https://github.com/Gozala/perma-map), a hash array mapped
@@ -635,6 +635,24 @@ domain, and a codebase adds one as it adds any source
 
 A map nothing else holds is updated in place, so perma-map's transient
 builders have no counterpart.
+
+- **`conduct.parser`** (`lib/parser.cdt`), parser combinators: a port of
+  [elm/parser](https://github.com/elm/parser)'s `Parser.Advanced`, with
+  its tokens, chompers, `one-of` that backtracks only when nothing was
+  consumed, `loop`, `sequence`, and dead ends that say where, why and in
+  what context. A pipeline binds what each parser parsed:
+
+```
+(define number (int :expecting-int invalid: :invalid))
+(define point
+  (parsing [_ (symbol "(") x number _ (symbol ",") y number _ (symbol ")")]
+    (succeed [x y])))
+(run point text: "(3,42)")      ; (ok [3 42])
+(run point text: "(3,x)")       ; (error [{row: 1, col: 4, problem: :expecting-int, ..}])
+```
+
+A recursive parser is a function of the parse state, `(define (value s)
+((one-of [..]) s))`, where elm/parser has `lazy`.
 
 ### Compiled code
 

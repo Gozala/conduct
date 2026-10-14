@@ -4,3 +4,6 @@
 
 /// `conduct.map`: a persistent hash map, a port of perma-map.
 pub const MAP: &str = include_str!("../lib/map.cdt");
+
+/// `conduct.parser`: parser combinators, a port of elm/parser.
+pub const PARSER: &str = include_str!("../lib/parser.cdt");
