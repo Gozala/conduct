@@ -262,6 +262,24 @@ fn a_collision_removed_down_to_one_entry_comes_back_up() {
 }
 
 #[test]
+fn colliding_keys_in_any_order_make_the_same_map() {
+    // Whole-hash collisions are where a trie's shape could depend on the
+    // order of puts; their entries are kept in key order, so it does not.
+    let pairs = colliding_pairs(4);
+    let forward: Vec<Op> = pairs.iter().flat_map(|(a, b)| [Op::Put(*a, 1), Op::Put(*b, 2)]).collect();
+    let backward: Vec<Op> = pairs.iter().rev().flat_map(|(a, b)| [Op::Put(*b, 2), Op::Put(*a, 1)]).collect();
+    let src = format!(
+        "{APPLY}
+         (define one (apply-ops empty ops: {}))
+         (define other (apply-ops empty ops: {}))
+         (define out [(= one other) (= (hash one) (hash other)) (compare one other)])",
+        ops_source(&forward),
+        ops_source(&backward)
+    );
+    assert_eq!(run(&codebase(&src), "out"), Value::List(vec![Value::Bool(true), Value::Bool(true), Value::Int(0)]));
+}
+
+#[test]
 fn the_readme_example() {
     let cb = codebase(
         "(define m (put (put empty key: \"a\" value: 1) key: \"b\" value: 2))

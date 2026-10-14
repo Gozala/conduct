@@ -106,6 +106,9 @@ pub enum Op {
     /// `(natural x or: d)`: an integer as a natural, or the default when
     /// it is negative.
     Natural,
+    /// `(compare a b)`: -1, 0 or 1, by a total order over every value
+    /// that agrees with `=`.
+    Compare,
     /// Whether a value is a record with a field: only `match` uses it,
     /// so it has no name in source and is not in [`Op::ALL`].
     HasField,
@@ -171,6 +174,7 @@ impl Op {
         Op::RemoveAt,
         Op::Item,
         Op::Natural,
+        Op::Compare,
     ];
 
     pub fn name(self) -> &'static str {
@@ -223,6 +227,7 @@ impl Op {
             Op::RemoveAt => "remove-at",
             Op::Item => "item",
             Op::Natural => "natural",
+            Op::Compare => "compare",
             Op::HasField => "has-field?",
             Op::WithEnv => "with-env",
             Op::Nth => "nth",

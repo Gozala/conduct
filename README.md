@@ -201,6 +201,7 @@ The design the language is heading for is in
 (shift-left a 5) (shift-right a 5) (count-ones a)
 (hash value)                                                ; a 32-bit natural; equal values hash alike
 (natural (- n 1) or: 0)                                     ; an integer as a natural, or the default
+(compare a b)                                               ; -1, 0 or 1: a total order over every value
 (item xs at: 2 or: d) (set-at xs 2 x)                       ; a list's item by index, or the default
 (insert-at xs 2 x) (remove-at xs 2)                         ; updated in place when unique
 ```
