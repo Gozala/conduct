@@ -3,6 +3,31 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Names are pointers, in domains
+
+- **Every definition is its hash, and a name is only a pointer to one.**
+  There are no modules and no imports. A name is resolved once, when its
+  source is added, and the hash is what is stored; a definition added
+  later never changes what an earlier one meant. That is what makes a
+  bare name that guesses safe, as Unison's suffix names are.
+- **A domain is Dialog's:** `(domain io.gozala.parser)` first in a
+  source puts its definitions there, as an attribute's domain does in
+  Dialog, so one naming scheme covers what the database stores and what
+  the codebase defines. Dialog's grammar applies to the domain.
+- **Three spellings:** whole, `io.gozala.parser/succeed`; relative,
+  `./succeed`, in the source's own domain; and bare, `succeed`. A bare
+  name is a definition with no domain if there is one, else the one
+  definition of that name in any domain. Several domains with it, or one
+  and a built-in, make it ambiguous, and the error lists each whole name.
+  A definition of the same source comes first, so a recursive call needs
+  no `./`. A built-in's whole name is `conduct/count`.
+- **Not yet:** a name that points at several hashes, which an editor
+  lets a person choose among, and a pinned `name#hash` for text to say
+  which; the same full name added again moves the name to the new hash.
+  Attributes, types and macros are not named in domains yet: an
+  attribute's identity becomes its name and its type, hashed as Dialog
+  hashes it, next.
+
 ## Naturals, and what a standard library builds on them
 
 - **`natural` is a subtype of `integer`,** as Dialog's `natural:` is a
