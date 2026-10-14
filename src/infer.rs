@@ -397,6 +397,19 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         }
         Op::Natural => (vec![Ty::int(), Ty::nat()], Ty::nat()),
         Op::Compare => (vec![Ty::Top, Ty::Top], Ty::int()),
+        Op::ByteCount => (vec![Ty::str()], Ty::nat()),
+        // What may be missing answers its default, of any type.
+        Op::ByteAt | Op::CodePointAt => {
+            let d = var();
+            (vec![Ty::str(), Ty::nat(), d.clone()], Ty::Union(Rc::new(vec![Ty::nat(), d])))
+        }
+        Op::Slice => (vec![Ty::str(), Ty::nat(), Ty::nat()], Ty::str()),
+        Op::Occurs => (vec![Ty::str(), Ty::str(), Ty::nat()], Ty::bool()),
+        Op::IndexOf => {
+            let d = var();
+            (vec![Ty::str(), Ty::str(), Ty::nat(), d.clone()], Ty::Union(Rc::new(vec![Ty::nat(), d])))
+        }
+        Op::FromCodePoint => (vec![Ty::nat()], Ty::str()),
         // The default comes back for an index past the end.
         Op::Item => {
             let a = var();

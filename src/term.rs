@@ -106,6 +106,22 @@ pub enum Op {
     /// `(natural x or: d)`: an integer as a natural, or the default when
     /// it is negative.
     Natural,
+    /// `(byte-count t)`: how many bytes of UTF-8 `t` is.
+    ByteCount,
+    /// `(byte-at t at: i or: d)`: the byte at offset `i`, or `d` past the end.
+    ByteAt,
+    /// `(code-point-at t at: i or: d)`: the code point that starts at byte
+    /// offset `i`, or `d` where none starts.
+    CodePointAt,
+    /// `(slice t from: a to: b)`: the bytes from offset `a` up to `b`.
+    Slice,
+    /// `(occurs? small in: big at: i)`: whether `small` is in `big` at `i`.
+    Occurs,
+    /// `(index-of small in: big from: i or: d)`: the first offset at or
+    /// after `i` where `small` is in `big`, or `d`.
+    IndexOf,
+    /// `(from-code-point c)`: the text of one code point.
+    FromCodePoint,
     /// `(compare a b)`: -1, 0 or 1, by a total order over every value
     /// that agrees with `=`.
     Compare,
@@ -175,6 +191,13 @@ impl Op {
         Op::Item,
         Op::Natural,
         Op::Compare,
+        Op::ByteCount,
+        Op::ByteAt,
+        Op::CodePointAt,
+        Op::Slice,
+        Op::Occurs,
+        Op::IndexOf,
+        Op::FromCodePoint,
     ];
 
     pub fn name(self) -> &'static str {
@@ -228,6 +251,13 @@ impl Op {
             Op::Item => "item",
             Op::Natural => "natural",
             Op::Compare => "compare",
+            Op::ByteCount => "byte-count",
+            Op::ByteAt => "byte-at",
+            Op::CodePointAt => "code-point-at",
+            Op::Slice => "slice",
+            Op::Occurs => "occurs?",
+            Op::IndexOf => "index-of",
+            Op::FromCodePoint => "from-code-point",
             Op::HasField => "has-field?",
             Op::WithEnv => "with-env",
             Op::Nth => "nth",
@@ -256,8 +286,19 @@ impl Op {
             | Op::JsonBool
             | Op::JsonType
             | Op::CountOnes
-            | Op::Hash => 1,
-            Op::Assoc | Op::Get | Op::SetAt | Op::InsertAt | Op::Item => 3,
+            | Op::Hash
+            | Op::ByteCount
+            | Op::FromCodePoint => 1,
+            Op::Assoc
+            | Op::Get
+            | Op::SetAt
+            | Op::InsertAt
+            | Op::Item
+            | Op::ByteAt
+            | Op::CodePointAt
+            | Op::Slice
+            | Op::Occurs => 3,
+            Op::IndexOf => 4,
             Op::H | Op::Fetch => 4,
             _ => 2,
         })
