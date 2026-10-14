@@ -1,0 +1,402 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at https://mozilla.org/MPL/2.0/.
+;;
+;; conduct.parser: parser combinators. A port of elm/parser
+;; (https://github.com/elm/parser), Copyright (c) 2017-present, Evan
+;; Czaplicki, under the BSD 3-Clause license in LICENSE-elm-parser
+;; beside this file.
+;;
+;; A parser is a function of the parse state, answering
+;; `(ok {progress parsed after})` with what it parsed and the state after
+;; it, or `(error {progress dead-ends})` with why it could not. `progress`
+;; says whether it consumed anything, which is what `one-of` decides by:
+;; it tries its next parser only when the last failed without progress.
+;; Problems and contexts are whatever values the caller gives, as in
+;; elm/parser's Parser.Advanced.
+;;
+;; The source is text, and positions in it are byte offsets; `row` and
+;; `col` count lines and code points, from 1, as an editor does.
+;;
+;; Where this departs from elm/parser:
+;; - A recursive parser is a function of the state, `(define (expr s)
+;;   ((one-of [..]) s))`, in place of `lazy`: a definition with no
+;;   parameters is a value.
+;; - Pipelines are written with `parsing`, which binds what each parser
+;;   parsed: `(parsing [x int _ (symbol ",") y int] (succeed [x y]))`.
+;;   `skip` and `keep` are elm/parser's `|.` and `|=` reversed.
+;; - `chomp-until` consumes the text it was looking for, and its row and
+;;   column agree with its offset; elm/parser's stop at the match's start
+;;   but count rows and columns to its end.
+
+(domain conduct.parser)
+
+(type source : (conduct.parser/source text))
+(type offset : (conduct.parser/offset natural))
+(type indent : (conduct.parser/indent natural))
+(type row : (conduct.parser/row natural))
+(type col : (conduct.parser/col natural))
+(type contexts : (conduct.parser/contexts (list ?located)))
+(type context : (conduct.parser/context ?context))
+(type problem : (conduct.parser/problem ?problem))
+(type context-stack : (conduct.parser/context-stack (list ?located)))
+(type progress : (conduct.parser/progress boolean))
+(type parsed : (conduct.parser/parsed ?value))
+(type after : (conduct.parser/after ?state))
+(type dead-ends : (conduct.parser/dead-ends (list ?dead-end)))
+
+;; What a `loop` step answers: go on from a new state, or stop with a
+;; value.
+(type (continue ?state) : {(conduct.parser/continue ?state)})
+(type (done ?value) : {(conduct.parser/done ?value)})
+
+;; The problem `symbol` reports.
+(type (expecting ?text) : {(conduct.parser/expecting ?text)})
+
+;; Running
+
+;; The state at the start of `text`.
+(define (initial text) {source: text, offset: 0, indent: 1, row: 1, col: 1, contexts: []})
+
+;; Parse `text` with `p`: `(ok value)`, or `(error dead-ends)`, each
+;; `{row col problem context-stack}`.
+(define (run p text)
+  (match (p (initial text))
+    (ok {parsed: value}) (ok value)
+    (error {dead-ends: ends}) (error ends)))
+
+;; A dead end at `s`.
+(define (dead-end s x) {row: (row s), col: (col s), problem: x, context-stack: (contexts s)})
+
+;; A failure at `s` that consumed nothing.
+(define (bad s x) (error {progress: false, dead-ends: [(dead-end s x: x)]}))
+
+;; Building blocks
+
+(define (succeed value) (fn [s] (ok {progress: false, parsed: value, after: s})))
+
+;; Fail with `x`, elm/parser's `problem`.
+(define (fail x) (fn [s] (bad s x: x)))
+
+;; Succeed with what was parsed, and commit: `one-of` tries no other
+;; parser after this one.
+(define (commit value) (fn [s] (ok {progress: true, parsed: value, after: s})))
+
+(define (map-value p with)
+  (fn [s]
+    (match (p s)
+      (ok step) (ok (assoc step parsed: (with (parsed step))))
+      (error e) (error e))))
+
+;; Parse with `p`, then with the parser `with` makes of what it parsed.
+(define (and-then p with)
+  (fn [s0]
+    (match (p s0)
+      (error e) (error e)
+      (ok {progress: p1, parsed: value, after: s1})
+      (match ((with value) s1)
+        (error {progress: p2, dead-ends: ends}) (error {progress: (or p1 p2), dead-ends: ends})
+        (ok {progress: p2, parsed: next, after: s2}) (ok {progress: (or p1 p2), parsed: next, after: s2})))))
+
+;; Parse with `a`, then answer what `then` parses: elm/parser's `|.` on
+;; the left.
+(define (skip a then)
+  (fn [s0]
+    (match (a s0)
+      (error e) (error e)
+      (ok {progress: p1, after: s1})
+      (match (then s1)
+        (error {progress: p2, dead-ends: ends}) (error {progress: (or p1 p2), dead-ends: ends})
+        (ok {progress: p2, parsed: value, after: s2}) (ok {progress: (or p1 p2), parsed: value, after: s2})))))
+
+;; Parse with `a`, then with `ignoring`, and answer what `a` parsed:
+;; elm/parser's `|.` on the right.
+(define (keep a ignoring)
+  (fn [s0]
+    (match (a s0)
+      (error e) (error e)
+      (ok {progress: p1, parsed: value, after: s1})
+      (match (ignoring s1)
+        (error {progress: p2, dead-ends: ends}) (error {progress: (or p1 p2), dead-ends: ends})
+        (ok {progress: p2, after: s2}) (ok {progress: (or p1 p2), parsed: value, after: s2})))))
+
+;; `(parsing [name parser ..] body)`: parse with each parser in turn,
+;; binding what it parsed to its name, then with `body`, a parser.
+(macro (parsing [] body) body)
+(macro (parsing [name p rest ...] body) (and-then p with: (fn [name] (parsing [rest ...] body))))
+
+;; Branches
+
+;; The first of `parsers` that succeeds, or that fails having consumed
+;; something; if all fail without, every dead end they found.
+(define (one-of parsers) (fn [s] (one-of-from s parsers: parsers ends: [])))
+
+(define (one-of-from s parsers ends)
+  (match parsers
+    [] (error {progress: false, dead-ends: ends})
+    [p rest ...]
+    (match (p s)
+      (error {progress: false, dead-ends: more}) (one-of-from s parsers: rest ends: (concat ends more))
+      answer answer)))
+
+;; `p`, but as if it consumed nothing, so `one-of` goes on to its next
+;; parser when it fails.
+(define (backtrackable p)
+  (fn [s]
+    (match (p s)
+      (ok step) (ok (assoc step progress: false))
+      (error e) (error (assoc e progress: false)))))
+
+;; Loops
+
+;; Parse with `(with state)` until it answers `(done value)`; each
+;; `(continue next)` goes on with `next`.
+(define (loop state with) (fn [s] (loop-from s state: state with: with progress: false)))
+
+(define (loop-from s state with progress)
+  (match ((with state) s)
+    (error {progress: p1, dead-ends: ends}) (error {progress: (or progress p1), dead-ends: ends})
+    (ok {progress: p1, parsed: step, after: s1})
+    (match step
+      (continue next) (loop-from s1 state: next with: with progress: (or progress p1))
+      (done value) (ok {progress: (or progress p1), parsed: value, after: s1}))))
+
+;; A list of what `parse-item` parses, between `open` and `close`, separated by
+;; `separator`, with `spaces` around each; `trailing` says whether a
+;; separator after the last item is `:forbidden`, `:optional` or
+;; `:mandatory`.
+(define (sequence parse-item open separator close spaces trailing)
+  (skip open then: (skip spaces then:
+    (one-of [(and-then parse-item with: (fn [first-item] (sequence-rest [first-item] parse-item: parse-item separator: separator close: close spaces: spaces trailing: trailing)))
+             (map-value close with: (fn [_] []))]))))
+
+(define (sequence-rest items parse-item separator close spaces trailing)
+  (match trailing
+    :forbidden
+    (loop items with: (fn [items]
+      (skip spaces then:
+        (one-of [(skip separator then: (skip spaces then: (map-value parse-item with: (fn [x] (continue (conj items x))))))
+                 (map-value close with: (fn [_] (done items)))]))))
+    :optional
+    (loop items with: (fn [items]
+      (skip spaces then:
+        (one-of [(skip separator then: (skip spaces then:
+                   (one-of [(map-value parse-item with: (fn [x] (continue (conj items x))))
+                            (map-value close with: (fn [_] (done items)))])))
+                 (map-value close with: (fn [_] (done items)))]))))
+    :mandatory
+    (keep (skip spaces then: (skip separator then: (skip spaces then:
+            (loop items with: (fn [items]
+              (one-of [(map-value (keep parse-item ignoring: (skip spaces then: (skip separator then: spaces)))
+                                  with: (fn [x] (continue (conj items x))))
+                       (succeed (done items))]))))))
+          ignoring: close)))
+
+;; Text
+
+;; No code point: what `code-point-at` answers past the end, beyond any
+;; code point's value.
+(define no-char 0x110000)
+
+(define (char-at s) (code-point-at (source s) at: (offset s) or: no-char))
+
+;; How many bytes of UTF-8 the code point `c` takes.
+(define (width c) (cond (< c 0x80) 1 (< c 0x800) 2 (< c 0x10000) 3 :else 4))
+
+;; `s` past the code point `char` at its offset.
+(define (step-over s char)
+  (if (= char 10)
+    (assoc s offset: (+ (offset s) 1) row: (+ (row s) 1) col: 1)
+    (assoc s offset: (+ (offset s) (width char)) col: (+ (col s) 1))))
+
+;; `s` moved to the byte offset `to`, counting the rows and columns of the
+;; source on the way: a newline starts a row, and each code point's first
+;; byte is a column.
+(define (advance s to) (advance-from s at: (offset s) to: to row: (row s) col: (col s)))
+
+(define (advance-from s at to row col)
+  (if (>= at to)
+    (assoc s offset: to row: row col: col)
+    (let [b (byte-at (source s) at: at or: 0)]
+      (cond
+        (= b 10) (advance-from s at: (+ at 1) to: to row: (+ row 1) col: 1)
+        (= (bit-and b 0xc0) 0x80) (advance-from s at: (+ at 1) to: to row: row col: col)
+        :else (advance-from s at: (+ at 1) to: to row: row col: (+ col 1))))))
+
+;; Exactly `text`, failing with `expecting` where it is not next.
+(define (token text expecting)
+  (fn [s]
+    (if (occurs? text in: (source s) at: (offset s))
+      (ok {progress: (not= text ""), parsed: {}, after: (advance s to: (+ (offset s) (byte-count text)))})
+      (bad s x: expecting))))
+
+;; `text` as a token, failing with `(expecting text)`.
+(define (symbol text) (token text expecting: (expecting text)))
+
+;; `word` as a token that no letter, digit or `_` follows, so `let` is not
+;; the start of `letter`.
+(define (keyword word expecting)
+  (fn [s]
+    (let [stop (+ (offset s) (byte-count word))]
+      (if (and (occurs? word in: (source s) at: (offset s))
+               (not (word-char? (code-point-at (source s) at: stop or: 0))))
+        (ok {progress: (not= word ""), parsed: {}, after: (advance s to: stop)})
+        (bad s x: expecting)))))
+
+(define (word-char? c) (or (alpha-num? c) (= c 95)))
+
+;; The end of the source.
+(define (end expecting)
+  (fn [s]
+    (if (= (offset s) (byte-count (source s)))
+      (ok {progress: false, parsed: {}, after: s})
+      (bad s x: expecting))))
+
+;; Chompers
+
+;; One code point that `accept` takes.
+(define (chomp-if accept expecting)
+  (fn [s]
+    (let [c (char-at s)]
+      (if (and (not= c no-char) (accept c))
+        (ok {progress: true, parsed: {}, after: (step-over s char: c)})
+        (bad s x: expecting)))))
+
+;; Code points while `accept` takes them, none at all included.
+(define (chomp-while accept)
+  (fn [s]
+    (let [s1 (chomp-chars s accept: accept)]
+      (ok {progress: (< (offset s) (offset s1)), parsed: {}, after: s1}))))
+
+(define (chomp-chars s accept)
+  (let [c (char-at s)]
+    (if (and (not= c no-char) (accept c))
+      (chomp-chars (step-over s char: c) accept: accept)
+      s)))
+
+;; Everything up to and including `text`, failing at the end of the
+;; source with `expecting` if it is not there.
+(define (chomp-until text expecting)
+  (fn [s]
+    (let [stop (byte-count (source s))
+          found (index-of text in: (source s) from: (offset s) or: (+ stop 1))]
+      (if (> found stop)
+        (error {progress: false, dead-ends: [(dead-end (advance s to: stop) x: expecting)]})
+        (let [to (+ found (byte-count text))]
+          (ok {progress: (< (offset s) to), parsed: {}, after: (advance s to: to)}))))))
+
+;; Everything up to and including `text`, or to the end of the source.
+(define (chomp-until-end-or text)
+  (fn [s]
+    (let [stop (byte-count (source s))
+          found (index-of text in: (source s) from: (offset s) or: stop)
+          to (if (< found stop) (+ found (byte-count text)) stop)]
+      (ok {progress: (< (offset s) to), parsed: {}, after: (advance s to: to)}))))
+
+;; The text `p` consumed, in place of what it parsed.
+(define (get-chomped p)
+  (fn [s0]
+    (match (p s0)
+      (ok step) (ok (assoc step parsed: (slice (source s0) from: (offset s0) to: (offset (after step)))))
+      (error e) (error e))))
+
+;; Numbers
+
+;; A natural in decimal. Hexadecimal, octal and binary (`0x`, `0o`, `0b`)
+;; and anything that would make it a float (`.`, `e`) fail with
+;; `invalid`, having consumed; no digit at all fails with `expecting`.
+(define (int expecting invalid)
+  (fn [s]
+    (let [at (offset s)
+          src (source s)]
+      (if (= (byte-at src at: at or: 0) 48)
+        (let [next (byte-at src at: (+ at 1) or: 0)]
+          (if (or (= next 120) (= next 111) (= next 98))
+            (error {progress: true, dead-ends: [(dead-end s x: invalid)]})
+            (finish-int s to: (+ at 1) value: 0 invalid: invalid)))
+        (let [stop (digits-end src from: at)]
+          (if (= stop at)
+            (bad s x: expecting)
+            (finish-int s to: stop value: (digits-value src from: at to: stop total: 0) invalid: invalid)))))))
+
+(define (finish-int s to value invalid)
+  (let [c (byte-at (source s) at: to or: 0)]
+    (if (or (= c 46) (= c 101) (= c 69))
+      (error {progress: true, dead-ends: [(dead-end s x: invalid)]})
+      (ok {progress: true, parsed: value, after: (advance s to: to)}))))
+
+(define (digits-end src from)
+  (if (digit? (byte-at src at: from or: 0)) (digits-end src from: (+ from 1)) from))
+
+(define (digits-value src from to total)
+  (if (>= from to)
+    total
+    (digits-value src from: (+ from 1) to: to
+                  total: (+ (* total 10) (natural (- (byte-at src at: from or: 48) 48) or: 0)))))
+
+;; Names
+
+;; A name: a code point `start` takes, then any `inner` takes, failing
+;; with `expecting` if it is one of `reserved`.
+(define (variable start inner reserved expecting)
+  (fn [s]
+    (let [c (char-at s)]
+      (if (and (not= c no-char) (start c))
+        (let [s1 (chomp-chars (step-over s char: c) accept: inner)
+              name (slice (source s) from: (offset s) to: (offset s1))]
+          (if (member? name in: reserved)
+            (bad s x: expecting)
+            (ok {progress: true, parsed: name, after: s1})))
+        (bad s x: expecting)))))
+
+(define (member? x in)
+  (match in
+    [] false
+    [y rest ...] (if (= x y) true (member? x in: rest))))
+
+;; Whitespace
+
+;; Spaces, newlines and carriage returns, none included.
+(define spaces (chomp-while (fn [c] (or (= c 32) (= c 10) (= c 13)))))
+
+;; A comment from `start` to the end of its line.
+(define (line-comment start) (skip (symbol start) then: (chomp-until-end-or "\n")))
+
+;; A comment from `open` to `close`, which do not nest.
+(define (multi-comment open close)
+  (skip (symbol open) then: (chomp-until close expecting: (expecting close))))
+
+;; Context and position
+
+;; `p`, with `context` on the context stack of every dead end inside it.
+(define (in-context p context)
+  (fn [s0]
+    (match (p (assoc s0 contexts: (concat [{row: (row s0), col: (col s0), context: context}] (contexts s0))))
+      (ok step) (ok (assoc step after: (assoc (after step) contexts: (contexts s0))))
+      (error e) (error e))))
+
+(define get-offset (fn [s] (ok {progress: false, parsed: (offset s), after: s})))
+(define get-row (fn [s] (ok {progress: false, parsed: (row s), after: s})))
+(define get-col (fn [s] (ok {progress: false, parsed: (col s), after: s})))
+(define get-position (fn [s] (ok {progress: false, parsed: {row: (row s), col: (col s)}, after: s})))
+(define get-source (fn [s] (ok {progress: false, parsed: (source s), after: s})))
+(define get-indent (fn [s] (ok {progress: false, parsed: (indent s), after: s})))
+
+;; `p` with the indentation `level` in its state, restored after it.
+(define (with-indent p level)
+  (fn [s0]
+    (match (p (assoc s0 indent: level))
+      (ok step) (ok (assoc step after: (assoc (after step) indent: (indent s0))))
+      (error e) (error e))))
+
+;; Code points, by class (ASCII only)
+
+(define (digit? c) (and (>= c 48) (<= c 57)))
+(define (upper? c) (and (>= c 65) (<= c 90)))
+(define (lower? c) (and (>= c 97) (<= c 122)))
+(define (alpha? c) (or (upper? c) (lower? c)))
+(define (alpha-num? c) (or (alpha? c) (digit? c)))
+(define (space? c) (or (= c 32) (= c 9) (= c 10) (= c 13)))
+
+;; The code point that `text` starts with, or `no-char`.
+(define (code text) (code-point-at text at: 0 or: no-char))
