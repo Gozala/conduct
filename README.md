@@ -566,6 +566,15 @@ macro is closed, each such symbol that names a definition is pinned to
 that definition's hash, so redefining the name later does not change
 what the macro's expansions call.
 
+A label named by a pattern variable is the label of the name the
+variable matched, and `...` after a label and a form repeats the pair,
+so a macro can write the attributes and parameters a call names:
+
+```
+(macro (record-of name ...) {name: name ...})
+(record-of title done)          ; {title: title, done: done}
+```
+
 `and`, `or` and `cond` are macros in `core.cdt` now, not forms of the
 language. Procedural macros, written as functions over forms, are
 next.
@@ -648,11 +657,25 @@ builders have no counterpart.
   (parsing [_ (symbol "(") x number _ (symbol ",") y number _ (symbol ")")]
     (succeed [x y])))
 (run point text: "(3,42)")      ; (ok [3 42])
-(run point text: "(3,x)")       ; (error [{row: 1, col: 4, problem: :expecting-int, ..}])
+(run point text: "(3,x)")       ; (error [{row: 1, col: 4, reason: :expecting-int, ..}])
 ```
 
 A recursive parser is a function of the parse state, `(define (value s)
 ((one-of [..]) s))`, where elm/parser has `lazy`.
+
+- **`conduct.route`** (`lib/route.cdt`, needs `conduct.parser`), routes
+  after [subroute](https://github.com/Gozala/subroute): one description
+  parses a path into a record of typed parameters and formats the record
+  back into a path, so a link cannot drift from its route.
+
+```
+(type a : (calc/a natural))
+(type b : (calc/b natural))
+(define calc (route "/calculator/" (a natural-segment) "/+/" (b natural-segment)))
+(match-path calc path: "/calculator/313/+/3")    ; (ok {a: 313, b: 3})
+(format-path calc params: {a: 313, b: 3})       ; "/calculator/313/+/3"
+(dispatch [(on calc handler: (fn [p] (+ (a p) (b p))))] path: "/calculator/2/+/40")   ; (ok 42)
+```
 
 ### Compiled code
 

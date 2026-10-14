@@ -38,7 +38,7 @@
 (type col : (conduct.parser/col natural))
 (type contexts : (conduct.parser/contexts (list ?located)))
 (type context : (conduct.parser/context ?context))
-(type problem : (conduct.parser/problem ?problem))
+(type reason : (conduct.parser/reason ?problem))
 (type context-stack : (conduct.parser/context-stack (list ?located)))
 (type progress : (conduct.parser/progress boolean))
 (type parsed : (conduct.parser/parsed ?value))
@@ -59,14 +59,14 @@
 (define (initial text) {source: text, offset: 0, indent: 1, row: 1, col: 1, contexts: []})
 
 ;; Parse `text` with `p`: `(ok value)`, or `(error dead-ends)`, each
-;; `{row col problem context-stack}`.
+;; `{row col reason context-stack}`.
 (define (run p text)
   (match (p (initial text))
     (ok {parsed: value}) (ok value)
     (error {dead-ends: ends}) (error ends)))
 
 ;; A dead end at `s`.
-(define (dead-end s x) {row: (row s), col: (col s), problem: x, context-stack: (contexts s)})
+(define (dead-end s x) {row: (row s), col: (col s), reason: x, context-stack: (contexts s)})
 
 ;; A failure at `s` that consumed nothing.
 (define (bad s x) (error {progress: false, dead-ends: [(dead-end s x: x)]}))
