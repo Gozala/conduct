@@ -397,6 +397,7 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         }
         Op::Natural => (vec![Ty::int(), Ty::nat()], Ty::nat()),
         Op::Compare => (vec![Ty::Top, Ty::Top], Ty::int()),
+        Op::HashFrame => (vec![Ty::Top, Ty::nat()], Ty::nat()),
         // The default comes back for an index past the end.
         Op::Item => {
             let a = var();

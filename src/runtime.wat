@@ -275,11 +275,17 @@
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $next)))
         (return (local.get $h))))
-    ;; Lists: their values. Records and dictionaries: their pairs, a key
-    ;; then its value.
+    ;; Lists, views, emits and fetches: their values. Records and
+    ;; dictionaries: their pairs, a key then its value. Functions: their
+    ;; code, then the values they captured. Everything `=` compares is
+    ;; hashed, so values that are not equal can always be told apart by
+    ;; hashing them again with another frame (`$hash_frame`).
     (if (i32.or (i32.eq (local.get $k) (i32.const 3)) (i32.eq (local.get $k) (i32.const 4)))
       (then (local.set $n (i32.shl (local.get $n) (i32.const 1)))))
-    (if (i32.gt_u (local.get $k) (i32.const 4)) (then (return (local.get $h))))
+    (if (i32.eq (local.get $k) (i32.const 5))
+      (then
+        (local.set $h (call $fnv_word (local.get $h) (i64.load offset=8 (local.get $p))))
+        (local.set $p (i32.add (local.get $p) (i32.const 8)))))
     (block $done (loop $next
       (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
       (local.set $h
@@ -319,6 +325,16 @@
   (func $hash (param $v i64) (result i64)
     (i64.or
       (i64.shl (i64.extend_i32_u (call $hash_into (i32.const 0x811c9dc5) (local.get $v))) (i64.const 1))
+      (i64.const 1)))
+  ;; `(hash-frame v at: n)`: frame `n` of an endless digest of `v`, 32
+  ;; bits at a time. Frame 0 is `(hash v)`; frame `n` hashes `v` after
+  ;; `n`, as if `n` were put before it, so values whose frame 0 collides
+  ;; part at a later frame unless they are equal.
+  (func $hash_frame (param $v i64) (param $n i64) (result i64)
+    (if (i64.eq (local.get $n) (i64.const 1)) (then (return (call $hash (local.get $v)))))
+    (i64.or
+      (i64.shl (i64.extend_i32_u
+        (call $hash_into (call $fnv_word (i32.const 0x811c9dc5) (local.get $n)) (local.get $v))) (i64.const 1))
       (i64.const 1)))
 
   ;; Strings
