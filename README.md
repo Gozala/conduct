@@ -725,6 +725,12 @@ polyfill with stack switching, JSPI, or nested turns.
 3. **The codebase in Dialog**: definitions as facts, names as assertions
    that point at hashes.
 
+## License
+
+conduct is licensed under the [Mozilla Public License 2.0](LICENSE).
+Code ported from other projects keeps its original license notice beside
+it.
+
 [Wasm Component Model Polyfill]: https://github.com/dialog-db/wasm-component-model-polyfill
 [`examples/todo-item.cdt`]: examples/todo-item.cdt
 [Simple-sub]: https://dl.acm.org/doi/10.1145/3409006

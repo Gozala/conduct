@@ -2,6 +2,7 @@
 name = "conduct-compiler"
 version = "0.1.0"
 edition = "2024"
+license = "MPL-2.0"
 description = "The conduct compiler as a component with WASI 0.3 async exports"
 publish = false
 

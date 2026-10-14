@@ -2,6 +2,7 @@
 name = "element-bench"
 version = "0.1.0"
 edition = "2024"
+license = "MPL-2.0"
 publish = false
 description = "Times the TodoMVC elements in conduct, Zena and Rust, and the conduct and Zena compiler components, on the Wasm Component Model Polyfill over Wasmtime"
 
