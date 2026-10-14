@@ -81,7 +81,7 @@ fn constructors_of_variants() {
     );
     assert_eq!(
         cb.type_of("safe-div").unwrap(),
-        "((\\ integer by: integer) : [(error :division-by-zero) (ok integer)])"
+        "((\\ (& ?a integer) by: (& ?a integer)) : [(error :division-by-zero) (ok ?a)])"
     );
     assert_eq!(cb.type_of("show").unwrap(), "((\\ [(error any) (ok any)]) : text)");
     let src = "(define (safe-div n by) (if (= by 0) (error :division-by-zero) (ok (quot n by))))
@@ -172,9 +172,9 @@ fn signatures_are_checked_and_shown() {
     assert_eq!(cb.type_of("twice").unwrap(), "((\\ ((\\ ?a) : ?a) x: ?a) : ?a)");
     assert_eq!(cb.type_of("id").unwrap(), "((\\ ?a) : ?a)");
     let e = error("(claim (id ?a) : ?a) (define (id x) (+ x 1))");
-    assert!(e.contains("integer is not ?a, any type the caller chooses"), "{e}");
+    assert!(e.contains("natural is not ?a, any type the caller chooses"), "{e}");
     let e = error("(claim (f integer) : text) (define (f x) (+ x 1))");
-    assert!(e.contains("integer is not a text"), "{e}");
+    assert!(e.contains("natural is not a text"), "{e}");
     let e = error("(claim (f integer extra: integer) : integer) (define (f x y) x)");
     assert!(e.contains("the claim labels the parameters `extra:`, the definition `y:`"), "{e}");
     let e = error("(claim (f other: integer) : integer) (define (f x) x)");
@@ -241,7 +241,7 @@ fn a_ranked_match_names_every_case_or_ends_with_any() {
     assert!(e.contains("a value may fit no case of `v`"), "{e}");
     let cb =
         check(&format!("{src} (define (f q) (match q (a x: n) n (b x: n) (+ n 100) _ 0)) (define r (f (b 1 z: 2)))"));
-    assert_eq!(cb.type_of("r").unwrap(), "integer");
+    assert_eq!(cb.type_of("r").unwrap(), "natural");
 }
 
 #[test]
@@ -254,7 +254,10 @@ fn a_type_declares_and_a_claim_signs() {
          (define (shift p) (point (+ (x p) 1) y: (y p)))",
     );
     assert_eq!(cb.type_of("origin").unwrap(), "{x: natural, y: natural}");
-    assert_eq!(cb.type_of("shift").unwrap(), "((\\ {x: integer, y: (& ?a integer)}) : {x: integer, y: ?a})");
+    assert_eq!(
+        cb.type_of("shift").unwrap(),
+        "((\\ {x: (& ?a integer), y: (& ?b integer)}) : {x: [?a natural], y: ?b})"
+    );
     // Attributes may be written in place, as a record writes its values.
     check("(type point : {io.gozala.point/x: integer io.gozala.point/y: integer}) (define o (point 0 y: 0))");
     check("(type point : {(io.gozala.point/x integer) (io.gozala.point/y integer)}) (define o (point 0 y: 0))");

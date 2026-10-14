@@ -67,8 +67,8 @@ fn several_defines_are_one_function() {
          (define (fib n) (+ (fib (- n 1)) (fib (- n 2))))
          (define r [(len [1 2 3]) (fib 10)])",
     );
-    assert_eq!(cb.type_of("len").unwrap(), "((\\ (list any)) : integer)");
-    assert_eq!(cb.type_of("fib").unwrap(), "((\\ integer) : integer)");
+    assert_eq!(cb.type_of("len").unwrap(), "((\\ (list any)) : natural)");
+    assert_eq!(cb.type_of("fib").unwrap(), "((\\ integer) : natural)");
     assert_eq!(run(&cb, "r"), ints(&[3, 55]));
 }
 

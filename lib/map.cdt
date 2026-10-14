@@ -33,12 +33,12 @@
 (type entry-key : (conduct.map/key ?key))
 (type entry-value : (conduct.map/value ?value))
 (type map-root : (conduct.map/root ?node))
-(type map-size : (conduct.map/size integer))
+(type map-size : (conduct.map/size natural))
 
 ;; An entry, a node of the trie, and a map, of keys `?k` and values `?v`.
 (type (entry ?k value: ?v) : {entry-key: ?k, entry-value: ?v})
 (type (node ?k value: ?v) : (rec ?n {datamap: natural, nodemap: natural, leaves: (list (entry ?k value: ?v)), branches: (list ?n)}))
-(type (map ?k value: ?v) : {map-root: (node ?k value: ?v), map-size: integer})
+(type (map ?k value: ?v) : {map-root: (node ?k value: ?v), map-size: natural})
 
 ;; How many bits of the hash one level reads, and the shift past which
 ;; the hash is used up.
@@ -62,7 +62,7 @@
 ;; it `bits` marks.
 (define (rank bits bit) (count-ones (bit-and bits (natural (- bit 1) or: 0))))
 
-(define (deeper shift) (natural (+ shift slot-bits) or: 0))
+(define (deeper shift) (+ shift slot-bits))
 
 ;; The value of `key` in a list of entries, or `default`.
 (claim (find-in (list (entry ?k value: ?v)) key: ?k default: ?v) : ?v)
@@ -200,11 +200,12 @@
 (claim (remove (map ?k value: ?v) key: ?k) : (map ?k value: ?v))
 (define (remove m key)
   (if (contains? m key: key)
-    {map-root: (unplace (map-root m) h: (hash key) shift: 0 key: key), map-size: (- (map-size m) 1)}
+    {map-root: (unplace (map-root m) h: (hash key) shift: 0 key: key),
+     map-size: (natural (- (map-size m) 1) or: 0)}
     m))
 
 ;; How many entries `m` has.
-(claim (size (map any value: any)) : integer)
+(claim (size (map any value: any)) : natural)
 (define (size m) (map-size m))
 
 (claim (node-entries (node ?k value: ?v)) : (list (entry ?k value: ?v)))

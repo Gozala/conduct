@@ -332,8 +332,8 @@ dictionary read whatever `k` is called.
 
 A record update keeps whatever else the record holds:
 `(define (bump m) (assoc m n: (+ (n m) 1)))` infers
-`((\ {n: integer ?a ...}) : (?a with n: integer))`, where `?a` is the record,
-the way row polymorphism would type it.
+`((\ {n: (& ?b integer) ?a ...}) : (?a with n: [?b natural]))`, where `?a` is the
+record, the way row polymorphism would type it, and `?b` the number it held.
 
 ### Types
 
@@ -345,7 +345,18 @@ in), then simplified.
 
 The numbers are Dialog's: `natural` is a view of `integer`, so every
 natural is an integer. A number that is not negative is a natural, and
-`count` and the bit operations answer one; arithmetic is on integers.
+`count` and the bit operations answer one. Arithmetic keeps what it is
+given: `+`, `*` and `quot` of naturals answer a natural, and of anything
+else an integer; `rem` has the dividend's type; `-` answers an integer,
+as a difference of naturals may be negative. So a function of a number
+shows the bound it needs and the union it answers:
+
+```
+(define (count-up n) (+ n 1))   ; ((\ (& ?a integer)) : [?a natural])
+(count-up 5)                    ; natural
+(count-up -5)                   ; integer
+```
+
 Both hold 62 bits until wider numbers land.
 
 ### No nil

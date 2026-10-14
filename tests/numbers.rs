@@ -56,9 +56,9 @@ fn a_number_that_is_not_negative_is_a_natural() {
     assert_eq!(cb.type_of("one").unwrap(), "natural");
     assert_eq!(cb.type_of("minus").unwrap(), "integer");
     // Arithmetic is on integers, which every natural is.
-    assert_eq!(cb.type_of("sum").unwrap(), "integer");
+    assert_eq!(cb.type_of("sum").unwrap(), "natural");
     assert_eq!(cb.type_of("size").unwrap(), "natural");
-    assert_eq!(cb.type_of("twice").unwrap(), "((\\ integer) : integer)");
+    assert_eq!(cb.type_of("twice").unwrap(), "((\\ (& ?a integer)) : [?a natural])");
     assert_eq!(cb.type_of("at").unwrap(), "natural");
     let e = error("(claim (index natural) : natural) (define (index n) n) (define x (index -1))");
     assert!(e.contains("integer is not a natural"), "{e}");
@@ -168,4 +168,38 @@ fn an_integer_becomes_a_natural_or_a_default() {
     let src = "(define r [(natural 5 or: 0) (natural (- 0 3) or: 7) (natural 0 or: 9)])";
     assert_eq!(run(src, "r"), ints(&[5, 7, 0]));
     assert!(error("(define r (natural 1 or: (- 0 1)))").contains("natural"));
+}
+
+#[test]
+fn arithmetic_keeps_naturals_natural() {
+    let cb = types(
+        "(define sum (+ 2 3))
+         (define product (* 2 3))
+         (define quotient (quot 7 2))
+         (define remainder (rem 7 2))
+         (define difference (- 3 2))
+         (define negative (+ 2 -3))
+         (define (count-up n) (+ n 1))
+         (define (remainder-of n by) (rem n by))
+         (define up (count-up 5))
+         (define down (count-up -5))
+         (define by-negative (remainder-of 7 by: -2))",
+    );
+    let ty = |name: &str| cb.type_of(name).unwrap();
+    // Naturals in, a natural out; an integer anywhere, an integer out.
+    assert_eq!(ty("sum"), "natural");
+    assert_eq!(ty("product"), "natural");
+    assert_eq!(ty("quotient"), "natural");
+    assert_eq!(ty("negative"), "integer");
+    // A difference of naturals may be negative.
+    assert_eq!(ty("difference"), "integer");
+    // A remainder has the sign of the dividend, whatever divides it.
+    assert_eq!(ty("remainder"), "natural");
+    assert_eq!(ty("by-negative"), "natural");
+    // A function of a number answers what it was given.
+    assert_eq!(ty("count-up"), "((\\ (& ?a integer)) : [?a natural])");
+    assert_eq!(ty("up"), "natural");
+    assert_eq!(ty("down"), "integer");
+    assert_eq!(ty("remainder-of"), "((\\ (& ?a integer) by: integer) : ?a)");
+    assert_eq!(run("(define r [(rem 7 -2) (rem -7 2) (quot 7 -2)])", "r"), ints(&[1, -1, -3]));
 }
