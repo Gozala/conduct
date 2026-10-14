@@ -5,6 +5,31 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
+## Tail calls through closures
+
+- **Chosen:** only direct calls in tail position are tail calls.
+- **Why:** a closure call drops the closure after the callee returns,
+  because the callee only borrows its captures. Making it a tail call
+  means the callee takes the closure and drops it, a change to the
+  calling convention of every function.
+- **Revisit** if combinator code (parsers, codecs) hits stack limits on
+  real inputs.
+
+## Attributes are named codebase-wide
+
+- **Found:** a local attribute name such as `value` belongs to one
+  attribute across the whole codebase (`conduct.event/value`), whatever
+  the domain. Libraries pick distinct names (`entry-key`, `parsed`).
+- **Planned:** attributes named in domains, with identity as name plus
+  type, which is already on the list. Until then, library attribute
+  names are a shared namespace.
+
+## No zero-parameter functions, so no `lazy`
+
+- **Chosen:** recursive parsers are written as functions of the parse
+  state, `(define (expr s) ((one-of [...]) s))`, rather than adding
+  thunks. A definition with no parameters is a value by design.
+
 ## Text is UTF-8 bytes, and positions in it are byte offsets
 
 - **Chosen:** text primitives take and give byte offsets

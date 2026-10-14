@@ -3,6 +3,27 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Calls in tail position are tail calls
+
+- **A loop was a stack of frames.** Recursion is conduct's only loop,
+  and every call was a Wasm `call`, so a tail-recursive count of 10,000
+  exhausted the stack. A parser over a long input, or any walk over a
+  long list, would trap.
+- **A direct call in tail position is now `return_call`.** Tail position
+  passes from a function's body through `if` arms, a `let`'s body,
+  `match` arms, `cond`, and the second operand of `and`/`or`. Perceus
+  leaves nothing to do after such a call: a local is dropped as soon as
+  nothing later uses it, and the call's arguments moved the rest. A test
+  runs a million calls deep, through a cycle too.
+- **Not yet: calls through a closure.** `$applyN_take` drops the
+  closure after the call, since the callee borrows what it captured, so
+  a closure call cannot simply be `return_call_indirect`; the callee
+  would have to take the closure. Parser combinators make such calls, so
+  a loop written through closures still grows the stack; `loop` in the
+  parser library recurses directly.
+- **Tail calls are Wasm 3.0,** on in Wasmtime by default and in current
+  browsers (Chrome 112, Firefox 121, Safari 18.2).
+
 ## Text by byte offset
 
 - **Text is UTF-8, and positions in it are byte offsets,** as Rust and

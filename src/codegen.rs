@@ -197,6 +197,12 @@ pub struct Builder<'a> {
     run_queue: Vec<Hash>,
     /// The capability each host function needs, by its name.
     capabilities: HashMap<String, String>,
+    /// Whether the expression about to be compiled is in tail position:
+    /// its value is its function's, with nothing left to do after it.
+    /// `expr` takes it, so it holds for one expression and passes on
+    /// only to the parts of that expression that are in tail position
+    /// too.
+    tail: bool,
 }
 
 impl<'a> Builder<'a> {
@@ -224,6 +230,7 @@ impl<'a> Builder<'a> {
                 .iter()
                 .flat_map(|(cap, fs)| fs.keys().map(move |f| (f.clone(), cap.clone())))
                 .collect(),
+            tail: false,
         };
         b.rtdata = b.static_bytes(RUNTIME_DATA.to_vec());
         b
@@ -371,6 +378,19 @@ impl<'a> Builder<'a> {
     /// A WAT expression applying a definition to argument expressions.
     /// The call consumes the arguments: pass duplicates of anything the
     /// caller keeps.
+    /// A call in tail position: a direct call of a function with all its
+    /// arguments returns its callee's value with `return_call`, so
+    /// recursion in tail position runs in constant stack. Nothing is left
+    /// to drop after it: every local is dropped as soon as nothing later
+    /// uses it, and the arguments moved the rest.
+    fn tail_call(&mut self, hash: Hash, args: &[String]) -> Result<String> {
+        let call = self.call(hash, args)?;
+        Ok(match call.strip_prefix(&format!("(call {} ", Self::def_name(&hash))) {
+            Some(rest) => format!("(return_call {} {rest}", Self::def_name(&hash)),
+            None => call,
+        })
+    }
+
     pub fn call(&mut self, hash: Hash, args: &[String]) -> Result<String> {
         let arity = match &self.cb.defs[&hash].term {
             Term::Fn(labels, _) => Some(labels.len()),
@@ -472,6 +492,7 @@ impl<'a> Builder<'a> {
         for n in &unused {
             frame.owned.remove(n);
         }
+        self.tail = true;
         let code = self.expr(body, &mut env, &mut frame, cycle, &Names::new())?;
         if !frame.owned.is_empty() {
             return Err(CodegenError(format!(
@@ -563,6 +584,7 @@ impl<'a> Builder<'a> {
         cycle: &[Hash],
         live: &Names,
     ) -> Result<String> {
+        let tail = std::mem::take(&mut self.tail);
         Ok(match term {
             Term::Int(n) => format!("(i64.const {})", int(*n)),
             Term::Bool(b) => format!("(i64.const {})", if *b { TRUE } else { FALSE }),
@@ -636,6 +658,7 @@ impl<'a> Builder<'a> {
                     chain = Term::If(Box::new(test), Box::new(body), Box::new(chain));
                 }
                 let lowered = Term::Let(scrutinee.clone(), Box::new(chain));
+                self.tail = tail;
                 self.expr(&lowered, env, frame, cycle, live)?
             }
             Term::Local(i) => match &env[env.len() - 1 - *i as usize] {
@@ -707,7 +730,7 @@ impl<'a> Builder<'a> {
                 match direct {
                     Some(h) => {
                         let args = self.sequence(&arg_refs, env, frame, cycle, live)?;
-                        self.call(h, &args)?
+                        if tail { self.tail_call(h, &args)? } else { self.call(h, &args)? }
                     }
                     None => {
                         let mut items = vec![&**callee];
@@ -733,6 +756,7 @@ impl<'a> Builder<'a> {
                 if unused {
                     frame.owned.remove(&local);
                 }
+                self.tail = tail;
                 let body = self.expr(body, env, frame, cycle, live);
                 env.pop();
                 let drop = if unused { format!(" (call $drop (local.get {local}))") } else { String::new() };
@@ -744,8 +768,10 @@ impl<'a> Builder<'a> {
                 cond_live.extend(fv(e, env));
                 let c = self.expr(c, env, frame, cycle, &cond_live)?;
                 let start = frame.owned.clone();
+                self.tail = tail;
                 let t = self.arm(t, env, frame, cycle, live, &start)?;
                 let end_t = frame.owned.clone();
+                self.tail = tail;
                 let e = self.arm(e, env, frame, cycle, live, &start)?;
                 let end_e = frame.owned.clone();
                 Self::join_arms(frame, live, &start, &[end_t, end_e])?;
@@ -760,6 +786,7 @@ impl<'a> Builder<'a> {
                 let short =
                     Self::empty_arm(frame, live, &start, format!("(i64.const {})", if is_and { FALSE } else { TRUE }));
                 let end_s = frame.owned.clone();
+                self.tail = tail;
                 let long = self.arm(b, env, frame, cycle, live, &start)?;
                 let end_l = frame.owned.clone();
                 Self::join_arms(frame, live, &start, &[end_s, end_l])?;
