@@ -214,6 +214,81 @@
   (func $int_rem (param $a i64) (param $b i64) (result i64)
     (i64.or (i64.shl (i64.rem_s (i64.shr_s (local.get $a) (i64.const 1)) (i64.shr_s (local.get $b) (i64.const 1))) (i64.const 1)) (i64.const 1)))
 
+  ;; Bits, on naturals. A natural holds 62 bits until wider numbers
+  ;; land: `shift-left` drops what goes past them, and a shift by 62 or
+  ;; more leaves nothing. A tagged natural is `(n << 1) | 1`, so `and`
+  ;; and `or` keep the tag as they are.
+  (func $bit_and (param $a i64) (param $b i64) (result i64) (i64.and (local.get $a) (local.get $b)))
+  (func $bit_or (param $a i64) (param $b i64) (result i64) (i64.or (local.get $a) (local.get $b)))
+  (func $bit_xor (param $a i64) (param $b i64) (result i64)
+    (i64.or (i64.xor (local.get $a) (local.get $b)) (i64.const 1)))
+  (func $shift_left (param $a i64) (param $n i64) (result i64)
+    (local $k i64)
+    (local.set $k (i64.shr_u (local.get $n) (i64.const 1)))
+    (if (i64.ge_u (local.get $k) (i64.const 62)) (then (return (i64.const 1))))
+    (i64.or
+      (i64.shl
+        (i64.and (i64.shl (i64.shr_u (local.get $a) (i64.const 1)) (local.get $k)) (i64.const 0x3fffffffffffffff))
+        (i64.const 1))
+      (i64.const 1)))
+  (func $shift_right (param $a i64) (param $n i64) (result i64)
+    (local $k i64)
+    (local.set $k (i64.shr_u (local.get $n) (i64.const 1)))
+    (if (i64.ge_u (local.get $k) (i64.const 62)) (then (return (i64.const 1))))
+    (i64.or (i64.shl (i64.shr_u (i64.shr_u (local.get $a) (i64.const 1)) (local.get $k)) (i64.const 1)) (i64.const 1)))
+  (func $count_ones (param $a i64) (result i64)
+    (i64.or (i64.shl (i64.popcnt (i64.shr_u (local.get $a) (i64.const 1))) (i64.const 1)) (i64.const 1)))
+
+  ;; A value's hash: 32-bit FNV-1a over its structure, so values that are
+  ;; equal hash alike. A function, a view, or an effect hashes by its kind
+  ;; and size alone.
+  (func $fnv (param $h i32) (param $byte i32) (result i32)
+    (i32.mul (i32.xor (local.get $h) (i32.and (local.get $byte) (i32.const 0xff))) (i32.const 16777619)))
+  (func $fnv_word (param $h i32) (param $w i64) (result i32)
+    (local $i i32)
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 8)))
+      (local.set $h (call $fnv (local.get $h)
+        (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.extend_i32_u (i32.shl (local.get $i) (i32.const 3)))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    (local.get $h))
+  (func $hash_into (param $h i32) (param $v i64) (result i32)
+    (local $k i32) (local $n i32) (local $i i32) (local $p i32)
+    (if (i32.eqz (call $is_obj (local.get $v))) (then (return (call $fnv_word (local.get $h) (local.get $v)))))
+    (local.set $k (call $kind (local.get $v)))
+    (local.set $n (call $len (local.get $v)))
+    (local.set $p (call $ptr (local.get $v)))
+    ;; `{}` hashes alike as a record and as a dictionary, as it is equal.
+    (if (i32.and (i32.eqz (local.get $n)) (i32.or (i32.eq (local.get $k) (i32.const 3)) (i32.eq (local.get $k) (i32.const 4))))
+      (then (local.set $k (i32.const 3))))
+    (local.set $h (call $fnv_word (local.get $h) (i64.or (i64.shl (i64.extend_i32_u (local.get $k)) (i64.const 32)) (i64.extend_i32_u (local.get $n)))))
+    ;; Text and keywords: their bytes.
+    (if (i32.or (i32.eq (local.get $k) (i32.const 1)) (i32.eq (local.get $k) (i32.const 9)))
+      (then
+        (block $done (loop $next
+          (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+          (local.set $h (call $fnv (local.get $h) (i32.load8_u offset=8 (i32.add (local.get $p) (local.get $i)))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $next)))
+        (return (local.get $h))))
+    ;; Lists: their values. Records and dictionaries: their pairs, a key
+    ;; then its value.
+    (if (i32.or (i32.eq (local.get $k) (i32.const 3)) (i32.eq (local.get $k) (i32.const 4)))
+      (then (local.set $n (i32.shl (local.get $n) (i32.const 1)))))
+    (if (i32.gt_u (local.get $k) (i32.const 4)) (then (return (local.get $h))))
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $h (call $hash_into (local.get $h)
+        (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 3))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    (local.get $h))
+  (func $hash (param $v i64) (result i64)
+    (i64.or
+      (i64.shl (i64.extend_i32_u (call $hash_into (i32.const 0x811c9dc5) (local.get $v))) (i64.const 1))
+      (i64.const 1)))
+
   ;; Strings
   (func $str_new (param $src i32) (param $len i32) (result i64)
     (local $p i32)
@@ -520,6 +595,94 @@
     (local.set $out (call $conj (local.get $a) (local.get $x)))
     (call $drop (local.get $a))
     (local.get $out))
+  (func $list_copy (param $a i64) (param $n i32) (result i32)
+    ;; A new list block of length `n` holding the first values of `a`,
+    ;; duplicated, up to `n` of them.
+    (local $q i32) (local $i i32) (local $m i32)
+    (local.set $q (call $list_new (local.get $n)))
+    (local.set $m (call $len (local.get $a)))
+    (if (i32.lt_u (local.get $n) (local.get $m)) (then (local.set $m (local.get $n))))
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (local.get $m)))
+      (call $list_set (local.get $q) (local.get $i) (call $dup (call $list_get (local.get $a) (local.get $i))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    (local.get $q))
+  (func $index (param $i i64) (result i32)
+    ;; A natural index; one past what a list could hold when it is beyond.
+    (if (result i32) (i64.gt_u (i64.shr_u (local.get $i) (i64.const 1)) (i64.const 0x7fffffff))
+      (then (i32.const 0x7fffffff))
+      (else (i32.wrap_i64 (i64.shr_u (local.get $i) (i64.const 1))))))
+  (func $item (param $a i64) (param $i i64) (param $default i64) (result i64)
+    ;; `(item a at: i or: d)`: the item at `i`, or `d` past the end.
+    (local $k i32)
+    (local.set $k (call $index (local.get $i)))
+    (call $dup (if (result i64) (i32.lt_u (local.get $k) (call $len (local.get $a)))
+      (then (call $list_get (local.get $a) (local.get $k)))
+      (else (local.get $default)))))
+  (func $set_at (param $a i64) (param $i i64) (param $x i64) (result i64)
+    ;; `(set-at a i x)`, consuming `a`: the list with its item at `i` set
+    ;; to `x`, or the list as it is when `i` is past its end. A unique
+    ;; list is changed in place.
+    (local $k i32) (local $p i32)
+    (local.set $k (call $index (local.get $i)))
+    (if (i32.ge_u (local.get $k) (call $len (local.get $a))) (then (return (local.get $a))))
+    (if (call $unique (local.get $a))
+      (then (local.set $p (call $ptr (local.get $a))))
+      (else
+        (local.set $p (call $list_copy (local.get $a) (call $len (local.get $a))))
+        (call $drop (local.get $a))))
+    (call $drop (call $list_get (i64.extend_i32_u (local.get $p)) (local.get $k)))
+    (call $list_set (local.get $p) (local.get $k) (call $dup (local.get $x)))
+    (i64.extend_i32_u (local.get $p)))
+  (func $insert_at (param $a i64) (param $i i64) (param $x i64) (result i64)
+    ;; `(insert-at a i x)`, consuming `a`: the list with `x` before its
+    ;; item at `i`, or at its end when `i` is past it.
+    (local $k i32) (local $n i32) (local $p i32) (local $q i32)
+    (local.set $n (call $len (local.get $a)))
+    (local.set $k (call $index (local.get $i)))
+    (if (i32.gt_u (local.get $k) (local.get $n)) (then (local.set $k (local.get $n))))
+    (if (i32.and (call $unique (local.get $a)) (i32.lt_u (local.get $n) (call $capacity (call $ptr (local.get $a)))))
+      (then (local.set $p (call $ptr (local.get $a))))
+      (else
+        ;; A new block twice as long: the values move from a unique list,
+        ;; and are duplicated from a shared one.
+        (if (call $unique (local.get $a))
+          (then
+            (local.set $q (call $list_new (i32.add (i32.shl (local.get $n) (i32.const 1)) (i32.const 1))))
+            (memory.copy (i32.add (local.get $q) (i32.const 8)) (i32.add (call $ptr (local.get $a)) (i32.const 8))
+              (i32.shl (local.get $n) (i32.const 3)))
+            (call $free (call $ptr (local.get $a))))
+          (else
+            (local.set $q (call $list_copy (local.get $a) (i32.add (i32.shl (local.get $n) (i32.const 1)) (i32.const 1))))
+            (call $drop (local.get $a))))
+        (local.set $p (local.get $q))))
+    (memory.copy
+      (i32.add (i32.add (local.get $p) (i32.const 16)) (i32.shl (local.get $k) (i32.const 3)))
+      (i32.add (i32.add (local.get $p) (i32.const 8)) (i32.shl (local.get $k) (i32.const 3)))
+      (i32.shl (i32.sub (local.get $n) (local.get $k)) (i32.const 3)))
+    (call $list_set (local.get $p) (local.get $k) (call $dup (local.get $x)))
+    (i32.store offset=4 (local.get $p) (i32.add (local.get $n) (i32.const 1)))
+    (i64.extend_i32_u (local.get $p)))
+  (func $remove_at (param $a i64) (param $i i64) (result i64)
+    ;; `(remove-at a i)`, consuming `a`: the list without its item at `i`,
+    ;; or the list as it is when `i` is past its end.
+    (local $k i32) (local $n i32) (local $p i32)
+    (local.set $n (call $len (local.get $a)))
+    (local.set $k (call $index (local.get $i)))
+    (if (i32.ge_u (local.get $k) (local.get $n)) (then (return (local.get $a))))
+    (if (call $unique (local.get $a))
+      (then (local.set $p (call $ptr (local.get $a))))
+      (else
+        (local.set $p (call $list_copy (local.get $a) (local.get $n)))
+        (call $drop (local.get $a))))
+    (call $drop (call $list_get (i64.extend_i32_u (local.get $p)) (local.get $k)))
+    (memory.copy
+      (i32.add (i32.add (local.get $p) (i32.const 8)) (i32.shl (local.get $k) (i32.const 3)))
+      (i32.add (i32.add (local.get $p) (i32.const 16)) (i32.shl (local.get $k) (i32.const 3)))
+      (i32.shl (i32.sub (i32.sub (local.get $n) (local.get $k)) (i32.const 1)) (i32.const 3)))
+    (i32.store offset=4 (local.get $p) (i32.sub (local.get $n) (i32.const 1)))
+    (i64.extend_i32_u (local.get $p)))
   (func $map_into (param $f i64) (param $xs i64) (result i64)
     ;; `(map f xs)`, consuming `xs`: a unique list holds the results in
     ;; place of its elements.

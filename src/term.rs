@@ -91,6 +91,18 @@ pub enum Op {
     JsonInt,
     JsonBool,
     JsonType,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
+    CountOnes,
+    Hash,
+    SetAt,
+    InsertAt,
+    RemoveAt,
+    /// `(item xs at: i or: d)`: the item at an index, or the default.
+    Item,
     /// Whether a value is a record with a field: only `match` uses it,
     /// so it has no name in source and is not in [`Op::ALL`].
     HasField,
@@ -144,6 +156,17 @@ impl Op {
         Op::JsonInt,
         Op::JsonBool,
         Op::JsonType,
+        Op::BitAnd,
+        Op::BitOr,
+        Op::BitXor,
+        Op::ShiftLeft,
+        Op::ShiftRight,
+        Op::CountOnes,
+        Op::Hash,
+        Op::SetAt,
+        Op::InsertAt,
+        Op::RemoveAt,
+        Op::Item,
     ];
 
     pub fn name(self) -> &'static str {
@@ -184,6 +207,17 @@ impl Op {
             Op::JsonInt => "json-int",
             Op::JsonBool => "json-bool",
             Op::JsonType => "json-type",
+            Op::BitAnd => "bit-and",
+            Op::BitOr => "bit-or",
+            Op::BitXor => "bit-xor",
+            Op::ShiftLeft => "shift-left",
+            Op::ShiftRight => "shift-right",
+            Op::CountOnes => "count-ones",
+            Op::Hash => "hash",
+            Op::SetAt => "set-at",
+            Op::InsertAt => "insert-at",
+            Op::RemoveAt => "remove-at",
+            Op::Item => "item",
             Op::HasField => "has-field?",
             Op::WithEnv => "with-env",
             Op::Nth => "nth",
@@ -210,8 +244,10 @@ impl Op {
             | Op::JsonStr
             | Op::JsonInt
             | Op::JsonBool
-            | Op::JsonType => 1,
-            Op::Assoc | Op::Get => 3,
+            | Op::JsonType
+            | Op::CountOnes
+            | Op::Hash => 1,
+            Op::Assoc | Op::Get | Op::SetAt | Op::InsertAt | Op::Item => 3,
             Op::H | Op::Fetch => 4,
             _ => 2,
         })

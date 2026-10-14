@@ -202,6 +202,7 @@ impl Claims {
             TypeExpr::Name(name, _) => match name.as_str() {
                 "text" => Ty::str(),
                 "integer" => Ty::int(),
+                "natural" => Ty::nat(),
                 "boolean" => Ty::bool(),
                 "json" => Ty::Prim(Prim::Json),
                 "keyword" => Ty::Prim(Prim::Keyword),

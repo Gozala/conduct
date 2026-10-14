@@ -195,6 +195,13 @@ The design the language is heading for is in
 (json-get j "todos") (json-items j)                         ; json to json, (list json)
 (json-str j) (json-int j) (json-bool j)                     ; json to text, integer, boolean
 (json-type j)                                               ; "string", "null", ...
+
+0x1f 0b1010                                                 ; naturals, in hexadecimal and binary
+(bit-and a b) (bit-or a b) (bit-xor a b)                    ; bits of naturals
+(shift-left a 5) (shift-right a 5) (count-ones a)
+(hash value)                                                ; a 32-bit natural; equal values hash alike
+(item xs at: 2 or: d) (set-at xs 2 x)                       ; a list's item by index, or the default
+(insert-at xs 2 x) (remove-at xs 2)                         ; updated in place when unique
 ```
 
 ### Labels
@@ -333,6 +340,11 @@ Hindley-Milner with subtyping while keeping principal types. Values flow
 into type variables; a type is shown with each variable's bounds turned
 into unions (where values come out) and intersections (where they go
 in), then simplified.
+
+The numbers are Dialog's: `natural` is a view of `integer`, so every
+natural is an integer. A number that is not negative is a natural, and
+`count` and the bit operations answer one; arithmetic is on integers.
+Both hold 62 bits until wider numbers land.
 
 ### No nil
 

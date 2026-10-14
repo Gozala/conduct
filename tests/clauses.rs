@@ -165,7 +165,7 @@ fn a_signature_for_clauses() {
          (define (len []) 0)
          (define (len [_ rest ...]) (+ 1 (len rest)))",
     );
-    assert!(e.contains("integer is not a text"), "{e}");
+    assert!(e.contains("natural is not a text"), "{e}");
 }
 
 #[test]
@@ -224,7 +224,7 @@ fn boolean_patterns() {
     // Covering both, a Bool is all a parameter may be.
     assert!(error("(define (word true) 1) (define (word false) 0) (define x (word 5))").contains("boolean"));
     let cb = check("(define (w b) (match b true 1 false 0))");
-    assert_eq!(cb.type_of("w").unwrap(), "((\\ boolean) : integer)");
+    assert_eq!(cb.type_of("w").unwrap(), "((\\ boolean) : natural)");
 }
 
 #[test]

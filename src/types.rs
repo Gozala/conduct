@@ -17,7 +17,11 @@ use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Prim {
+    /// A whole number, as Dialog's `integer:`.
     Int,
+    /// A whole number that is not negative, as Dialog's `natural:`: a
+    /// view of the integers, so every natural is an integer.
+    Nat,
     Bool,
     Str,
     /// A parsed JSON value, read with the `json-` built-ins.
@@ -33,6 +37,7 @@ impl Prim {
     pub fn name(self) -> &'static str {
         match self {
             Prim::Int => "integer",
+            Prim::Nat => "natural",
             Prim::Bool => "boolean",
             Prim::Str => "text",
             Prim::Json => "json",
@@ -108,6 +113,9 @@ pub enum Ty {
 impl Ty {
     pub fn int() -> Ty {
         Ty::Prim(Prim::Int)
+    }
+    pub fn nat() -> Ty {
+        Ty::Prim(Prim::Nat)
     }
     pub fn bool() -> Ty {
         Ty::Prim(Prim::Bool)
@@ -312,6 +320,8 @@ impl Solver {
             (Ty::Union(ls), _) => ls.iter().try_for_each(|l| self.go(l, rhs, cache)),
             (_, Ty::Inter(rs)) => rs.iter().try_for_each(|r| self.go(lhs, r, cache)),
             (Ty::Prim(a), Ty::Prim(b)) if a == b => Ok(()),
+            // Every natural is an integer.
+            (Ty::Prim(Prim::Nat), Ty::Prim(Prim::Int)) => Ok(()),
             // `{}` is an empty dictionary, and a record that has none of
             // the attributes it may have.
             (Ty::Prim(Prim::Empty), Ty::Dict(_)) => Ok(()),
@@ -737,7 +747,7 @@ fn fits(l: &Ty, r: &Ty) -> bool {
         (_, Ty::Union(rs)) => rs.iter().any(|r| fits(l, r)),
         (Ty::Inter(ls), _) => ls.iter().any(|l| fits(l, r)),
         (_, Ty::Inter(rs)) => rs.iter().all(|r| fits(l, r)),
-        (Ty::Prim(a), Ty::Prim(b)) => a == b,
+        (Ty::Prim(a), Ty::Prim(b)) => a == b || (*a == Prim::Nat && *b == Prim::Int),
         (Ty::Prim(Prim::Empty), Ty::Dict(_) | Ty::Record(_)) => true,
         (Ty::Tags(tags), Ty::Prim(Prim::Keyword)) => tags.values().all(Option::is_none),
         (Ty::Tags(a), Ty::Tags(b)) => a.keys().all(|k| b.contains_key(k)),
@@ -1301,6 +1311,10 @@ fn normalize(ty: Type) -> Type {
             if out.iter().any(|t| matches!(t, Type::Dict(_) | Type::Record(_))) {
                 out.retain(|t| *t != Type::Prim(Prim::Empty));
             }
+            // Nor a natural to an integer.
+            if out.contains(&Type::Prim(Prim::Int)) {
+                out.retain(|t| *t != Type::Prim(Prim::Nat));
+            }
             merge_tags(&mut out, true);
             records_beside_records(&mut out);
             merge_records(&mut out, true);
@@ -1325,6 +1339,10 @@ fn normalize(ty: Type) -> Type {
             }
             if out.contains(&Type::Bot) {
                 return Type::Bot;
+            }
+            // A natural that is an integer as well is a natural.
+            if out.contains(&Type::Prim(Prim::Nat)) {
+                out.retain(|t| *t != Type::Prim(Prim::Int));
             }
             optional_reads_into_variants(&mut out);
             records_beside_records(&mut out);

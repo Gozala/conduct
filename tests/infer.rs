@@ -22,7 +22,7 @@ fn infers_basic_functions() {
 fn records_are_structural() {
     let claims = "(type name : (t/name ?name)) (type age : (t/age ?age)) (type tags : (t/tags ?tags))";
     assert_eq!(ty(&format!("{claims} (define (name-of r) (name r))"), "name-of"), "((\\ {name: ?a}) : ?a)");
-    assert_eq!(ty(&format!("{claims} (define r {{name: \"x\", age: 3}})"), "r"), "{age: integer, name: text}");
+    assert_eq!(ty(&format!("{claims} (define r {{name: \"x\", age: 3}})"), "r"), "{age: natural, name: text}");
     assert_eq!(
         ty(&format!("{claims} (define (both r) (+ (age r) (count (tags r))))"), "both"),
         "((\\ {age: integer, tags: (list any)}) : integer)"
@@ -31,9 +31,9 @@ fn records_are_structural() {
 
 #[test]
 fn unions_from_branches_and_defaults() {
-    assert_eq!(ty("(define (pick b) (if b 1 \"one\"))", "pick"), "((\\ boolean) : [integer text])");
+    assert_eq!(ty("(define (pick b) (if b 1 \"one\"))", "pick"), "((\\ boolean) : [natural text])");
     // A lookup names what it gives when the key is missing.
-    assert_eq!(ty("(define (lookup d) (get :k of: d or: 0))", "lookup"), "((\\ (dict ?a)) : [?a integer])");
+    assert_eq!(ty("(define (lookup d) (get :k of: d or: 0))", "lookup"), "((\\ (dict ?a)) : [?a natural])");
     assert_eq!(ty("(define (head xs) (first xs \"\"))", "head"), "((\\ (list ?a)) : [?a text])");
 }
 
@@ -43,7 +43,7 @@ fn attributes_may_be_absent() {
     // needs a default, or a `match`.
     let src = "(type id : (t/id ?id)) (type title : (t/title ?title))
                (define (draft t) (if (= t \"\") {id: 1} (assoc {id: 1} title: t)))";
-    assert_eq!(ty(src, "draft"), "((\\ ?a) : {id: integer, title?: ?a})");
+    assert_eq!(ty(src, "draft"), "((\\ ?a) : {id: natural, title?: ?a})");
     let mut cb = Codebase::new();
     cb.add_source(src).unwrap();
     let err = cb.add_source("(define t (title (draft \"x\")))").unwrap_err().to_string();
@@ -69,7 +69,7 @@ fn missing_field_is_an_error() {
 fn let_is_polymorphic() {
     assert_eq!(
         ty("(type a : (t/a ?a)) (type b : (t/b ?b)) (define p (let [id (fn [x] x)] {a: (id 1), b: (id \"s\")}))", "p"),
-        "{a: integer, b: text}"
+        "{a: natural, b: text}"
     );
 }
 
@@ -88,7 +88,7 @@ fn higher_order_builtins() {
         ty("(define (incs xs) (map xs each: (fn [x] (+ x 1))))", "incs"),
         "((\\ (list integer)) : (list integer))"
     );
-    assert_eq!(ty("(define mixed [1 \"a\" :x])", "mixed"), "(list [integer text :x])");
+    assert_eq!(ty("(define mixed [1 \"a\" :x])", "mixed"), "(list [natural text :x])");
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn record_update() {
     // Reading another field through an update reads the original's.
     assert_eq!(ty(&format!("{claims} (define (f m) (b (assoc m a: 1)))"), "f"), "((\\ {b: ?a}) : ?a)");
     // Only a record has attributes to set.
-    assert_eq!(ty(&format!("{claims} (define (g m) (a (assoc m a: 1)))"), "g"), "((\\ {}) : integer)");
+    assert_eq!(ty(&format!("{claims} (define (g m) (a (assoc m a: 1)))"), "g"), "((\\ {}) : natural)");
     for not_a_record in ["123", "[1 2]", "{:k \"v\"}", "\"text\"", ":kw"] {
         let e = Codebase::new()
             .add_source(&format!("{claims} (define r (assoc {not_a_record} a: 1))"))
@@ -112,12 +112,12 @@ fn record_update() {
         assert!(e.contains("`assoc` sets an attribute of a record"), "{not_a_record}: {e}");
     }
     // `{}` is a record with no attributes too.
-    assert_eq!(ty(&format!("{claims} (define r (assoc {{}} a: 1))"), "r"), "{a: integer}");
+    assert_eq!(ty(&format!("{claims} (define r (assoc {{}} a: 1))"), "r"), "{a: natural}");
 }
 
 #[test]
 fn bindings_shadow_builtins() {
-    assert_eq!(ty("(define (f filter) (count filter))", "f"), "((\\ (list any)) : integer)");
+    assert_eq!(ty("(define (f filter) (count filter))", "f"), "((\\ (list any)) : natural)");
     assert_eq!(ty("(define (count x) \"mine\") (define y (count [1]))", "y"), "text");
     let mut cb = Codebase::new();
     let err = cb.add_source("(define f map)").unwrap_err().to_string();
@@ -132,7 +132,7 @@ fn keywords_are_their_own_types() {
     assert_eq!(ty("(define (pick b) (if b :active :suspended))", "pick"), "((\\ boolean) : [:active :suspended])");
     assert_eq!(
         ty("(type status : (t/status ?status)) (type id : (t/id ?id)) (define job {status: :active, id: 1})", "job"),
-        "{id: integer, status: :active}"
+        "{id: natural, status: :active}"
     );
 }
 
@@ -162,7 +162,7 @@ fn a_match_without_else_is_exhaustive() {
 
 #[test]
 fn a_match_with_else_takes_anything() {
-    assert_eq!(ty("(define (f s) (match s :a 1 _ 2))", "f"), "((\\ any) : integer)");
+    assert_eq!(ty("(define (f s) (match s :a 1 _ 2))", "f"), "((\\ any) : natural)");
     assert_eq!(ty("(define (g h) (match h \"toggle\" :t \"save\" :s _ :none))", "g"), "((\\ any) : [:none :s :t])");
 }
 
@@ -227,14 +227,14 @@ fn a_match_without_else_must_be_able_to_cover() {
 #[test]
 fn underscore_matches_anything() {
     // `_` ends a match that cannot otherwise cover.
-    assert_eq!(ty("(define (f h) (match h \"add\" 1 _ 0))", "f"), "((\\ any) : integer)");
+    assert_eq!(ty("(define (f h) (match h \"add\" 1 _ 0))", "f"), "((\\ any) : natural)");
     // In a record pattern it asks only that the attribute be there, so a
     // match ending with it covers every record that has the attribute.
     let src = "(type status : (t/status ?status))
                (define (g job) (match job {status: :active} 1 {status: _} 2))";
-    assert_eq!(ty(src, "g"), "((\\ {status: any}) : integer)");
+    assert_eq!(ty(src, "g"), "((\\ {status: any}) : natural)");
     // `:else` is a keyword like any other: here, one case of two.
-    assert_eq!(ty("(define (h k) (match k :else 1 :other 2))", "h"), "((\\ [:else :other]) : integer)");
+    assert_eq!(ty("(define (h k) (match k :else 1 :other 2))", "h"), "((\\ [:else :other]) : natural)");
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn variants_grow_through_inference() {
     assert_eq!(ty("(define (done x) (if x :ok (error \"bad\")))", "done"), "((\\ boolean) : [(error text) :ok])");
     // A variant still reads as the record it is, and setting its own
     // attribute keeps it that variant.
-    assert_eq!(ty("(type n : (t/n ?n)) (define v (n {n: 1}))", "v"), "integer");
+    assert_eq!(ty("(type n : (t/n ?n)) (define v (n {n: 1}))", "v"), "natural");
     let src = "(define (retry r) (match r (ok n) (+ n 1) (error _) 0))
                (define again (retry (assoc (ok 1) conduct.result/ok: 2)))";
     assert_eq!(ty(src, "again"), "integer");

@@ -44,8 +44,8 @@ fn a_record_type_constructs() {
          (define bob (person name: \"Bob\" age: 40 phone: \"555\"))
          (define same {{name: \"Ada\", age: 36}})"
     ));
-    assert_eq!(cb.type_of("ada").unwrap(), "{age: integer, name: text}");
-    assert_eq!(cb.type_of("bob").unwrap(), "{age: integer, name: text, phone: text}");
+    assert_eq!(cb.type_of("ada").unwrap(), "{age: natural, name: text}");
+    assert_eq!(cb.type_of("bob").unwrap(), "{age: natural, name: text, phone: text}");
     // A constructor builds the record its attributes make.
     assert_eq!(cb.lookup("ada").unwrap().hash, cb.lookup("same").unwrap().hash);
     assert!(error(&format!("{PERSON} (define x (person \"Ada\"))")).contains("`person` needs `age:`"));
@@ -217,7 +217,7 @@ fn constructors_are_values() {
          (define pairs (map [\"Ada\"] each: (fn [n] (pair n age: 1))))
          (define make pair)"
     ));
-    assert_eq!(cb.type_of("oks").unwrap(), "(list (ok integer))");
+    assert_eq!(cb.type_of("oks").unwrap(), "(list (ok natural))");
     assert_eq!(cb.type_of("make").unwrap(), "((\\ (& ?a text) age: (& ?b integer)) : {age: ?b, name: ?a})");
     // With optional attributes, a constructor takes different labels at
     // different calls, so it is not a value yet.
@@ -253,7 +253,7 @@ fn a_type_declares_and_a_claim_signs() {
          (define origin (point 0 y: 0))
          (define (shift p) (point (+ (x p) 1) y: (y p)))",
     );
-    assert_eq!(cb.type_of("origin").unwrap(), "{x: integer, y: integer}");
+    assert_eq!(cb.type_of("origin").unwrap(), "{x: natural, y: natural}");
     assert_eq!(cb.type_of("shift").unwrap(), "((\\ {x: integer, y: (& ?a integer)}) : {x: integer, y: ?a})");
     // Attributes may be written in place, as a record writes its values.
     check("(type point : {io.gozala.point/x: integer io.gozala.point/y: integer}) (define o (point 0 y: 0))");
@@ -286,6 +286,6 @@ fn members_of_a_record_are_attributes() {
          (define l (line (point 0 y: 0) end: (point 1 y: 1)))
          (define (length l) (- (x (end l)) (x (start l))))"
     ));
-    assert_eq!(cb.type_of("l").unwrap(), "{end: {x: integer, y: integer}, start: {x: integer, y: integer}}");
+    assert_eq!(cb.type_of("l").unwrap(), "{end: {x: natural, y: natural}, start: {x: natural, y: natural}}");
     assert_eq!(cb.type_of("length").unwrap(), "((\\ {end: {x: integer}, start: {x: integer}}) : integer)");
 }

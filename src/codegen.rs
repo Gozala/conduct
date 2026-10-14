@@ -982,7 +982,7 @@ impl<'a> Builder<'a> {
 /// may reuse in place. Every other argument is borrowed.
 fn consumes(op: Op) -> Option<usize> {
     match op {
-        Op::Conj | Op::Assoc | Op::Dissoc => Some(0),
+        Op::Conj | Op::Assoc | Op::Dissoc | Op::SetAt | Op::InsertAt | Op::RemoveAt => Some(0),
         Op::Map | Op::Filter => Some(1),
         _ => None,
     }
@@ -1040,6 +1040,17 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::JsonInt => format!("(call $json_int {})", a[0]),
         Op::JsonBool => format!("(call $json_bool {})", a[0]),
         Op::JsonType => format!("(call $json_type {})", a[0]),
+        Op::BitAnd => format!("(call $bit_and {} {})", a[0], a[1]),
+        Op::BitOr => format!("(call $bit_or {} {})", a[0], a[1]),
+        Op::BitXor => format!("(call $bit_xor {} {})", a[0], a[1]),
+        Op::ShiftLeft => format!("(call $shift_left {} {})", a[0], a[1]),
+        Op::ShiftRight => format!("(call $shift_right {} {})", a[0], a[1]),
+        Op::CountOnes => format!("(call $count_ones {})", a[0]),
+        Op::Hash => format!("(call $hash {})", a[0]),
+        Op::SetAt => format!("(call $set_at {} {} {})", a[0], a[1], a[2]),
+        Op::InsertAt => format!("(call $insert_at {} {} {})", a[0], a[1], a[2]),
+        Op::RemoveAt => format!("(call $remove_at {} {})", a[0], a[1]),
+        Op::Item => format!("(call $item {} {} {})", a[0], a[1], a[2]),
         Op::HasField => unreachable!("a field test is compiled where it is met"),
         Op::Without => unreachable!("a record's rest is compiled where it is met"),
         Op::WithEnv => format!("(call $with_env {} {})", a[0], a[1]),
