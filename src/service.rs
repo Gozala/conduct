@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(shown.len(), 2);
         assert_eq!(shown[0].name, "twice");
         assert_eq!(shown[0].span, Span { start: 9, end: 14 });
-        assert_eq!(shown[0].ty, "((\\ integer) : integer)");
+        assert_eq!(shown[0].ty, "((\\ (& ?a integer)) : [?a natural])");
         assert_eq!(shown[1].ty, "natural");
     }
 

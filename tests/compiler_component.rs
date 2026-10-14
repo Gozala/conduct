@@ -92,7 +92,7 @@ async fn checks_and_places_problems() {
     let Val::Result(Ok(Some(list))) = &result else { panic!("{result:?}") };
     let Val::List(shown) = list.as_ref() else { panic!("{list:?}") };
     assert_eq!(field(&shown[0], "name"), &Val::String("twice".into()));
-    assert_eq!(field(&shown[0], "type"), &Val::String("((\\ integer) : integer)".into()));
+    assert_eq!(field(&shown[0], "type"), &Val::String("((\\ (& ?a integer)) : [?a natural])".into()));
     assert_eq!(field(&shown[0], "start"), &Val::U32(9));
 
     let result = compiler.call(true, "(define (f x) (g x))", "element-component").await;

@@ -13,7 +13,7 @@ fn ty(src: &str, name: &str) -> String {
 #[test]
 fn infers_basic_functions() {
     assert_eq!(ty("(define (id x) x)", "id"), "((\\ ?a) : ?a)");
-    assert_eq!(ty("(define (inc x) (+ x 1))", "inc"), "((\\ integer) : integer)");
+    assert_eq!(ty("(define (inc x) (+ x 1))", "inc"), "((\\ (& ?a integer)) : [?a natural])");
     assert_eq!(ty("(define (k x y) x)", "k"), "((\\ ?a y: any) : ?a)");
     assert_eq!(ty("(define (app f x) (f x))", "app"), "((\\ ((\\ ?a) : ?b) x: ?a) : ?b)");
 }
@@ -25,7 +25,7 @@ fn records_are_structural() {
     assert_eq!(ty(&format!("{claims} (define r {{name: \"x\", age: 3}})"), "r"), "{age: natural, name: text}");
     assert_eq!(
         ty(&format!("{claims} (define (both r) (+ (age r) (count (tags r))))"), "both"),
-        "((\\ {age: integer, tags: (list any)}) : integer)"
+        "((\\ {age: (& ?a integer), tags: (list any)}) : [?a natural])"
     );
 }
 
@@ -86,7 +86,7 @@ fn recursion_and_mutual_recursion() {
 fn higher_order_builtins() {
     assert_eq!(
         ty("(define (incs xs) (map xs each: (fn [x] (+ x 1))))", "incs"),
-        "((\\ (list integer)) : (list integer))"
+        "((\\ (list (& ?a integer))) : (list [?a natural]))"
     );
     assert_eq!(ty("(define mixed [1 \"a\" :x])", "mixed"), "(list [natural text :x])");
 }
@@ -98,7 +98,7 @@ fn record_update() {
     // The rest of the record passes through: `a` is whatever else it holds.
     assert_eq!(
         ty(&format!("{claims} (define (bump m) (assoc m n: (+ (n m) 1)))"), "bump"),
-        "((\\ {n: integer ?a ...}) : (?a with n: integer))"
+        "((\\ {n: (& ?b integer) ?a ...}) : (?a with n: [?b natural]))"
     );
     // Reading another field through an update reads the original's.
     assert_eq!(ty(&format!("{claims} (define (f m) (b (assoc m a: 1)))"), "f"), "((\\ {b: ?a}) : ?a)");
@@ -185,7 +185,7 @@ fn a_match_narrows_what_it_tested() {
                   (type status : (t/status ?status)) (type since : (t/since ?since))";
     // Matching an attribute binds it where the record has it.
     let src = format!("{claims} (define (inc job) (match job {{n: n}} (+ n 1) _ 0))");
-    assert_eq!(ty(&src, "inc"), "((\\ {n?: integer}) : integer)");
+    assert_eq!(ty(&src, "inc"), "((\\ {n?: (& ?a integer)}) : [?a natural])");
     let mut cb = Codebase::new();
     cb.add_source(&src).unwrap();
     assert!(cb.add_source("(define x (inc {id: 1}))").is_ok());
@@ -252,7 +252,7 @@ fn variants_grow_through_inference() {
     assert_eq!(ty("(type n : (t/n ?n)) (define v (n {n: 1}))", "v"), "natural");
     let src = "(define (retry r) (match r (ok n) (+ n 1) (error _) 0))
                (define again (retry (assoc (ok 1) conduct.result/ok: 2)))";
-    assert_eq!(ty(src, "again"), "integer");
+    assert_eq!(ty(src, "again"), "natural");
     let mut cb = Codebase::new();
     let err = cb
         .add_source(

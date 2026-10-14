@@ -2,6 +2,7 @@
 
 use crate::term::{Hash, Op, Pattern, Term};
 use crate::types::{Scheme, Solver, Ty, TypeError};
+use std::rc::Rc;
 
 pub enum Binding {
     Mono(Ty),
@@ -368,7 +369,20 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
     let var = || s.fresh_ty(level);
     let int2 = || vec![Ty::int(), Ty::int()];
     match op {
-        Op::Add | Op::Sub | Op::Mul | Op::Quot | Op::Rem => (int2(), Ty::int()),
+        // A sum, product or quotient of naturals is a natural, and of
+        // integers an integer: each argument flows into one variable
+        // bounded by integer, which is the result. A difference may be
+        // negative, and a remainder has the sign of the dividend.
+        Op::Add | Op::Mul | Op::Quot => {
+            let a = var();
+            let bounded = Ty::Inter(Rc::new(vec![a.clone(), Ty::int()]));
+            (vec![bounded.clone(), bounded], a)
+        }
+        Op::Sub => (int2(), Ty::int()),
+        Op::Rem => {
+            let a = var();
+            (vec![Ty::Inter(Rc::new(vec![a.clone(), Ty::int()])), Ty::int()], a)
+        }
         Op::Lt | Op::Gt | Op::Le | Op::Ge => (int2(), Ty::bool()),
         Op::Eq | Op::NotEq => (vec![Ty::Top, Ty::Top], Ty::bool()),
         Op::Not => (vec![Ty::bool()], Ty::bool()),

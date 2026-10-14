@@ -806,8 +806,15 @@ impl fmt::Display for Shallow<'_> {
                 write!(f, "[{}]", all.join(" "))
             }
             Ty::Inter(ts) => {
-                let all: Vec<String> = ts.iter().map(|t| Shallow(t).to_string()).collect();
-                write!(f, "(& {})", all.join(" "))
+                // A variable still being inferred bounds nothing a reader
+                // can act on: `(& ?a integer)` is said as `integer`.
+                let known: Vec<String> =
+                    ts.iter().filter(|t| !matches!(t, Ty::Var(_))).map(|t| Shallow(t).to_string()).collect();
+                match known.len() {
+                    0 => write!(f, "a value whose type is still being inferred"),
+                    1 => write!(f, "{}", known[0]),
+                    _ => write!(f, "(& {})", known.join(" ")),
+                }
             }
         }
     }

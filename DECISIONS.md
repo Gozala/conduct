@@ -3,6 +3,25 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Arithmetic is precise
+
+- **`+`, `*` and `quot` keep what they are given:** each argument flows
+  into one variable bounded by `integer`, which is the result, so
+  naturals in give a natural out and an integer anywhere gives an
+  integer. `rem` has the dividend's type (Wasm's `rem_s` takes the
+  dividend's sign); `-` answers an integer.
+- **Precision over shorter types.** The cost is that a function of a
+  number shows its bound and the union it answers, `((\ (& ?a integer)) :
+  [?a natural])` where it was `((\ integer) : integer)`. That type says
+  something true the short one could not: `fib` is now `((\ integer) :
+  natural)`, and conduct.map's `deeper` no longer converts its sum back
+  to a natural. Errors follow the same flow: a sum claimed as `text`
+  now reports that a natural is not a text, from its literal.
+- **What would shorten them:** printing a variable bounded by `integer`
+  that a union joins with `natural` as a named number type, or showing
+  a definition's type at the use site, where it is concrete. Neither is
+  done; both are display, not checking.
+
 ## Equal maps are the same value
 
 - **The question:** a hash trie's shape is fixed by its entries except
@@ -122,11 +141,8 @@ it. Newest first.
   view of its integers. A literal that is not negative is a natural, and
   flows wherever an integer does; a union of the two is an integer, and
   an intersection a natural.
-- **Arithmetic stays on integers.** `+` on two naturals answers an
-  integer. Answering a natural would need `+` to be generic over its
-  bound (`((\ (& ?a integer) ?a) : ?a)`), which shows a literal beside a
-  variable as `[?a natural]` everywhere numbers meet variables; the
-  precision is not worth that noise yet. `count`, the bit operations and
+- **Arithmetic stayed on integers at first,** for shorter types;
+  "Arithmetic is precise" reverses it. `count`, the bit operations and
   `hash` answer naturals.
 - **Numbers hold 62 bits for now.** Dialog's are 128-bit; widening needs
   a boxed form for what does not fit in a tagged `i64`. Arithmetic does

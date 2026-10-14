@@ -23,7 +23,7 @@ fn a_domain_names_the_definitions_of_a_source() {
     let mut cb = Codebase::new();
     let added = add(&mut cb, "(domain io.gozala.math) (define (double x) (* 2 x)) (define four (double 2))");
     assert_eq!(added, ["io.gozala.math/double", "io.gozala.math/four"]);
-    assert_eq!(cb.type_of("io.gozala.math/double").unwrap(), "((\\ integer) : integer)");
+    assert_eq!(cb.type_of("io.gozala.math/double").unwrap(), "((\\ (& ?a integer)) : [?a natural])");
     assert!(cb.type_of("double").is_none());
 }
 
