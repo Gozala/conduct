@@ -3,6 +3,32 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Naturals, and what a standard library builds on them
+
+- **`natural` is a subtype of `integer`,** as Dialog's `natural:` is a
+  view of its integers. A literal that is not negative is a natural, and
+  flows wherever an integer does; a union of the two is an integer, and
+  an intersection a natural.
+- **Arithmetic stays on integers.** `+` on two naturals answers an
+  integer. Answering a natural would need `+` to be generic over its
+  bound (`((\ (& ?a integer) ?a) : ?a)`), which shows a literal beside a
+  variable as `[?a natural]` everywhere numbers meet variables; the
+  precision is not worth that noise yet. `count`, the bit operations and
+  `hash` answer naturals.
+- **Numbers hold 62 bits for now.** Dialog's are 128-bit; widening needs
+  a boxed form for what does not fit in a tagged `i64`. Arithmetic does
+  not yet check for overflow; `shift-left` drops the bits past 62.
+- **Bits and hashes are built in:** `bit-and`, `bit-or`, `bit-xor`,
+  `shift-left`, `shift-right`, `count-ones`, and `hash`, a 32-bit FNV-1a
+  over a value's structure, so equal values hash alike. They are what a
+  hash array mapped trie needs, which is the first library to port.
+- **Lists are updated by index:** `(item xs at: i or: d)`, `set-at`,
+  `insert-at`, `remove-at`. An index past the end is not an error: `item`
+  answers the default, `set-at` and `remove-at` answer the list as it
+  is, and `insert-at` appends. Each consumes its list and changes it in
+  place when nothing else holds it, as `conj` does.
+- **Hexadecimal and binary literals,** `0x1f` and `0b1010`.
+
 ## What is shown can be claimed
 
 - **Every type the checker shows is a claim that checks,** and shown

@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(shown[0].name, "twice");
         assert_eq!(shown[0].span, Span { start: 9, end: 14 });
         assert_eq!(shown[0].ty, "((\\ integer) : integer)");
-        assert_eq!(shown[1].ty, "integer");
+        assert_eq!(shown[1].ty, "natural");
     }
 
     #[test]

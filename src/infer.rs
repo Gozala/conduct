@@ -36,6 +36,9 @@ impl Infer<'_> {
     pub fn term(&self, term: &Term, env: &mut Vec<Binding>, level: u32) -> Result<Ty> {
         let s = self.solver;
         Ok(match term {
+            // A number that is not negative is a natural, which flows
+            // wherever an integer does.
+            Term::Int(n) if *n >= 0 => Ty::nat(),
             Term::Int(_) => Ty::int(),
             Term::Str(_) => Ty::str(),
             Term::Bool(_) => Ty::bool(),
@@ -370,7 +373,23 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         Op::Eq | Op::NotEq => (vec![Ty::Top, Ty::Top], Ty::bool()),
         Op::Not => (vec![Ty::bool()], Ty::bool()),
         Op::Str => (vec![Ty::Top; argc], Ty::str()),
-        Op::Count => (vec![Ty::list(Ty::Top)], Ty::int()),
+        Op::Count => (vec![Ty::list(Ty::Top)], Ty::nat()),
+        Op::BitAnd | Op::BitOr | Op::BitXor | Op::ShiftLeft | Op::ShiftRight => (vec![Ty::nat(), Ty::nat()], Ty::nat()),
+        Op::CountOnes => (vec![Ty::nat()], Ty::nat()),
+        Op::Hash => (vec![Ty::Top], Ty::nat()),
+        Op::SetAt | Op::InsertAt => {
+            let a = var();
+            (vec![Ty::list(a.clone()), Ty::nat(), a.clone()], Ty::list(a))
+        }
+        // The default comes back for an index past the end.
+        Op::Item => {
+            let a = var();
+            (vec![Ty::list(a.clone()), Ty::nat(), a.clone()], a)
+        }
+        Op::RemoveAt => {
+            let a = var();
+            (vec![Ty::list(a.clone()), Ty::nat()], Ty::list(a))
+        }
         // The default comes back for an empty list.
         Op::First => {
             let a = var();

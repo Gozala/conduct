@@ -252,6 +252,17 @@ impl Reader<'_> {
             return Ok(Sexp::Keyword(name.to_string(), span));
         }
         let digits = text.strip_prefix('-').unwrap_or(text);
+        // `0x1f` and `0b101`: a number in hexadecimal or binary, as a
+        // bitmap is easier to read.
+        if let Some((radix, rest)) =
+            digits.strip_prefix("0x").map(|r| (16, r)).or_else(|| digits.strip_prefix("0b").map(|r| (2, r)))
+        {
+            let negative = text.starts_with('-');
+            return match i64::from_str_radix(rest, radix) {
+                Ok(n) if !rest.is_empty() && n < (1i64 << 62) => Ok(Sexp::Int(if negative { -n } else { n }, span)),
+                _ => self.error(format!("`{text}` is not a number that fits in 63 bits"), start),
+            };
+        }
         if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
             return match text.parse::<i64>() {
                 Ok(n) if (-(1i64 << 62)..(1i64 << 62)).contains(&n) => Ok(Sexp::Int(n, span)),
