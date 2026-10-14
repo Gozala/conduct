@@ -2,6 +2,7 @@
 name = "conduct"
 version = "0.1.0"
 edition = "2024"
+license = "MPL-2.0"
 description = "A prototype language: Lisp syntax, hash-addressed definitions, inferred lattice types, compiled to Wasm components"
 
 [lib]

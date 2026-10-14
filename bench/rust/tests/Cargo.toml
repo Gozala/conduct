@@ -2,6 +2,7 @@
 name = "element-tests"
 version = "0.1.0"
 edition = "2024"
+license = "MPL-2.0"
 publish = false
 description = "Drives the Rust elements' components through the Wasm Component Model Polyfill, natively"
 
