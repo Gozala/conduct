@@ -200,6 +200,7 @@ The design the language is heading for is in
 (bit-and a b) (bit-or a b) (bit-xor a b)                    ; bits of naturals
 (shift-left a 5) (shift-right a 5) (count-ones a)
 (hash value)                                                ; a 32-bit natural; equal values hash alike
+(natural (- n 1) or: 0)                                     ; an integer as a natural, or the default
 (item xs at: 2 or: d) (set-at xs 2 x)                       ; a list's item by index, or the default
 (insert-at xs 2 x) (remove-at xs 2)                         ; updated in place when unique
 ```
@@ -587,6 +588,29 @@ name to write instead; a built-in's whole name is `conduct/count`. There
 are no imports: what a name refers to is decided when its source is
 added, and stored as a hash, so a definition added later never changes
 what an earlier one meant.
+
+### Libraries
+
+Libraries are written in conduct and live in `lib/`; each names its own
+domain, and a codebase adds one as it adds any source
+(`conduct::library::MAP`). There is one so far:
+
+- **`conduct.map`** (`lib/map.cdt`), a persistent hash map: a port of
+  [perma-map](https://github.com/Gozala/perma-map), a hash array mapped
+  trie after CHAMP. Keys and values are any values; keys are compared
+  with `=` and placed by `hash`.
+
+```
+(define m (put (put empty key: "a" value: 1) key: "b" value: 2))
+(lookup m key: "a" or: 0)       ; 1
+(contains? m key: "c")          ; false
+(size (remove m key: "a"))      ; 1
+(entries m)                     ; [{entry-key: .., entry-value: ..} ..], in no fixed order
+(from-entries (entries m))      ; the same map: maps of equal entries are `=`
+```
+
+A map nothing else holds is updated in place, so perma-map's transient
+builders have no counterpart.
 
 ### Compiled code
 

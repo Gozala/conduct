@@ -1051,6 +1051,7 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::InsertAt => format!("(call $insert_at {} {} {})", a[0], a[1], a[2]),
         Op::RemoveAt => format!("(call $remove_at {} {})", a[0], a[1]),
         Op::Item => format!("(call $item {} {} {})", a[0], a[1], a[2]),
+        Op::Natural => format!("(call $natural_or {} {})", a[0], a[1]),
         Op::HasField => unreachable!("a field test is compiled where it is met"),
         Op::Without => unreachable!("a record's rest is compiled where it is met"),
         Op::WithEnv => format!("(call $with_env {} {})", a[0], a[1]),
