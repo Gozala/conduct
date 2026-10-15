@@ -700,6 +700,30 @@ A recursive parser is a function of the parse state, `(define (value s)
 (to-text (array [(string "é") :null]))   ; "[\"é\",null]"
 ```
 
+Its values are the type `json-value`, which is made of itself.
+
+- **`conduct.codec`** (`lib/codec.cdt`, needs `conduct.parser` and
+  `conduct.json`), codecs: a port of
+  [elm-codec](https://github.com/miniBill/elm-codec), one description of
+  a value that encodes it to JSON and decodes it back. Its names are
+  elm-codec's, read with the domain: `codec/text`, `codec/list`,
+  `codec/map`. Records and variants are described by their attributes
+  and constructors, and variants are written as elm-codec writes them,
+  so the two read each other's JSON:
+
+```
+(define point (record-codec [x "x" codec/integer] [y "y" codec/integer] [label "label" codec/text :optional]))
+(define shape (variant-codec [circle "Circle" codec/natural] [:empty "Empty"]))
+(encode-text {x: 1, y: 2} with: point)          ; "{\"x\":1,\"y\":2}"
+(decode-text "{\"x\": 1}" with: point)          ; (error (in-member {failed-name: "y", ..}))
+(encode-text (circle 2) with: shape)           ; "{\"tag\":\"Circle\",\"args\":[2]}"
+(error-text e)                                 ; "the value at `json.y` fails with :missing-member: .."
+```
+
+A codec that refers to itself is written with `codec/recursive`, and
+what it decodes has the type its attributes make: `point` decodes to
+`{label?: text, x: integer, y: integer}`.
+
 ### Compiled code
 
 `codegen` writes WebAssembly text and assembles it with the `wat` crate.
@@ -866,7 +890,9 @@ polyfill with stack switching, JSPI, or nested turns.
    that need capabilities themselves: the coroutine compilation they
    need.
 2. **Narrowing in later clauses**: a clause does not learn that the ones
-   before it failed. That needs MLstruct's negation types.
+   before it failed, so `(match v :null .. x (f x))` still sees `:null`
+   in `x`, and conduct.codec has no `nullable` yet. That needs
+   MLstruct's negation types.
 3. **The codebase in Dialog**: definitions as facts, names as assertions
    that point at hashes.
 

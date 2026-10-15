@@ -282,7 +282,7 @@ impl Infer<'_> {
             let field = s.fresh_ty(level);
             s.constrain(&t, &Ty::record([(name.clone(), field.clone())]))?;
             let (inner, binders) = self.narrow(field, rest, pattern, level)?;
-            return Ok((Ty::update(t, name.clone(), inner), binders));
+            return Ok((Ty::matched(t, name.clone(), inner), binders));
         }
         Ok(match pattern {
             Pattern::Keyword(k) => (Ty::keys([k.clone()]), vec![]),
@@ -326,7 +326,7 @@ impl Infer<'_> {
                     let field = s.fresh_ty(level);
                     s.constrain(&t, &Ty::if_has(name.clone(), field.clone()))?;
                     let (inner, bound) = self.narrow(field, &[], p, level)?;
-                    out = Ty::update(out, name.clone(), inner);
+                    out = Ty::matched(out, name.clone(), inner);
                     binders.extend(bound);
                 }
                 (out, binders)

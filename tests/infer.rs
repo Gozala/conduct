@@ -210,6 +210,17 @@ fn a_match_narrows_what_it_tested() {
     // it, so with a `_` clause the value may be anything.
     let src = format!("{claims} (define (active job) (match job {{status: :active}} (status job) _ :other))");
     assert_eq!(ty(&src, "active"), "((\\ any) : [:active :other])");
+    // A variant a pattern matched is still one of the variants it was,
+    // so it goes where they all may.
+    let src = "(type (num ?n) : {(t.j/num ?n)})
+               (type (txt ?t) : {(t.j/txt ?t)})
+               (type jv : [(num integer) (txt text)])
+               (claim (keep jv) : jv)
+               (define (keep j) j)
+               (claim (positive jv) : jv)
+               (define (positive j) (match j (num n) (if (>= n 0) j (keep j)) _ (keep j)))
+               (define (same j) (match j (num n) (keep j) _ (keep j)))";
+    assert_eq!(ty(src, "same"), "((\\ [(num integer) (txt text)]) : [(num integer) (txt text)])");
 }
 
 #[test]

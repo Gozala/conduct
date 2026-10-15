@@ -287,6 +287,38 @@ it. Newest first.
   `murmur.x64.hash126`, which does not exist, so the default
   configuration cannot hash a key without a hasher passed in.
 
+## conduct.codec, after elm-codec
+
+- **One description, both ways.** A codec is `{codec-encode
+  codec-decode}` over conduct.json values, as elm-codec's is over
+  `Json.Value`. The port keeps its names, `text`, `list`, `map`,
+  `and-then`, `one-of`, which the naming rules allow now: inside the
+  library its own come first (the built-in `map` is `conduct/map`
+  there), and users write `codec/map`.
+- **Records and variants by macros.** elm-codec builds a record with a
+  constructor function and a variant with a pattern-matching function,
+  neither of which conduct has. `record-codec` writes a getter and a
+  setter for each attribute (`(fn [r] (x r))`, `(fn [r] (fn [v] (assoc
+  r x: v)))`) and `variant-codec` a nested `match` and a table of
+  decoders, from rows of `[attribute "name" codec]` and `[constructor
+  "Tag" codec]`. What a record codec decodes grows a field at each
+  step, `(record-builder ?w building: ?p)`, and the codec needs only
+  that what it builds fits what it encodes, which subtyping checks.
+- **Optional fields are absent attributes,** left out of the JSON when
+  missing, so there is no `maybe`, and `nullable` waits on narrowing in
+  later clauses.
+- **Variants are elm-codec's JSON,** `{"tag": .., "args": [..]}`, so an
+  Elm app and conduct read each other's values. A keyword is a variant
+  with no arguments.
+- **Errors are Json.Decode's,** where and why: `in-member`, `in-item`,
+  `none-of`, `failure` with a keyword reason, and `not-json` for text.
+  `error-text` writes them as Elm's `errorToString` does.
+- **A pattern that matched a variant leaves it one of its variants**
+  (found writing this): `(match j (num n) (keep j) ..)` used to tie
+  `j` to `num` alone, so `j` could not go where `jv` was asked. A
+  narrowed value now asks nothing of the cases its pattern excluded
+  when it flows into a variant.
+
 ## Names are as written; a domain only writes prefixes
 
 - **Every definition is its hash, and a name is only a pointer to one.**

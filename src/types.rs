@@ -71,8 +71,10 @@ pub enum Ty {
     Effect,
     Var(Var),
     /// A record with one field set: what `(assoc r :k v)` returns. It
-    /// only flows into things.
-    Update(Rc<Ty>, String, Rc<Ty>),
+    /// only flows into things. Set by a pattern that matched the field
+    /// (the last part), it is a value known to have it, so it is the
+    /// variant of that field if it is a variant at all.
+    Update(Rc<Ty>, String, Rc<Ty>, bool),
     /// One of a finite set of variants, each a key with a payload or,
     /// for a keyword, without one. A keyword literal is the set of
     /// itself, and a record literal of one field, `{:ok t}`, the variant
@@ -193,6 +195,15 @@ impl Ty {
     }
 
     pub fn update(record: Ty, field: String, value: Ty) -> Ty {
+        Ty::set(record, field, value, false)
+    }
+
+    /// `record` where a pattern matched its `field` as `value`.
+    pub fn matched(record: Ty, field: String, value: Ty) -> Ty {
+        Ty::set(record, field, value, true)
+    }
+
+    fn set(record: Ty, field: String, value: Ty, matched: bool) -> Ty {
         // Setting a field again sets it once, however many other fields
         // were set in between: `(r with a: x, b: y) with a: z` is
         // `(r with b: y) with a: z`. Otherwise a record updated in a loop
@@ -200,12 +211,12 @@ impl Ty {
         // a type as deep as the chain.
         fn without(t: Ty, field: &str) -> Ty {
             match t {
-                Ty::Update(inner, k, _) if k == field => (*inner).clone(),
-                Ty::Update(inner, k, v) => Ty::Update(Rc::new(without((*inner).clone(), field)), k, v),
+                Ty::Update(inner, k, _, _) if k == field => (*inner).clone(),
+                Ty::Update(inner, k, v, m) => Ty::Update(Rc::new(without((*inner).clone(), field)), k, v, m),
                 other => other,
             }
         }
-        Ty::Update(Rc::new(without(record, &field)), field, Rc::new(value))
+        Ty::Update(Rc::new(without(record, &field)), field, Rc::new(value), matched)
     }
 
     /// The highest level of any variable in the type.
@@ -219,7 +230,7 @@ impl Ty {
             Ty::List(t) | Ty::Dict(t) | Ty::Opt(t) => t.level(),
             Ty::Task(t, c) => t.level().max(c.level()),
             Ty::CapsPlus(c, _) => c.level(),
-            Ty::Update(r, _, v) => r.level().max(v.level()),
+            Ty::Update(r, _, v, _) => r.level().max(v.level()),
             Ty::Tags(tags) => tags.values().flatten().map(Ty::level).max().unwrap_or(0),
             Ty::IfHas(_, t) => t.level(),
             Ty::Union(ts) | Ty::Inter(ts) => ts.iter().map(Ty::level).max().unwrap_or(0),
@@ -243,7 +254,7 @@ impl Ty {
             Ty::Task(t, _) => (17, Rc::as_ptr(t) as *const u8 as usize),
             Ty::CapsPlus(c, _) => (18, Rc::as_ptr(c) as *const u8 as usize),
             Ty::Dict(t) => (9, Rc::as_ptr(t) as *const u8 as usize),
-            Ty::Update(r, _, _) => (11, Rc::as_ptr(r) as *const u8 as usize),
+            Ty::Update(r, _, _, _) => (11, Rc::as_ptr(r) as *const u8 as usize),
             Ty::Tags(k) => (12, Rc::as_ptr(k) as *const u8 as usize),
             Ty::IfHas(_, t) => (15, Rc::as_ptr(t) as *const u8 as usize),
             Ty::Caps(c) => (13, Rc::as_ptr(c) as *const u8 as usize),
@@ -506,11 +517,11 @@ impl Solver {
                 .unwrap_or_else(|| Err(TypeError(format!("{} is not one of {}", Shallow(lhs), Shallow(rhs))))),
             // A record with a field set fits another with that field set
             // where the fields fit, and the records do but for that field.
-            (Ty::Update(r0, k0, v0), Ty::Update(r1, k1, v1)) if k0 == k1 => {
+            (Ty::Update(r0, k0, v0, _), Ty::Update(r1, k1, v1, _)) if k0 == k1 => {
                 self.go(v0, v1, cache)?;
                 self.go(r0, &Ty::update((**r1).clone(), k1.clone(), Ty::opt(Ty::Top)), cache)
             }
-            (_, Ty::Update(r1, k, v1)) if !matches!(lhs, Ty::Var(_)) => {
+            (_, Ty::Update(r1, k, v1, _)) if !matches!(lhs, Ty::Var(_)) => {
                 self.go(lhs, &relax(r1, k), cache)?;
                 // Taken out, or anything if there, it asks nothing more.
                 match &**v1 {
@@ -531,7 +542,7 @@ impl Solver {
                 Ty::Top => self.go(&Ty::Top, t, cache),
                 _ => Ok(()),
             },
-            (Ty::Update(record, field, value), _) if !matches!(rhs, Ty::Var(_)) => match rhs {
+            (Ty::Update(record, field, value, matched), _) if !matches!(rhs, Ty::Var(_)) => match rhs {
                 // The updated field comes from the new value; every other
                 // field the reader wants comes from the original record.
                 Ty::Record(wanted) => {
@@ -557,6 +568,12 @@ impl Solver {
                 Ty::Tags(tags) => match tags.get(field) {
                     // `{}` with one field set is the variant of that field.
                     Some(Some(payload)) if matches!(**record, Ty::Prim(Prim::Empty)) => self.go(value, payload, cache),
+                    // A value a pattern found the field in: among
+                    // variants, that variant, whatever else it might
+                    // have been.
+                    Some(Some(payload)) if *matched && !matches!(**record, Ty::Record(_)) => {
+                        self.go(value, payload, cache)
+                    }
                     Some(Some(payload)) => {
                         self.go(value, payload, cache)?;
                         self.go(record, &Ty::variant(field.clone(), Ty::Top), cache)
@@ -653,8 +670,8 @@ impl Solver {
                 Ty::tags(tags.iter().map(|(k, p)| (k.clone(), p.as_ref().map(|p| self.extrude(p, pol, level, cache)))))
             }
             Ty::IfHas(k, t) => Ty::if_has(k.clone(), self.extrude(t, pol, level, cache)),
-            Ty::Update(r, k, v) => {
-                Ty::update(self.extrude(r, pol, level, cache), k.clone(), self.extrude(v, pol, level, cache))
+            Ty::Update(r, k, v, m) => {
+                Ty::set(self.extrude(r, pol, level, cache), k.clone(), self.extrude(v, pol, level, cache), *m)
             }
             Ty::Union(ts) => Ty::Union(Rc::new(ts.iter().map(|t| self.extrude(t, pol, level, cache)).collect())),
             Ty::Inter(ts) => Ty::Inter(Rc::new(ts.iter().map(|t| self.extrude(t, pol, level, cache)).collect())),
@@ -724,8 +741,8 @@ impl Solver {
                 Ty::tags(tags.iter().map(|(k, p)| (k.clone(), p.as_ref().map(|p| self.freshen(p, limit, level, map)))))
             }
             Ty::IfHas(k, t) => Ty::if_has(k.clone(), self.freshen(t, limit, level, map)),
-            Ty::Update(r, k, v) => {
-                Ty::update(self.freshen(r, limit, level, map), k.clone(), self.freshen(v, limit, level, map))
+            Ty::Update(r, k, v, m) => {
+                Ty::set(self.freshen(r, limit, level, map), k.clone(), self.freshen(v, limit, level, map), *m)
             }
             Ty::Union(ts) => Ty::Union(Rc::new(ts.iter().map(|t| self.freshen(t, limit, level, map)).collect())),
             Ty::Inter(ts) => Ty::Inter(Rc::new(ts.iter().map(|t| self.freshen(t, limit, level, map)).collect())),
@@ -805,7 +822,7 @@ impl fmt::Display for Shallow<'_> {
             Ty::CapsPlus(c, l) => write!(f, "{} and {}", Shallow(c), caps_text(l)),
             Ty::Dict(_) => write!(f, "a dictionary"),
             Ty::Opt(t) => write!(f, "{} if present", Shallow(t)),
-            Ty::Update(r, k, _) => write!(f, "{} with `{k}` set", Shallow(r)),
+            Ty::Update(r, k, _, _) => write!(f, "{} with `{k}` set", Shallow(r)),
             Ty::Tags(k) => write!(f, "{}", tags_text(k)),
             Ty::IfHas(k, _) => write!(f, "{{{k}?: ..}}"),
             Ty::Union(ts) => {
@@ -929,7 +946,7 @@ fn coalesce_go(
         Ty::CapsPlus(c, _) => coalesce_go(c, pol, in_process, recursive, next),
         Ty::Dict(t) => Type::Dict(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
         Ty::Opt(t) => Type::Opt(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
-        Ty::Update(r, k, v) => Type::Update(
+        Ty::Update(r, k, v, _) => Type::Update(
             Box::new(coalesce_go(r, pol, in_process, recursive, next)),
             k.clone(),
             Box::new(coalesce_go(v, pol, in_process, recursive, next)),

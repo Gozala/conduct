@@ -5,6 +5,19 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
+## conduct.codec's names are elm-codec's
+
+- **Chosen:** `codec/text`, `codec/list`, `codec/map` rather than
+  `text-codec`; the bare `map` in user code is resolved by type between
+  the built-in and the codec's. This is the reading-versus-writing
+  question from names: if you want text to always say which `map`, the
+  library should take suffixed names instead.
+- **Variants:** elm-codec's `{"tag", "args"}` shape, for interop, rather
+  than `{"circle": 2}` (serde's default). Open if Dialog wants another.
+- **Next:** the same codecs over bytes, once bytes land, as you asked;
+  elm-serialize's one codec for both formats is the model to compare
+  against.
+
 ## A claim's hash names its types, not what they are
 
 - **Found:** `(claim (size jv) : natural)` hashes the same whichever

@@ -15,3 +15,8 @@ pub const ROUTE: &str = include_str!("../lib/route.cdt");
 /// `conduct.json`: JSON values read and written in conduct. Needs
 /// [`PARSER`].
 pub const JSON: &str = include_str!("../lib/json.cdt");
+
+/// `conduct.codec`: one description of a value that encodes it to JSON
+/// and decodes it back, a port of elm-codec. Needs [`PARSER`] and
+/// [`JSON`].
+pub const CODEC: &str = include_str!("../lib/codec.cdt");

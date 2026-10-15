@@ -1,0 +1,426 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at https://mozilla.org/MPL/2.0/.
+;;
+;; conduct.codec: one description of a value that both encodes it to JSON
+;; and decodes it back. A port of elm-codec
+;; (https://github.com/miniBill/elm-codec), Copyright (c) 2019 Leonardo
+;; Taglialegne, under the MIT license in LICENSE-elm-codec beside this
+;; file.
+;;
+;;   (type x : (geo/x integer))
+;;   (type y : (geo/y integer))
+;;   (define point (record-codec [x "x" codec/integer] [y "y" codec/integer]))
+;;   (encode-text {x: 1, y: 2} with: point)      ; "{\"x\":1,\"y\":2}"
+;;   (decode-text "{\"x\":1,\"y\":2}" with: point) ; (ok {x: 1, y: 2})
+;;
+;; A codec is `{codec-encode codec-decode}`: a function to a conduct.json
+;; value, and one back that answers `(ok value)` or `(error why)`. Names
+;; are elm-codec's, read with their domain: `codec/text`, `codec/list`,
+;; `codec/map`.
+;;
+;; Where this departs from elm-codec:
+;; - Records and variants are built by the macros `record-codec` and
+;;   `variant-codec` from their attributes and constructors, since conduct
+;;   has neither positional constructors nor a pattern-matching function
+;;   to pass. `start-record`, `field`, `optional-field` and
+;;   `build-record` are what they expand to, for building one by hand.
+;; - There is no Maybe: an optional field is an attribute a record may
+;;   not have, left out of the JSON when absent. There is no `nullable`
+;;   or `maybe` yet: encoding `[?a :null]` needs a `match` to take
+;;   `:null` out of what its other branch sees, which the checker cannot
+;;   say yet.
+;; - A variant carries one value, so `variant-codec` has no `variant0`
+;;   to `variant8`: a variant that carries nothing is a keyword. Variants
+;;   are written as elm-codec writes them, `{"tag": .., "args": [..]}`,
+;;   so the two read each other's JSON.
+;; - Decoding fails with a `decode-error` that says where and why, as
+;;   Json.Decode's `Error` does, with a keyword for why.
+;; - There are no floats, tuples, arrays, sets or dictionaries yet.
+;;
+;; Requires conduct.parser and conduct.json.
+
+(domain conduct.codec
+
+;; Why a JSON value did not decode
+
+(type failed-name : (conduct.codec/failed-name text))
+(type failed-index : (conduct.codec/failed-index natural))
+(type failed-cause : (conduct.codec/failed-cause decode-error))
+(type failed-reason : (conduct.codec/failed-reason keyword))
+(type failed-value : (conduct.codec/failed-value json-value))
+(type (in-member ?x) : {(conduct.codec/in-member ?x)})
+(type (in-item ?x) : {(conduct.codec/in-item ?x)})
+(type (none-of ?x) : {(conduct.codec/none-of ?x)})
+(type (failure ?x) : {(conduct.codec/failure ?x)})
+(type (not-json ?x) : {(conduct.codec/not-json ?x)})
+
+;; Where in the value decoding failed, and why: Json.Decode's `Error`,
+;; and, for text, where it stopped being JSON.
+(type decode-error : [(in-member {failed-name failed-cause})
+                      (in-item {failed-index failed-cause})
+                      (none-of (list decode-error))
+                      (failure {failed-reason failed-value})
+                      (not-json (list (parse-dead-end json-problem)))])
+
+;; Codecs
+
+(type codec-encode : (conduct.codec/encode ?encode))
+(type codec-decode : (conduct.codec/decode ?decode))
+(type (codec ?a) : {codec-encode: ((\ ?a) : json-value),
+                    codec-decode: ((\ json-value) : (result ?a error: decode-error))})
+
+;; What may be missing: a value that is there, or `:absent`.
+(type (present ?v) : {(conduct.codec/present ?v)})
+
+;; Running
+
+;; `value` as JSON.
+(claim (encode ?a with: (codec ?a)) : json-value)
+(define (encode value with) ((codec-encode with) value))
+
+;; The value `j` holds, `(ok value)`, or `(error why)`.
+(claim (decode json-value with: (codec ?a)) : (result ?a error: decode-error))
+(define (decode j with) ((codec-decode with) j))
+
+;; `value` as JSON text.
+(claim (encode-text ?a with: (codec ?a)) : text)
+(define (encode-text value with) (to-text (encode value with: with)))
+
+;; The value JSON text holds: `(ok value)`, `(error (not-json dead-ends))`
+;; where it is not JSON, or `(error why)` where it does not decode.
+(claim (decode-text text with: (codec ?a)) : (result ?a error: decode-error))
+(define (decode-text t with)
+  (match (from-text t)
+    (ok j) (decode j with: with)
+    (error ends) (error (not-json ends))))
+
+;; A codec from an encoder and a decoder.
+(claim (build ((\ ?a) : json-value) decoder: ((\ json-value) : (result ?a error: decode-error))) : (codec ?a))
+(define (build encoder decoder) {codec-encode: encoder, codec-decode: decoder})
+
+;; A failure to decode `found`, for `reason`.
+(claim (fails keyword found: json-value) : (result nothing error: decode-error))
+(define (fails reason found) (error (failure {failed-reason: reason, failed-value: found})))
+
+;; Primitives
+
+(claim text : (codec text))
+(define text
+  (build (fn [t] (string t))
+    decoder: (fn [j] (match j (string t) (ok t) _ (fails :expecting-text found: j)))))
+
+(claim boolean : (codec boolean))
+(define boolean
+  (build (fn [b] (bool b))
+    decoder: (fn [j] (match j (bool b) (ok b) _ (fails :expecting-boolean found: j)))))
+
+(claim integer : (codec integer))
+(define integer
+  (build (fn [n] (number n))
+    decoder: (fn [j] (match j (number n) (ok n) _ (fails :expecting-integer found: j)))))
+
+;; An integer that is not negative.
+(claim natural : (codec natural))
+(define natural
+  (build (fn [n] (number n))
+    decoder: (fn [j]
+               (match j
+                 (number n) (if (>= n 0) (ok (conduct/natural n or: 0)) (fails :expecting-natural found: j))
+                 _ (fails :expecting-natural found: j)))))
+
+;; The JSON as it is: elm-codec's `value`.
+(claim raw : (codec json-value))
+(define raw (build (fn [j] j) decoder: (fn [j] (ok j))))
+
+;; Each of `cases` encoded with `c`, as `enum-encoded` stands for
+;; `enum-decoded`. What no case decodes to encodes as `null`.
+(type enum-encoded : (conduct.codec/enum-encoded ?encoded))
+(type enum-decoded : (conduct.codec/enum-decoded ?decoded))
+(claim (enum (codec ?a) cases: (list {enum-encoded: ?a, enum-decoded: ?b})) : (codec ?b))
+(define (enum c cases)
+  (build (fn [v] (enum-encode v cases: cases with: c))
+    decoder: (fn [j]
+               (match ((codec-decode c) j)
+                 (error e) (error e)
+                 (ok k) (enum-decode k cases: cases found: j)))))
+
+(claim (enum-encode ?b cases: (list {enum-encoded: ?a, enum-decoded: ?b}) with: (codec ?a)) : json-value)
+(define (enum-encode v cases with)
+  (match cases
+    [] :null
+    [c rest ...] (if (= (enum-decoded c) v)
+                   ((codec-encode with) (enum-encoded c))
+                   (enum-encode v cases: rest with: with))))
+
+(claim (enum-decode ?a cases: (list {enum-encoded: ?a, enum-decoded: ?b}) found: json-value) : (result ?b error: decode-error))
+(define (enum-decode k cases found)
+  (match cases
+    [] (fails :unknown-case found: found)
+    [c rest ...] (if (= (enum-encoded c) k) (ok (enum-decoded c)) (enum-decode k cases: rest found: found))))
+
+;; Data structures
+
+(claim (list (codec ?a)) : (codec (list ?a)))
+(define (list c)
+  (build (fn [xs] (array (conduct/map xs each: (codec-encode c))))
+    decoder: (fn [j]
+               (match j
+                 (array items) (decode-items items with: (codec-decode c) at: 0 done: [])
+                 _ (fails :expecting-array found: j)))))
+
+(claim (decode-items (list json-value) with: ((\ json-value) : (result ?a error: decode-error)) at: natural done: (list ?a))
+  : (result (list ?a) error: decode-error))
+(define (decode-items items with at done)
+  (match items
+    [] (ok done)
+    [j rest ...]
+    (match (with j)
+      (ok x) (decode-items rest with: with at: (+ at 1) done: (conj done x))
+      (error e) (error (in-item {failed-index: at, failed-cause: e})))))
+
+;; Mapping
+
+;; `c`, with what it decodes passed through `to`, and what is encoded
+;; through `from` first.
+(claim (map (codec ?a) to: ((\ ?a) : ?b) from: ((\ ?b) : ?a)) : (codec ?b))
+(define (map c to from)
+  (build (fn [v] ((codec-encode c) (from v)))
+    decoder: (fn [j]
+               (match ((codec-decode c) j)
+                 (ok x) (ok (to x))
+                 (error e) (error e)))))
+
+;; A codec chosen by what `c` decoded: decode with `c`, then with the
+;; codec `to` makes of it; encode `from` of a value with `c`.
+(claim (and-then (codec ?a) to: ((\ ?a) : (codec ?b)) from: ((\ ?b) : ?a)) : (codec ?b))
+(define (and-then c to from)
+  (build (fn [v] ((codec-encode c) (from v)))
+    decoder: (fn [j]
+               (match ((codec-decode c) j)
+                 (ok x) ((codec-decode (to x)) j)
+                 (error e) (error e)))))
+
+;; Encode with `c`; decode with `c`, or else with each of `fallbacks` in
+;; turn, which is how a codec reads what older versions of it wrote.
+(claim (one-of (codec ?a) fallbacks: (list (codec ?a))) : (codec ?a))
+(define (one-of c fallbacks)
+  (build (codec-encode c) decoder: (fn [j] (decode-first (concat [c] fallbacks) j: j errors: []))))
+
+(claim (decode-first (list (codec ?a)) j: json-value errors: (list decode-error)) : (result ?a error: decode-error))
+(define (decode-first cs j errors)
+  (match cs
+    [] (error (none-of errors))
+    [c rest ...]
+    (match ((codec-decode c) j)
+      (ok x) (ok x)
+      (error e) (decode-first rest j: j errors: (conj errors e)))))
+
+;; Fancy
+
+;; Decodes as `value` whatever the JSON; encodes as `null`.
+(claim (succeed ?a) : (codec ?a))
+(define (succeed value) (build (fn [_] :null) decoder: (fn [_] (ok value))))
+
+;; Fails to decode, for `reason`; encodes as `null`.
+(claim (fail keyword) : (codec nothing))
+(define (fail reason) (build (fn [_] :null) decoder: (fn [j] (fails reason found: j))))
+
+;; The codec `make` answers, made when it is used: a codec that refers
+;; to itself is written with it, or with `recursive`.
+(claim (lazy ((\ any) : (codec ?a))) : (codec ?a))
+(define (lazy make)
+  (build (fn [v] ((codec-encode (make {})) v))
+    decoder: (fn [j] ((codec-decode (make {})) j))))
+
+;; The codec `f` makes of itself: `(recursive (fn [tree] ..))`.
+(claim (recursive ((\ (codec ?a)) : (codec ?a))) : (codec ?a))
+(define (recursive f) (f (lazy (fn [_] (recursive f)))))
+
+;; Records
+
+(type builder-encode : (conduct.codec/builder-encode ?encode))
+(type builder-decode : (conduct.codec/builder-decode ?decode))
+
+;; A record codec being built: it encodes a `?w` as members, and decodes
+;; members into a `?p`, which grows by a field at each step until it is
+;; the record.
+(type (record-builder ?w building: ?p) : {builder-encode: ((\ ?w) : (list json-member)),
+                                          builder-decode: ((\ (list json-member)) : (result ?p error: decode-error))})
+
+;; A record codec that starts from `empty` and has no fields yet.
+(claim (start-record ?p) : (record-builder any building: ?p))
+(define (start-record empty) {builder-encode: (fn [_] []), builder-decode: (fn [_] (ok empty))})
+
+;; `b` with a member `name`, read from a record with `get`, encoded with
+;; `codec`, and added to the record being decoded with `set`.
+(claim (field (record-builder ?w building: ?p) name: text get: ((\ ?w) : ?f) set: ((\ ?p) : ((\ ?f) : ?q)) codec: (codec ?f))
+  : (record-builder ?w building: ?q))
+(define (field b name get set codec: c)
+  {builder-encode: (fn [w] (conj ((builder-encode b) w) {member-name: name, member-value: ((codec-encode c) (get w))})),
+   builder-decode:
+   (fn [members]
+     (match ((builder-decode b) members)
+       (error e) (error e)
+       (ok p)
+       (match (find-member members name: name)
+         :absent (error (in-member {failed-name: name,
+                                    failed-cause: (failure {failed-reason: :missing-member, failed-value: (object members)})}))
+         (present j)
+         (match ((codec-decode c) j)
+           (ok f) (ok ((set p) f))
+           (error e) (error (in-member {failed-name: name, failed-cause: e}))))))})
+
+;; `field`, for a member that may be missing: `get` answers `(present
+;; value)` or `:absent`, and an absent value is left out of the JSON and
+;; out of the decoded record.
+(claim (optional-field (record-builder ?w building: ?p) name: text get: ((\ ?w) : [(present ?f) :absent])
+                       set: ((\ ?p) : ((\ ?f) : ?q)) codec: (codec ?f))
+  : (record-builder ?w building: [?p ?q]))
+(define (optional-field b name get set codec: c)
+  {builder-encode:
+   (fn [w]
+     (match (get w)
+       (present f) (conj ((builder-encode b) w) {member-name: name, member-value: ((codec-encode c) f)})
+       :absent ((builder-encode b) w))),
+   builder-decode:
+   (fn [members]
+     (match ((builder-decode b) members)
+       (error e) (error e)
+       (ok p)
+       (match (find-member members name: name)
+         :absent (ok p)
+         (present j)
+         (match ((codec-decode c) j)
+           (ok f) (ok ((set p) f))
+           (error e) (error (in-member {failed-name: name, failed-cause: e}))))))})
+
+;; `b` with a member `name` that is always `value`: encoded, and checked
+;; when decoding, as a `"type"` member is.
+(claim (constant-field (record-builder ?w building: ?p) name: text value: ?f codec: (codec ?f)) : (record-builder ?w building: ?p))
+(define (constant-field b name value codec: c)
+  {builder-encode: (fn [w] (conj ((builder-encode b) w) {member-name: name, member-value: ((codec-encode c) value)})),
+   builder-decode:
+   (fn [members]
+     (match ((builder-decode b) members)
+       (error e) (error e)
+       (ok p)
+       (match (find-member members name: name)
+         :absent (error (in-member {failed-name: name,
+                                    failed-cause: (failure {failed-reason: :missing-member, failed-value: (object members)})}))
+         (present j)
+         (match ((codec-decode c) j)
+           (ok f) (if (= f value)
+                    (ok p)
+                    (error (in-member {failed-name: name, failed-cause: (failure {failed-reason: :unexpected-value, failed-value: j})})))
+           (error e) (error (in-member {failed-name: name, failed-cause: e}))))))})
+
+;; The codec `b` has built, of JSON objects.
+(claim (build-record (record-builder ?a building: ?a)) : (codec ?a))
+(define (build-record b)
+  (build (fn [v] (object ((builder-encode b) v)))
+    decoder: (fn [j]
+               (match j
+                 (object members) ((builder-decode b) members)
+                 _ (fails :expecting-object found: j)))))
+
+(claim (find-member (list json-member) name: text) : [(present json-value) :absent])
+(define (find-member members name)
+  (match members
+    [] :absent
+    [m rest ...] (if (= (member-name m) name) (present (member-value m)) (find-member rest name: name))))
+
+;; `(record-codec [attribute "name" codec] ..)`: a codec of records of
+;; the attributes named, each as the JSON member `name`. A row ending in
+;; `:optional` is an attribute the record may lack.
+(macro (record-codec row ...) (./build-record (record-fields (./start-record {}) row ...)))
+
+(macro (record-fields b) b)
+(macro (record-fields b [attr key c] rest ...)
+  (record-fields (./field b name: key get: (fn [r] (attr r)) set: (fn [r] (fn [v] (assoc r attr: v))) codec: c)
+                 rest ...))
+(macro (record-fields b [attr key c :optional] rest ...)
+  (record-fields (./optional-field b name: key get: (fn [r] (match r {attr: v} (present v) _ :absent))
+                                   set: (fn [r] (fn [v] (assoc r attr: v))) codec: c)
+                 rest ...))
+
+;; Variants
+
+(type variant-tag : (conduct.codec/variant-tag text))
+(type variant-decode : (conduct.codec/variant-decode ?decode))
+(type (variant-case ?a) : {variant-tag: text, variant-decode: ((\ (list json-value)) : (result ?a error: decode-error))})
+
+;; A variant as elm-codec writes it: `{"tag": tag, "args": [..]}`.
+(claim (tagged text args: (list json-value)) : json-value)
+(define (tagged tag args)
+  (object [{member-name: "tag", member-value: (string tag)} {member-name: "args", member-value: (array args)}]))
+
+;; The value of the case `j`'s tag names.
+(claim (decode-variant json-value cases: (list (variant-case ?a))) : (result ?a error: decode-error))
+(define (decode-variant j cases)
+  (match j
+    (object members)
+    (match (find-member members name: "tag")
+      (present (string tag))
+      (match (find-member members name: "args")
+        (present (array args)) (decode-case tag args: args cases: cases found: j)
+        _ (error (in-member {failed-name: "args", failed-cause: (failure {failed-reason: :expecting-array, failed-value: j})})))
+      _ (error (in-member {failed-name: "tag", failed-cause: (failure {failed-reason: :expecting-text, failed-value: j})})))
+    _ (fails :expecting-object found: j)))
+
+(claim (decode-case text args: (list json-value) cases: (list (variant-case ?a)) found: json-value) : (result ?a error: decode-error))
+(define (decode-case tag args cases found)
+  (match cases
+    [] (fails :unknown-tag found: found)
+    [c rest ...] (if (= (variant-tag c) tag)
+                   ((variant-decode c) args)
+                   (decode-case tag args: args cases: rest found: found))))
+
+;; The first of a variant's arguments, decoded with `with`.
+(claim (first-arg (list json-value) with: (codec ?a)) : (result ?a error: decode-error))
+(define (first-arg args with)
+  (match args
+    [j _ ...]
+    (match ((codec-decode with) j)
+      (ok x) (ok x)
+      (error e) (error (in-member {failed-name: "args", failed-cause: (in-item {failed-index: 0, failed-cause: e})})))
+    [] (error (in-member {failed-name: "args", failed-cause: (failure {failed-reason: :expecting-argument,
+                                                                         failed-value: (array args)})}))))
+
+;; `(variant-codec [constructor "tag" codec] [:keyword "tag"] ..)`: a
+;; codec of the variants named, each carrying a value encoded with its
+;; codec, or, for a keyword, nothing. A value of none of them encodes as
+;; `null`.
+(macro (variant-codec row ...)
+  (./build (fn [v] (variant-encode v row ...))
+    decoder: (fn [j] (./decode-variant j cases: [(variant-case-of row) ...]))))
+
+(macro (variant-encode v) :null)
+(macro (variant-encode v [ctor tag c] rest ...)
+  (match v (ctor x) (./tagged tag args: [((codec-encode c) x)]) _ (variant-encode v rest ...)))
+(macro (variant-encode v [kw tag] rest ...)
+  (match v kw (./tagged tag args: []) _ (variant-encode v rest ...)))
+
+(macro (variant-case-of [ctor tag c])
+  {variant-tag: tag,
+   variant-decode: (fn [args] (match (./first-arg args with: c) (ok x) (ok (ctor x)) (error e) (error e)))})
+(macro (variant-case-of [kw tag]) {variant-tag: tag, variant-decode: (fn [_] (ok kw))})
+
+;; Errors
+
+;; `e` as a sentence, as Json.Decode's `errorToString` writes one.
+(claim (error-text decode-error) : text)
+(define (error-text e) (error-text-at e path: "json"))
+
+(claim (error-text-at decode-error path: text) : text)
+(define (error-text-at e path)
+  (match e
+    (in-member {failed-name: n, failed-cause: inner}) (error-text-at inner path: (str path "." n))
+    (in-item {failed-index: i, failed-cause: inner}) (error-text-at inner path: (str path "[" i "]"))
+    (none-of errors) (str "none of " (count errors) " ways to decode the value at `" path "` fits: "
+                          (join (conduct/map errors each: error-text) with: "; "))
+    (failure {failed-reason: why, failed-value: j})
+    (str "the value at `" path "` fails with " why ": " (to-text j))
+    (not-json ends) (match ends
+                      [] "the text is not JSON"
+                      [end _ ...] (str "the text is not JSON at " (row end) ":" (col end) ": " (reason end))))))
