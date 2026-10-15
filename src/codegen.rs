@@ -1100,6 +1100,7 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::Occurs => bool(format!("(call $occurs {} {} {})", a[0], a[1], a[2])),
         Op::IndexOf => format!("(call $index_of {} {} {} {})", a[0], a[1], a[2], a[3]),
         Op::FromCodePoint => format!("(call $from_code_point {})", a[0]),
+        Op::Join => format!("(call $str_join {} {})", a[0], a[1]),
         Op::HasField => unreachable!("a field test is compiled where it is met"),
         Op::Without => unreachable!("a record's rest is compiled where it is met"),
         Op::WithEnv => format!("(call $with_env {} {})", a[0], a[1]),

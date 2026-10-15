@@ -1301,6 +1301,34 @@
         (br $next)))
     (i64.extend_i32_u (local.get $p)))
 
+  (func $str_join (param $xs i64) (param $sep i64) (result i64)
+    ;; One allocation: the lengths first, then the bytes.
+    (local $n i32) (local $i i32) (local $total i32) (local $m i32) (local $p i32) (local $at i32) (local $x i64)
+    (local.set $n (call $len (local.get $xs)))
+    (local.set $m (call $len (local.get $sep)))
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $total (i32.add (local.get $total) (call $len (call $list_get (local.get $xs) (local.get $i)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    (if (i32.gt_u (local.get $n) (i32.const 1))
+      (then (local.set $total (i32.add (local.get $total) (i32.mul (local.get $m) (i32.sub (local.get $n) (i32.const 1)))))))
+    (local.set $p (call $obj (i32.const 1) (local.get $total) (local.get $total)))
+    (local.set $at (i32.add (local.get $p) (i32.const 8)))
+    (local.set $i (i32.const 0))
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (if (i32.gt_u (local.get $i) (i32.const 0))
+        (then
+          (memory.copy (local.get $at) (call $str_data (local.get $sep)) (local.get $m))
+          (local.set $at (i32.add (local.get $at) (local.get $m)))))
+      (local.set $x (call $list_get (local.get $xs) (local.get $i)))
+      (memory.copy (local.get $at) (call $str_data (local.get $x)) (call $len (local.get $x)))
+      (local.set $at (i32.add (local.get $at) (call $len (local.get $x))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    (i64.extend_i32_u (local.get $p)))
+
   ;; JSON. Parsed values are ordinary values: objects are dictionaries,
   ;; arrays lists, numbers integers (a fraction or exponent is dropped),
   ;; `null` the absent value, which only a `Json` can hold. A malformed

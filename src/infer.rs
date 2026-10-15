@@ -410,6 +410,7 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
             (vec![Ty::str(), Ty::str(), Ty::nat(), d.clone()], Ty::Union(Rc::new(vec![Ty::nat(), d])))
         }
         Op::FromCodePoint => (vec![Ty::nat()], Ty::str()),
+        Op::Join => (vec![Ty::list(Ty::str()), Ty::str()], Ty::str()),
         // The default comes back for an index past the end.
         Op::Item => {
             let a = var();
