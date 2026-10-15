@@ -62,12 +62,75 @@
   {segment-parse: (int :expecting-natural invalid: :invalid-natural),
    segment-format: (fn [n] (str n))})
 
-;; Text up to the next `/`, `?` or `#`, at least one code point of it.
+;; Text up to the next `/`, `?` or `#`, at least one byte of it, with
+;; each `%XX` read as the byte it stands for and the bytes as UTF-8; and
+;; formatted with every byte a path segment may not hold as `%XX`, so
+;; the text survives a `/` or a space in it.
 (define text-segment
-  {segment-parse: (get-chomped (skip (chomp-if segment-char? expecting: :expecting-text) then: (chomp-while segment-char?))),
-   segment-format: (fn [t] t)})
+  {segment-parse:
+   (and-then (get-chomped (skip (chomp-if segment-char? expecting: :expecting-text) then: (chomp-while segment-char?)))
+     with: (fn [raw]
+             (match (percent-decode raw)
+               (percent-decoded t) (succeed t)
+               :absent (fail :invalid-percent-encoding)))),
+   segment-format: (fn [t] (percent-encode t))})
 
 (define (segment-char? c) (not (or (= c 47) (= c 63) (= c 35))))
+
+;; Percent-encoding (RFC 3986)
+
+(type (percent-decoded ?t) : {(conduct.route/percent-decoded ?t)})
+
+;; The text `raw` stands for, each `%XX` the byte XX in hexadecimal:
+;; `(percent-decoded text)`, or `:absent` where a `%` has no two hex
+;; digits after it or the bytes are not UTF-8.
+(claim (percent-decode text) : [(percent-decoded text) :absent])
+(define (percent-decode raw) (decode-from (utf8 raw) at: 0 out: []))
+
+(claim (decode-from (list byte) at: natural out: (list byte)) : [(percent-decoded text) :absent])
+(define (decode-from bs at out)
+  (if (>= at (count bs))
+    ;; Nothing that is not UTF-8 reads as "", so "" means no bytes.
+    (let [t (from-utf8 out or: "")] (if (and (= t "") (> (count out) 0)) :absent (percent-decoded t)))
+    (let [b (item bs at: at or: 0)]
+      (if (= b 37)
+        (let [high (hex-digit (item bs at: (+ at 1) or: 0))
+              low (hex-digit (item bs at: (+ at 2) or: 0))]
+          (if (or (= high 16) (= low 16))
+            :absent
+            (decode-from bs at: (+ at 3) out: (conj out (byte (+ (* high 16) low) or: 0)))))
+        (decode-from bs at: (+ at 1) out: (conj out b))))))
+
+;; The value of a hexadecimal digit's byte, or 16 for any other byte.
+(claim (hex-digit byte) : natural)
+(define (hex-digit c)
+  (cond
+    (and (>= c 48) (<= c 57)) (natural (- c 48) or: 16)
+    (and (>= c 65) (<= c 70)) (natural (- c 55) or: 16)
+    (and (>= c 97) (<= c 102)) (natural (- c 87) or: 16)
+    :else 16))
+
+;; `t` as a path segment: every byte but a path character's as `%XX`.
+(claim (percent-encode text) : text)
+(define (percent-encode t) (join (map (utf8 t) each: escape-byte) with: ""))
+
+(claim (escape-byte byte) : text)
+(define (escape-byte b)
+  (if (path-char? b)
+    (from-code-point b)
+    (str "%" (slice "0123456789ABCDEF" from: (shift-right b 4) to: (+ (shift-right b 4) 1))
+             (slice "0123456789ABCDEF" from: (bit-and b 15) to: (+ (bit-and b 15) 1)))))
+
+;; RFC 3986's `pchar` but `%`: unreserved characters, sub-delimiters,
+;; `:` and `@`.
+(claim (path-char? byte) : boolean)
+(define (path-char? b)
+  (or (and (>= b 97) (<= b 122))
+      (and (>= b 65) (<= b 90))
+      (and (>= b 48) (<= b 57))
+      (= b 45) (= b 46) (= b 95) (= b 126)
+      (= b 33) (= b 36) (= b 38) (= b 39) (= b 40) (= b 41) (= b 42) (= b 43) (= b 44) (= b 59) (= b 61)
+      (= b 58) (= b 64)))
 
 ;; Routers
 

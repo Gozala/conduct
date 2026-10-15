@@ -709,6 +709,10 @@ A recursive parser is a function of the parse state, `(define (value s)
 (dispatch [(on calc handler: (fn [p] (+ (a p) (b p))))] path: "/calculator/2/+/40")   ; (ok 42)
 ```
 
+A `text-segment` decodes `%XX` escapes as UTF-8 and writes them back
+where a path needs them: `"/users/J%C3%A9r%C3%B4me%20B"` parses to
+`"Jérôme B"`, and formats back to the same path.
+
 - **`conduct.json`** (`lib/json.cdt`, needs `conduct.parser`): JSON read
   with the parser and written back, as tagged values `:null`, `(bool b)`,
   `(number n)`, `(decimal t)`, `(string t)`, `(array items)` and `(object

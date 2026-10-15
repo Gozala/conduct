@@ -123,3 +123,30 @@ fn a_router_answers_with_the_first_route_that_matches() {
     assert_eq!(value(&r[2]), Value::Int(0));
     assert!(is_error(&r[3]));
 }
+
+#[test]
+fn text_segments_are_percent_encoded() {
+    let out = run(&format!(
+        "{ROUTES}
+         (define out [(match-path posts path: \"/users/J%C3%A9r%C3%B4me%20B/posts/1\")
+                      (match-path posts path: \"/users/a%2Fb/posts/1\")
+                      (match-path posts path: \"/users/%E9/posts/1\")
+                      (match-path posts path: \"/users/%4/posts/1\")
+                      (format-path posts params: {{user: \"Jérôme B/x?#%\", post: 1}})
+                      (format-path posts params: {{user: \"a-b_c.d~e:f@g!$&'()*+,;=\", post: 2}})])"
+    ));
+    let Value::List(r) = out else { panic!() };
+    assert_eq!(ok(&r[0]), vec![pair("blog/post", Value::Int(1)), pair("blog/user", Value::Str("Jérôme B".into()))]);
+    assert_eq!(ok(&r[1]), vec![pair("blog/post", Value::Int(1)), pair("blog/user", Value::Str("a/b".into()))]);
+    assert!(is_error(&r[2]), "not UTF-8: {:?}", r[2]);
+    assert!(is_error(&r[3]), "one hex digit: {:?}", r[3]);
+    assert_eq!(r[4], Value::Str("/users/J%C3%A9r%C3%B4me%20B%2Fx%3F%23%25/posts/1".into()));
+    assert_eq!(r[5], Value::Str("/users/a-b_c.d~e:f@g!$&'()*+,;=/posts/2".into()));
+    // What a route formats, it parses back.
+    let out = run(&format!(
+        "{ROUTES}
+         (define p {{user: \"Jérôme B/x?#%\", post: 1}})
+         (define out (= (match-path posts path: (format-path posts params: p)) (ok p)))"
+    ));
+    assert_eq!(out, Value::Bool(true));
+}

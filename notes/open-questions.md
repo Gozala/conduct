@@ -128,11 +128,13 @@ stands.
 
 ## Route segments
 
-- **Chosen:** segments are raw text up to `/`, `?` or `#`, with no
-  percent-encoding, and routes match paths only (no method, no query).
-- **Why:** decoding `%C3%A9` needs bytes-to-text, which waits on the
-  bytes type; methods and queries belong with the route world's request
-  record, which the route world does not yet build from a route value.
+- **Chosen:** a text segment is the bytes up to `/`, `?` or `#`, with
+  `%XX` decoded and the bytes read as UTF-8; formatting escapes every
+  byte that is not RFC 3986's `pchar`, so text with `/` or a space in it
+  round-trips. Routes match paths only (no method, no query).
+- **Why no method or query yet:** they belong with the route world's
+  request record, which the route world does not yet build from a route
+  value.
 
 ## Macro labels shadow literal labels
 
