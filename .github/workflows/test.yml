@@ -1,8 +1,10 @@
 name: Test
 
+# Every pushed branch is tested, so work can be checked before it is
+# squashed onto main without opening a pull request.
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
 
 jobs:
