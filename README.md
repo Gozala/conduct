@@ -744,6 +744,17 @@ A codec that refers to itself is written with `codec/recursive`, and
 what it decodes has the type its attributes make: `point` decodes to
 `{label?: text, x: integer, y: integer}`.
 
+The same codec writes and reads bytes, after
+[elm-serialize](https://github.com/MartinSStewart/elm-serialize):
+compact, LEB128 numbers, lengths before text and lists, fields in
+order, a variant's position before what it carries.
+
+```
+(encode-bytes {x: 1, y: 2} with: point)             ; [2 4 0]: zigzag 1, zigzag 2, no label
+(decode-bytes [2 4 1 2 104 105] with: point)        ; (ok {x: 1, y: 2, label: "hi"})
+(encode-bytes (circle 2) with: shape)               ; [0 2]
+```
+
 ### Compiled code
 
 `codegen` writes WebAssembly text and assembles it with the `wat` crate.

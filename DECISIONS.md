@@ -337,6 +337,17 @@ it. Newest first.
 - **Variants are elm-codec's JSON,** `{"tag": .., "args": [..]}`, so an
   Elm app and conduct read each other's values. A keyword is a variant
   with no arguments.
+- **Bytes from the same codec** (after elm-serialize, which does this
+  for Elm): a codec is four functions, JSON both ways and bytes both
+  ways, and every combinator builds all four, so one description serves
+  both. The bytes say nothing of the shape: LEB128 naturals, zigzag
+  integers, lengths before text, lists and bytes, record fields in
+  order with a byte before an optional one, and a variant's position
+  among its rows before what it carries. Compact, and as brittle as
+  that implies: reordering rows or fields changes what old bytes mean.
+  Writing appends to a list of bytes the caller passes in, which grows
+  in place, and reading takes an offset and answers the next, so neither
+  copies what it has already done.
 - **Errors are Json.Decode's,** where and why: `in-member`, `in-item`,
   `none-of`, `failure` with a keyword reason, and `not-json` for text.
   `error-text` writes them as Elm's `errorToString` does.

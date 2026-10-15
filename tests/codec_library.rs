@@ -245,3 +245,171 @@ fn a_codec_of_itself() {
     assert_eq!(out[1], deep);
     assert_eq!(out[2], "the value at `json.args[0][0].args[0]` fails with :expecting-natural: -1");
 }
+
+/// Encode each value with `codec` as bytes, and decode the bytes back:
+/// the bytes, and what decoding them wrote back as JSON text.
+fn bytes_both_ways(prelude: &str, codec: &str, values: &[&str]) -> Vec<(Value, String)> {
+    let Value::List(items) = run(&format!(
+        "{prelude}
+         (define (both v)
+           (let [b (encode-bytes v with: {codec})]
+             [b (match (decode-bytes b with: {codec}) (ok back) (encode-text back with: {codec}) (error e) (error-text e))]))
+         (define out [{}])",
+        values.iter().map(|v| format!("(both {v})")).collect::<Vec<_>>().join(" ")
+    )) else {
+        panic!()
+    };
+    items
+        .into_iter()
+        .map(|pair| match pair {
+            Value::List(mut p) => {
+                let Value::Str(back) = p.pop().unwrap() else { panic!() };
+                (p.pop().unwrap(), back)
+            }
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+fn bytes(ns: &[i64]) -> Value {
+    Value::List(ns.iter().map(|n| Value::Int(*n)).collect())
+}
+
+/// Decode each list of bytes with `codec`: what it decoded, as JSON
+/// text, or why it did not.
+fn read_bytes(prelude: &str, codec: &str, inputs: &[&str]) -> Vec<String> {
+    texts(&format!(
+        "{prelude}
+         (define (back b) (match (decode-bytes b with: {codec}) (ok v) (encode-text v with: {codec}) (error e) (error-text e)))
+         (define out [{}])",
+        inputs.iter().map(|i| format!("(back {i})")).collect::<Vec<_>>().join(" ")
+    ))
+}
+
+#[test]
+fn primitives_as_bytes() {
+    let out = bytes_both_ways("", "codec/natural", &["0", "127", "128", "300", "4611686018427387903"]);
+    assert_eq!(
+        out.iter().map(|(b, _)| b.clone()).collect::<Vec<_>>(),
+        vec![
+            bytes(&[0]),
+            bytes(&[127]),
+            bytes(&[128, 1]),
+            bytes(&[172, 2]),
+            bytes(&[255, 255, 255, 255, 255, 255, 255, 255, 63]),
+        ]
+    );
+    assert_eq!(
+        out.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(),
+        ["0", "127", "128", "300", "4611686018427387903"]
+    );
+    let out = bytes_both_ways("", "codec/integer", &["0", "-1", "1", "-64", "64", "-1000"]);
+    assert_eq!(
+        out.iter().map(|(b, _)| b.clone()).collect::<Vec<_>>(),
+        vec![bytes(&[0]), bytes(&[1]), bytes(&[2]), bytes(&[127]), bytes(&[128, 1]), bytes(&[207, 15]),]
+    );
+    assert_eq!(out[5].1, "-1000");
+    let out = bytes_both_ways("", "codec/text", &["\"\"", "\"hé\""]);
+    assert_eq!(out, vec![(bytes(&[0]), "\"\"".into()), (bytes(&[3, 104, 195, 169]), "\"hé\"".into())]);
+    let out = bytes_both_ways("", "(codec/list codec/boolean)", &["[true false]", "[]"]);
+    assert_eq!(out, vec![(bytes(&[2, 1, 0]), "[true,false]".into()), (bytes(&[0]), "[]".into())]);
+    let out = bytes_both_ways("", "codec/bytes", &["(utf8 \"ab\")"]);
+    assert_eq!(out, vec![(bytes(&[2, 97, 98]), "[97,98]".into())]);
+    let out = bytes_both_ways("", "codec/raw", &["(object [{member-name: \"a\", member-value: :null}])"]);
+    assert_eq!(out[0].1, "{\"a\":null}");
+    assert_eq!(
+        read_bytes("", "codec/natural", &["[]", "[128]", "[1 2]", "[255 255 255 255 255 255 255 255 255 1]"]),
+        [
+            "the bytes of `json` fail at offset 0 with :unexpected-end",
+            "the bytes of `json` fail at offset 1 with :unexpected-end",
+            "the bytes of `json` fail at offset 1 with :trailing-bytes",
+            "the bytes of `json` fail at offset 0 with :natural-too-large",
+        ]
+    );
+    assert_eq!(
+        read_bytes("", "codec/text", &["[2 0xc3]", "[1 0xc3]", "[2 0xc3 0xa9]"]),
+        [
+            "the bytes of `json` fail at offset 2 with :unexpected-end",
+            "the bytes of `json` fail at offset 1 with :invalid-utf8",
+            "\"é\"",
+        ]
+    );
+    assert_eq!(
+        read_bytes("", "codec/boolean", &["[2]"]),
+        ["the bytes of `json` fail at offset 0 with :expecting-boolean"]
+    );
+}
+
+#[test]
+fn records_and_variants_as_bytes() {
+    let out = bytes_both_ways(POINT, "point", &["{x: 1, y: 2}", "{x: -1, y: 2, label: \"hi\"}"]);
+    assert_eq!(
+        out,
+        vec![
+            (bytes(&[2, 4, 0]), "{\"x\":1,\"y\":2}".into()),
+            (bytes(&[1, 4, 1, 2, 104, 105]), "{\"x\":-1,\"y\":2,\"label\":\"hi\"}".into()),
+        ]
+    );
+    assert_eq!(
+        read_bytes(POINT, "point", &["[2 4]", "[2 4 7]", "[2 0x80]"]),
+        [
+            "the bytes of `json` fail at offset 2 with :unexpected-end",
+            "the bytes of `json.label` fail at offset 2 with :expecting-presence",
+            "the bytes of `json.y` fail at offset 2 with :unexpected-end",
+        ]
+    );
+    let out = bytes_both_ways(SHAPE, "shape", &["(circle 2)", "(square [1 2])", ":empty"]);
+    assert_eq!(
+        out,
+        vec![
+            (bytes(&[0, 2]), "{\"tag\":\"Circle\",\"args\":[2]}".into()),
+            (bytes(&[1, 2, 1, 2]), "{\"tag\":\"Square\",\"args\":[[1,2]]}".into()),
+            (bytes(&[2]), "{\"tag\":\"Empty\",\"args\":[]}".into()),
+        ]
+    );
+    assert_eq!(read_bytes(SHAPE, "shape", &["[3]"]), ["the bytes of `json` fail at offset 0 with :unknown-tag"]);
+}
+
+#[test]
+fn every_codec_reads_its_own_bytes() {
+    let prelude = "
+        (type x : (geo/x integer))
+        (type (leaf ?v) : {(t.tree/leaf ?v)})
+        (type (node ?c) : {(t.tree/node ?c)})
+        (define tree
+          (codec/recursive (fn [tree] (variant-codec [leaf \"Leaf\" codec/natural] [node \"Node\" (codec/list tree)]))))
+        (define color (codec/enum codec/text cases: [{enum-encoded: \"r\", enum-decoded: :red}
+                                                     {enum-encoded: \"g\", enum-decoded: :green}]))
+        (define tagged-point
+          (build-record (field (constant-field (start-record {}) name: \"type\" value: \"point\" codec: codec/text)
+                               name: \"x\" get: (fn [r] (x r)) set: (fn [r] (fn [v] (assoc r x: v))) codec: codec/integer)))";
+    let out = bytes_both_ways(prelude, "tree", &["(node [(leaf 1) (node [])])"]);
+    assert_eq!(
+        out,
+        vec![(
+            bytes(&[1, 2, 0, 1, 1, 0]),
+            "{\"tag\":\"Node\",\"args\":[[{\"tag\":\"Leaf\",\"args\":[1]},{\"tag\":\"Node\",\"args\":[[]]}]]}".into()
+        )]
+    );
+    assert_eq!(bytes_both_ways(prelude, "color", &[":green"]), vec![(bytes(&[1, 103]), "\"g\"".into())]);
+    assert_eq!(
+        bytes_both_ways(prelude, "tagged-point", &["{x: 3}"]),
+        vec![(bytes(&[5, 112, 111, 105, 110, 116, 6]), "{\"type\":\"point\",\"x\":3}".into())]
+    );
+    assert_eq!(
+        read_bytes(prelude, "tagged-point", &["[4 108 105 110 101 6]"]),
+        ["the bytes of `json.type` fail at offset 0 with :unexpected-value"]
+    );
+    // What a codec writes is bytes, kept one to a byte.
+    let src = format!("{POINT} (define out (encode-bytes {{x: 1, y: 2, label: \"hi\"}} with: point))");
+    let cb = codebase(&src);
+    let wat = codegen::compile_exports(&cb, &[("out", cb.names["out"])]).unwrap();
+    let engine = Engine::default();
+    let module = Module::new(&engine, wat::parse_str(&wat).unwrap()).unwrap();
+    let mut store = Store::new(&engine, ());
+    let instance = Instance::new(&mut store, &module, &[]).unwrap();
+    let out = instance.get_typed_func::<(), i64>(&mut store, "out").unwrap().call(&mut store, ()).unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let kind = u32::from_le_bytes(memory.data(&store)[out as usize..out as usize + 4].try_into().unwrap());
+    assert_eq!(kind, codegen::KIND_BYTES);
+}

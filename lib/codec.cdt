@@ -2,8 +2,8 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ;;
-;; conduct.codec: one description of a value that both encodes it to JSON
-;; and decodes it back. A port of elm-codec
+;; conduct.codec: one description of a value that encodes it to JSON or
+;; to bytes, and decodes it back from either. A port of elm-codec
 ;; (https://github.com/miniBill/elm-codec), Copyright (c) 2019 Leonardo
 ;; Taglialegne, under the MIT license in LICENSE-elm-codec beside this
 ;; file.
@@ -13,11 +13,23 @@
 ;;   (define point (record-codec [x "x" codec/integer] [y "y" codec/integer]))
 ;;   (encode-text {x: 1, y: 2} with: point)      ; "{\"x\":1,\"y\":2}"
 ;;   (decode-text "{\"x\":1,\"y\":2}" with: point) ; (ok {x: 1, y: 2})
+;;   (encode-bytes {x: 1, y: 2} with: point)     ; [2 4]
+;;   (decode-bytes [2 4] with: point)            ; (ok {x: 1, y: 2})
 ;;
-;; A codec is `{codec-encode codec-decode}`: a function to a conduct.json
-;; value, and one back that answers `(ok value)` or `(error why)`. Names
+;; A codec is `{codec-encode codec-decode codec-write codec-read}`: a
+;; function to a conduct.json value and one back, and a function that
+;; writes a value's bytes after others and one that reads them from an
+;; offset. Each way back answers `(ok value)` or `(error why)`. Names
 ;; are elm-codec's, read with their domain: `codec/text`, `codec/list`,
 ;; `codec/map`.
+;;
+;; The bytes are compact and say nothing of the shape, as
+;; elm-serialize's are: a natural is LEB128, an integer zigzag LEB128,
+;; text and lists their length then their contents, a record its fields
+;; in order (an optional one after a byte saying whether it is there),
+;; and a variant its case's position among the codec's cases, then what
+;; it carries. So a codec that reorders cases or fields reads old bytes
+;; wrong; one that only adds cases at the end reads them right.
 ;;
 ;; Where this departs from elm-codec:
 ;; - Records and variants are built by the macros `record-codec` and
@@ -36,6 +48,8 @@
 ;;   so the two read each other's JSON.
 ;; - Decoding fails with a `decode-error` that says where and why, as
 ;;   Json.Decode's `Error` does, with a keyword for why.
+;; - Bytes, after elm-serialize (https://github.com/MartinSStewart/elm-serialize),
+;;   from the same codec.
 ;; - There are no floats, tuples, arrays, sets or dictionaries yet.
 ;;
 ;; Requires conduct.parser and conduct.json.
@@ -49,26 +63,40 @@
 (type failed-cause : (conduct.codec/failed-cause decode-error))
 (type failed-reason : (conduct.codec/failed-reason keyword))
 (type failed-value : (conduct.codec/failed-value json-value))
+(type failed-offset : (conduct.codec/failed-offset natural))
 (type (in-member ?x) : {(conduct.codec/in-member ?x)})
 (type (in-item ?x) : {(conduct.codec/in-item ?x)})
 (type (none-of ?x) : {(conduct.codec/none-of ?x)})
 (type (failure ?x) : {(conduct.codec/failure ?x)})
 (type (not-json ?x) : {(conduct.codec/not-json ?x)})
+(type (bad-bytes ?x) : {(conduct.codec/bad-bytes ?x)})
 
-;; Where in the value decoding failed, and why: Json.Decode's `Error`,
-;; and, for text, where it stopped being JSON.
+;; Where in the value decoding failed, and why: Json.Decode's `Error`;
+;; for text, where it stopped being JSON; and for bytes, the offset
+;; where reading failed.
 (type decode-error : [(in-member {failed-name failed-cause})
                       (in-item {failed-index failed-cause})
                       (none-of (list decode-error))
                       (failure {failed-reason failed-value})
-                      (not-json (list (parse-dead-end json-problem)))])
+                      (not-json (list (parse-dead-end json-problem)))
+                      (bad-bytes {failed-offset failed-reason})])
 
 ;; Codecs
 
 (type codec-encode : (conduct.codec/encode ?encode))
 (type codec-decode : (conduct.codec/decode ?decode))
+(type codec-write : (conduct.codec/write ?write))
+(type codec-read : (conduct.codec/read ?read))
+(type read-value : (conduct.codec/read-value ?value))
+(type read-next : (conduct.codec/read-next natural))
+
+;; What reading bytes found, and the offset just after it.
+(type (read-step ?a) : {read-value: ?a, read-next: natural})
+
 (type (codec ?a) : {codec-encode: ((\ ?a) : json-value),
-                    codec-decode: ((\ json-value) : (result ?a error: decode-error))})
+                    codec-decode: ((\ json-value) : (result ?a error: decode-error)),
+                    codec-write: ((\ ?a into: (list byte)) : (list byte)),
+                    codec-read: ((\ (list byte) at: natural) : (result (read-step ?a) error: decode-error))})
 
 ;; What may be missing: a value that is there, or `:absent`.
 (type (present ?v) : {(conduct.codec/present ?v)})
@@ -95,30 +123,126 @@
     (ok j) (decode j with: with)
     (error ends) (error (not-json ends))))
 
-;; A codec from an encoder and a decoder.
-(claim (build ((\ ?a) : json-value) decoder: ((\ json-value) : (result ?a error: decode-error))) : (codec ?a))
-(define (build encoder decoder) {codec-encode: encoder, codec-decode: decoder})
+;; `value` as bytes.
+(claim (encode-bytes ?a with: (codec ?a)) : (list byte))
+(define (encode-bytes value with) ((codec-write with) value into: []))
+
+;; The value bytes hold, all of them: `(ok value)`, or `(error why)`.
+(claim (decode-bytes (list byte) with: (codec ?a)) : (result ?a error: decode-error))
+(define (decode-bytes bs with)
+  (match ((codec-read with) bs at: 0)
+    (error e) (error e)
+    (ok {read-value: v, read-next: n}) (if (= n (count bs)) (ok v) (fails-at :trailing-bytes at: n))))
+
+;; A codec of its four ways.
+(claim (build ((\ ?a) : json-value)
+              decoder: ((\ json-value) : (result ?a error: decode-error))
+              writer: ((\ ?a into: (list byte)) : (list byte))
+              reader: ((\ (list byte) at: natural) : (result (read-step ?a) error: decode-error)))
+  : (codec ?a))
+(define (build encoder decoder writer reader)
+  {codec-encode: encoder, codec-decode: decoder, codec-write: writer, codec-read: reader})
 
 ;; A failure to decode `found`, for `reason`.
 (claim (fails keyword found: json-value) : (result nothing error: decode-error))
 (define (fails reason found) (error (failure {failed-reason: reason, failed-value: found})))
+
+;; A failure to read bytes at `at`, for `reason`.
+(claim (fails-at keyword at: natural) : (result nothing error: decode-error))
+(define (fails-at reason at) (error (bad-bytes {failed-offset: at, failed-reason: reason})))
+
+;; Reading `value`, which ends at `next`.
+(claim (read-ok ?a next: natural) : (result (read-step ?a) error: nothing))
+(define (read-ok value next) (ok {read-value: value, read-next: next}))
+
+;; Bytes
+
+;; The low eight bits of `n`.
+(claim (low-byte natural) : byte)
+(define (low-byte n) (conduct/byte (bit-and n 255) or: 0))
+
+;; `n` after `into`, seven bits a byte from the lowest, each byte but the
+;; last with its high bit set: LEB128.
+(claim (write-natural natural into: (list byte)) : (list byte))
+(define (write-natural n into)
+  (if (< n 128)
+    (conj into (low-byte n))
+    (write-natural (shift-right n 7) into: (conj into (low-byte (bit-or (bit-and n 127) 128))))))
+
+(claim (read-natural (list byte) at: natural) : (result (read-step natural) error: decode-error))
+(define (read-natural bs at) (read-natural-from bs at: at shift: 0 total: 0 start: at))
+
+(claim (read-natural-from (list byte) at: natural shift: natural total: natural start: natural)
+  : (result (read-step natural) error: decode-error))
+(define (read-natural-from bs at shift total start)
+  (if (>= at (count bs))
+    (fails-at :unexpected-end at: at)
+    (let [b (item bs at: at or: 0)
+          sum (+ total (shift-left (bit-and b 127) shift))]
+      (cond
+        (< b 128) (read-ok sum next: (+ at 1))
+        (>= shift 56) (fails-at :natural-too-large at: start)
+        :else (read-natural-from bs at: (+ at 1) shift: (+ shift 7) total: sum start: start)))))
+
+;; An integer as a natural, zigzag: 0, -1, 1, -2 .. are 0, 1, 2, 3 ..
+(claim (zigzag integer) : natural)
+(define (zigzag n)
+  (if (>= n 0) (conduct/natural (* n 2) or: 0) (conduct/natural (- (* (- 0 n) 2) 1) or: 0)))
+
+(claim (unzigzag natural) : integer)
+(define (unzigzag z) (if (= (rem z 2) 0) (quot z 2) (- 0 (quot (+ z 1) 2))))
+
+;; The `n` bytes at `at`, or the end of the bytes.
+(claim (read-span (list byte) at: natural count: natural) : (result (read-step (list byte)) error: decode-error))
+(define (read-span bs at count: n)
+  (if (> (+ at n) (count bs))
+    (fails-at :unexpected-end at: (count bs))
+    (read-ok (slice bs from: at to: (+ at n)) next: (+ at n))))
+
+;; What `read` read, passed through `f`.
+(claim (read-map (result (read-step ?a) error: decode-error) with: ((\ ?a) : ?b)) : (result (read-step ?b) error: decode-error))
+(define (read-map r with)
+  (match r
+    (ok {read-value: v, read-next: n}) (read-ok (with v) next: n)
+    (error e) (error e)))
 
 ;; Primitives
 
 (claim text : (codec text))
 (define text
   (build (fn [t] (string t))
-    decoder: (fn [j] (match j (string t) (ok t) _ (fails :expecting-text found: j)))))
+    decoder: (fn [j] (match j (string t) (ok t) _ (fails :expecting-text found: j)))
+    writer: (fn [t into] (concat (write-natural (byte-count t) into: into) (utf8 t)))
+    reader: (fn [bs at]
+              (match (read-natural bs at: at)
+                (error e) (error e)
+                (ok {read-value: n, read-next: k})
+                (match (read-span bs at: k count: n)
+                  (error e) (error e)
+                  (ok {read-value: span, read-next: next})
+                  ;; Nothing that is not UTF-8 reads as "", so "" is
+                  ;; the answer only for no bytes.
+                  (let [t (from-utf8 span or: "")]
+                    (if (and (= t "") (> n 0)) (fails-at :invalid-utf8 at: k) (read-ok t next: next))))))))
 
 (claim boolean : (codec boolean))
 (define boolean
   (build (fn [b] (bool b))
-    decoder: (fn [j] (match j (bool b) (ok b) _ (fails :expecting-boolean found: j)))))
+    decoder: (fn [j] (match j (bool b) (ok b) _ (fails :expecting-boolean found: j)))
+    writer: (fn [b into] (conj into (if b 1 0)))
+    reader: (fn [bs at]
+              (match (item bs at: at or: 256)
+                0 (read-ok false next: (+ at 1))
+                1 (read-ok true next: (+ at 1))
+                256 (fails-at :unexpected-end at: at)
+                _ (fails-at :expecting-boolean at: at)))))
 
 (claim integer : (codec integer))
 (define integer
   (build (fn [n] (number n))
-    decoder: (fn [j] (match j (number n) (ok n) _ (fails :expecting-integer found: j)))))
+    decoder: (fn [j] (match j (number n) (ok n) _ (fails :expecting-integer found: j)))
+    writer: (fn [n into] (write-natural (zigzag n) into: into))
+    reader: (fn [bs at] (read-map (read-natural bs at: at) with: unzigzag))))
 
 ;; An integer that is not negative.
 (claim natural : (codec natural))
@@ -127,11 +251,47 @@
     decoder: (fn [j]
                (match j
                  (number n) (if (>= n 0) (ok (conduct/natural n or: 0)) (fails :expecting-natural found: j))
-                 _ (fails :expecting-natural found: j)))))
+                 _ (fails :expecting-natural found: j)))
+    writer: (fn [n into] (write-natural n into: into))
+    reader: (fn [bs at] (read-natural bs at: at))))
 
-;; The JSON as it is: elm-codec's `value`.
+;; A natural below 256, as one byte.
+(claim byte : (codec byte))
+(define byte
+  (build (fn [n] (number n))
+    decoder: (fn [j]
+               (match j
+                 (number n) (let [b (conduct/byte n or: 256)] (if (= b 256) (fails :expecting-byte found: j) (ok (low-byte b))))
+                 _ (fails :expecting-byte found: j)))
+    writer: (fn [b into] (conj into b))
+    reader: (fn [bs at]
+              (if (>= at (count bs)) (fails-at :unexpected-end at: at) (read-ok (item bs at: at or: 0) next: (+ at 1))))))
+
+;; Bytes: a JSON array of naturals below 256, or their count and then
+;; themselves.
+(claim bytes : (codec (list byte)))
+(define bytes
+  (build (fn [bs] (array (conduct/map bs each: (fn [b] (number b)))))
+    decoder: (fn [j] ((codec-decode (list byte)) j))
+    writer: (fn [bs into] (concat (write-natural (count bs) into: into) bs))
+    reader: (fn [bs at]
+              (match (read-natural bs at: at)
+                (error e) (error e)
+                (ok {read-value: n, read-next: k}) (read-span bs at: k count: n)))))
+
+;; The JSON as it is: elm-codec's `value`. As bytes, its text.
 (claim raw : (codec json-value))
-(define raw (build (fn [j] j) decoder: (fn [j] (ok j))))
+(define raw
+  (build (fn [j] j)
+    decoder: (fn [j] (ok j))
+    writer: (fn [j into] ((codec-write text) (to-text j) into: into))
+    reader: (fn [bs at]
+              (match ((codec-read text) bs at: at)
+                (error e) (error e)
+                (ok {read-value: t, read-next: next})
+                (match (from-text t)
+                  (ok j) (read-ok j next: next)
+                  (error ends) (error (not-json ends)))))))
 
 ;; Each of `cases` encoded with `c`, as `enum-encoded` stands for
 ;; `enum-decoded`. What no case decodes to encodes as `null`.
@@ -143,7 +303,29 @@
     decoder: (fn [j]
                (match ((codec-decode c) j)
                  (error e) (error e)
-                 (ok k) (enum-decode k cases: cases found: j)))))
+                 (ok k) (enum-decode k cases: cases found: j)))
+    writer: (fn [v into] (enum-write v cases: cases with: c into: into))
+    reader: (fn [bs at]
+              (match ((codec-read c) bs at: at)
+                (error e) (error e)
+                (ok {read-value: k, read-next: next})
+                (match (enum-find k cases: cases)
+                  (present d) (read-ok d next: next)
+                  :absent (fails-at :unknown-case at: at))))))
+
+(claim (enum-write ?b cases: (list {enum-encoded: ?a, enum-decoded: ?b}) with: (codec ?a) into: (list byte)) : (list byte))
+(define (enum-write v cases with into)
+  (match cases
+    [] into
+    [c rest ...] (if (= (enum-decoded c) v)
+                   ((codec-write with) (enum-encoded c) into: into)
+                   (enum-write v cases: rest with: with into: into))))
+
+(claim (enum-find ?a cases: (list {enum-encoded: ?a, enum-decoded: ?b})) : [(present ?b) :absent])
+(define (enum-find k cases)
+  (match cases
+    [] :absent
+    [c rest ...] (if (= (enum-encoded c) k) (present (enum-decoded c)) (enum-find k cases: rest))))
 
 (claim (enum-encode ?b cases: (list {enum-encoded: ?a, enum-decoded: ?b}) with: (codec ?a)) : json-value)
 (define (enum-encode v cases with)
@@ -167,7 +349,30 @@
     decoder: (fn [j]
                (match j
                  (array items) (decode-items items with: (codec-decode c) at: 0 done: [])
-                 _ (fails :expecting-array found: j)))))
+                 _ (fails :expecting-array found: j)))
+    writer: (fn [xs into] (write-items xs with: (codec-write c) into: (write-natural (count xs) into: into)))
+    reader: (fn [bs at]
+              (match (read-natural bs at: at)
+                (error e) (error e)
+                (ok {read-value: n, read-next: k}) (read-items bs at: k left: n with: (codec-read c) index: 0 done: [])))))
+
+(claim (write-items (list ?a) with: ((\ ?a into: (list byte)) : (list byte)) into: (list byte)) : (list byte))
+(define (write-items xs with into)
+  (match xs
+    [] into
+    [x rest ...] (write-items rest with: with into: (with x into: into))))
+
+(claim (read-items (list byte) at: natural left: natural
+                   with: ((\ (list byte) at: natural) : (result (read-step ?a) error: decode-error))
+                   index: natural done: (list ?a))
+  : (result (read-step (list ?a)) error: decode-error))
+(define (read-items bs at left with index done)
+  (if (= left 0)
+    (read-ok done next: at)
+    (match (with bs at: at)
+      (ok {read-value: x, read-next: k})
+      (read-items bs at: k left: (conduct/natural (- left 1) or: 0) with: with index: (+ index 1) done: (conj done x))
+      (error e) (error (in-item {failed-index: index, failed-cause: e})))))
 
 (claim (decode-items (list json-value) with: ((\ json-value) : (result ?a error: decode-error)) at: natural done: (list ?a))
   : (result (list ?a) error: decode-error))
@@ -189,7 +394,9 @@
     decoder: (fn [j]
                (match ((codec-decode c) j)
                  (ok x) (ok (to x))
-                 (error e) (error e)))))
+                 (error e) (error e)))
+    writer: (fn [v into] ((codec-write c) (from v) into: into))
+    reader: (fn [bs at] (read-map ((codec-read c) bs at: at) with: to))))
 
 ;; A codec chosen by what `c` decoded: decode with `c`, then with the
 ;; codec `to` makes of it; encode `from` of a value with `c`.
@@ -199,13 +406,31 @@
     decoder: (fn [j]
                (match ((codec-decode c) j)
                  (ok x) ((codec-decode (to x)) j)
-                 (error e) (error e)))))
+                 (error e) (error e)))
+    writer: (fn [v into] ((codec-write c) (from v) into: into))
+    reader: (fn [bs at]
+              (match ((codec-read c) bs at: at)
+                (ok {read-value: x}) ((codec-read (to x)) bs at: at)
+                (error e) (error e)))))
 
 ;; Encode with `c`; decode with `c`, or else with each of `fallbacks` in
 ;; turn, which is how a codec reads what older versions of it wrote.
 (claim (one-of (codec ?a) fallbacks: (list (codec ?a))) : (codec ?a))
 (define (one-of c fallbacks)
-  (build (codec-encode c) decoder: (fn [j] (decode-first (concat [c] fallbacks) j: j errors: []))))
+  (build (codec-encode c)
+    decoder: (fn [j] (decode-first (concat [c] fallbacks) j: j errors: []))
+    writer: (codec-write c)
+    reader: (fn [bs at] (read-first (concat [c] fallbacks) bytes: bs at: at errors: []))))
+
+(claim (read-first (list (codec ?a)) bytes: (list byte) at: natural errors: (list decode-error))
+  : (result (read-step ?a) error: decode-error))
+(define (read-first cs bytes at errors)
+  (match cs
+    [] (error (none-of errors))
+    [c rest ...]
+    (match ((codec-read c) bytes at: at)
+      (ok step) (ok step)
+      (error e) (read-first rest bytes: bytes at: at errors: (conj errors e)))))
 
 (claim (decode-first (list (codec ?a)) j: json-value errors: (list decode-error)) : (result ?a error: decode-error))
 (define (decode-first cs j errors)
@@ -218,20 +443,28 @@
 
 ;; Fancy
 
-;; Decodes as `value` whatever the JSON; encodes as `null`.
+;; Decodes as `value` whatever the JSON, and from no bytes; encodes as
+;; `null`, and as no bytes.
 (claim (succeed ?a) : (codec ?a))
-(define (succeed value) (build (fn [_] :null) decoder: (fn [_] (ok value))))
+(define (succeed value)
+  (build (fn [_] :null) decoder: (fn [_] (ok value)) writer: (fn [_ into] into) reader: (fn [_ at] (read-ok value next: at))))
 
-;; Fails to decode, for `reason`; encodes as `null`.
+;; Fails to decode, for `reason`; encodes as `null`, and as no bytes.
 (claim (fail keyword) : (codec nothing))
-(define (fail reason) (build (fn [_] :null) decoder: (fn [j] (fails reason found: j))))
+(define (fail reason)
+  (build (fn [_] :null)
+    decoder: (fn [j] (fails reason found: j))
+    writer: (fn [_ into] into)
+    reader: (fn [_ at] (fails-at reason at: at))))
 
 ;; The codec `make` answers, made when it is used: a codec that refers
 ;; to itself is written with it, or with `recursive`.
 (claim (lazy ((\ any) : (codec ?a))) : (codec ?a))
 (define (lazy make)
   (build (fn [v] ((codec-encode (make {})) v))
-    decoder: (fn [j] ((codec-decode (make {})) j))))
+    decoder: (fn [j] ((codec-decode (make {})) j))
+    writer: (fn [v into] ((codec-write (make {})) v into: into))
+    reader: (fn [bs at] ((codec-read (make {})) bs at: at))))
 
 ;; The codec `f` makes of itself: `(recursive (fn [tree] ..))`.
 (claim (recursive ((\ (codec ?a)) : (codec ?a))) : (codec ?a))
@@ -241,16 +474,38 @@
 
 (type builder-encode : (conduct.codec/builder-encode ?encode))
 (type builder-decode : (conduct.codec/builder-decode ?decode))
+(type builder-write : (conduct.codec/builder-write ?write))
+(type builder-read : (conduct.codec/builder-read ?read))
 
 ;; A record codec being built: it encodes a `?w` as members, and decodes
 ;; members into a `?p`, which grows by a field at each step until it is
-;; the record.
-(type (record-builder ?w building: ?p) : {builder-encode: ((\ ?w) : (list json-member)),
-                                          builder-decode: ((\ (list json-member)) : (result ?p error: decode-error))})
+;; the record; and the same for bytes.
+(type (record-builder ?w building: ?p)
+  : {builder-encode: ((\ ?w) : (list json-member)),
+     builder-decode: ((\ (list json-member)) : (result ?p error: decode-error)),
+     builder-write: ((\ ?w into: (list byte)) : (list byte)),
+     builder-read: ((\ (list byte) at: natural) : (result (read-step ?p) error: decode-error))})
 
 ;; A record codec that starts from `empty` and has no fields yet.
 (claim (start-record ?p) : (record-builder any building: ?p))
-(define (start-record empty) {builder-encode: (fn [_] []), builder-decode: (fn [_] (ok empty))})
+(define (start-record empty)
+  {builder-encode: (fn [_] []),
+   builder-decode: (fn [_] (ok empty)),
+   builder-write: (fn [_ into] into),
+   builder-read: (fn [_ at] (read-ok empty next: at))})
+
+;; `p` read by `prior`, with what `c` reads after it set by `set`, as the
+;; field `name`.
+(claim (read-field (result (read-step ?p) error: decode-error) bytes: (list byte) name: text
+                   set: ((\ ?p) : ((\ ?f) : ?q)) codec: (codec ?f))
+  : (result (read-step ?q) error: decode-error))
+(define (read-field prior bytes name set codec: c)
+  (match prior
+    (error e) (error e)
+    (ok {read-value: p, read-next: k})
+    (match ((codec-read c) bytes at: k)
+      (ok {read-value: f, read-next: next}) (read-ok ((set p) f) next: next)
+      (error e) (error (in-member {failed-name: name, failed-cause: e})))))
 
 ;; `b` with a member `name`, read from a record with `get`, encoded with
 ;; `codec`, and added to the record being decoded with `set`.
@@ -269,7 +524,9 @@
          (present j)
          (match ((codec-decode c) j)
            (ok f) (ok ((set p) f))
-           (error e) (error (in-member {failed-name: name, failed-cause: e}))))))})
+           (error e) (error (in-member {failed-name: name, failed-cause: e})))))),
+   builder-write: (fn [w into] ((codec-write c) (get w) into: ((builder-write b) w into: into))),
+   builder-read: (fn [bs at] (read-field ((builder-read b) bs at: at) bytes: bs name: name set: set codec: c))})
 
 ;; `field`, for a member that may be missing: `get` answers `(present
 ;; value)` or `:absent`, and an absent value is left out of the JSON and
@@ -293,7 +550,24 @@
          (present j)
          (match ((codec-decode c) j)
            (ok f) (ok ((set p) f))
-           (error e) (error (in-member {failed-name: name, failed-cause: e}))))))})
+           (error e) (error (in-member {failed-name: name, failed-cause: e})))))),
+   ;; As bytes, a byte that says whether it is there, then the value.
+   builder-write:
+   (fn [w into]
+     (let [prior ((builder-write b) w into: into)]
+       (match (get w)
+         (present f) ((codec-write c) f into: (conj prior 1))
+         :absent (conj prior 0)))),
+   builder-read:
+   (fn [bs at]
+     (match ((builder-read b) bs at: at)
+       (error e) (error e)
+       (ok {read-value: p, read-next: k})
+       (match (item bs at: k or: 256)
+         0 (read-ok p next: (+ k 1))
+         1 (read-field (read-ok p next: (+ k 1)) bytes: bs name: name set: set codec: c)
+         256 (fails-at :unexpected-end at: k)
+         _ (error (in-member {failed-name: name, failed-cause: (bad-bytes {failed-offset: k, failed-reason: :expecting-presence})})))))})
 
 ;; `b` with a member `name` that is always `value`: encoded, and checked
 ;; when decoding, as a `"type"` member is.
@@ -313,7 +587,19 @@
            (ok f) (if (= f value)
                     (ok p)
                     (error (in-member {failed-name: name, failed-cause: (failure {failed-reason: :unexpected-value, failed-value: j})})))
-           (error e) (error (in-member {failed-name: name, failed-cause: e}))))))})
+           (error e) (error (in-member {failed-name: name, failed-cause: e})))))),
+   builder-write: (fn [w into] ((codec-write c) value into: ((builder-write b) w into: into))),
+   builder-read:
+   (fn [bs at]
+     (match ((builder-read b) bs at: at)
+       (error e) (error e)
+       (ok {read-value: p, read-next: k})
+       (match ((codec-read c) bs at: k)
+         (ok {read-value: f, read-next: next})
+         (if (= f value)
+           (read-ok p next: next)
+           (error (in-member {failed-name: name, failed-cause: (bad-bytes {failed-offset: k, failed-reason: :unexpected-value})})))
+         (error e) (error (in-member {failed-name: name, failed-cause: e})))))})
 
 ;; The codec `b` has built, of JSON objects.
 (claim (build-record (record-builder ?a building: ?a)) : (codec ?a))
@@ -322,7 +608,9 @@
     decoder: (fn [j]
                (match j
                  (object members) ((builder-decode b) members)
-                 _ (fails :expecting-object found: j)))))
+                 _ (fails :expecting-object found: j)))
+    writer: (builder-write b)
+    reader: (builder-read b)))
 
 (claim (find-member (list json-member) name: text) : [(present json-value) :absent])
 (define (find-member members name)
@@ -348,7 +636,10 @@
 
 (type variant-tag : (conduct.codec/variant-tag text))
 (type variant-decode : (conduct.codec/variant-decode ?decode))
-(type (variant-case ?a) : {variant-tag: text, variant-decode: ((\ (list json-value)) : (result ?a error: decode-error))})
+(type variant-read : (conduct.codec/variant-read ?read))
+(type (variant-case ?a) : {variant-tag: text,
+                           variant-decode: ((\ (list json-value)) : (result ?a error: decode-error)),
+                           variant-read: ((\ (list byte) at: natural) : (result (read-step ?a) error: decode-error))})
 
 ;; A variant as elm-codec writes it: `{"tag": tag, "args": [..]}`.
 (claim (tagged text args: (list json-value)) : json-value)
@@ -387,13 +678,38 @@
     [] (error (in-member {failed-name: "args", failed-cause: (failure {failed-reason: :expecting-argument,
                                                                          failed-value: (array args)})}))))
 
+;; The case at a variant's position, read from bytes.
+(claim (read-variant (list byte) at: natural cases: (list (variant-case ?a))) : (result (read-step ?a) error: decode-error))
+(define (read-variant bs at cases)
+  (match (read-natural bs at: at)
+    (error e) (error e)
+    (ok {read-value: n, read-next: k})
+    (match (case-at cases at: n)
+      (present c) ((variant-read c) bs at: k)
+      :absent (fails-at :unknown-tag at: at))))
+
+(claim (case-at (list ?c) at: natural) : [(present ?c) :absent])
+(define (case-at cases at)
+  (match cases
+    [] :absent
+    [c rest ...] (if (= at 0) (present c) (case-at rest at: (conduct/natural (- at 1) or: 0)))))
+
 ;; `(variant-codec [constructor "tag" codec] [:keyword "tag"] ..)`: a
 ;; codec of the variants named, each carrying a value encoded with its
 ;; codec, or, for a keyword, nothing. A value of none of them encodes as
-;; `null`.
+;; `null`, and as no bytes. As bytes, a variant is its row's position,
+;; then what it carries.
 (macro (variant-codec row ...)
   (./build (fn [v] (variant-encode v row ...))
-    decoder: (fn [j] (./decode-variant j cases: [(variant-case-of row) ...]))))
+    decoder: (fn [j] (./decode-variant j cases: [(variant-case-of row) ...]))
+    writer: (fn [v into] (variant-write v into 0 row ...))
+    reader: (fn [bs at] (./read-variant bs at: at cases: [(variant-case-of row) ...]))))
+
+(macro (variant-write v out i) out)
+(macro (variant-write v out i [ctor tag c] rest ...)
+  (match v (ctor x) ((codec-write c) x into: (./write-natural i into: out)) _ (variant-write v out (+ i 1) rest ...)))
+(macro (variant-write v out i [kw tag] rest ...)
+  (match v kw (./write-natural i into: out) _ (variant-write v out (+ i 1) rest ...)))
 
 (macro (variant-encode v) :null)
 (macro (variant-encode v [ctor tag c] rest ...)
@@ -403,14 +719,17 @@
 
 (macro (variant-case-of [ctor tag c])
   {variant-tag: tag,
-   variant-decode: (fn [args] (match (./first-arg args with: c) (ok x) (ok (ctor x)) (error e) (error e)))})
-(macro (variant-case-of [kw tag]) {variant-tag: tag, variant-decode: (fn [_] (ok kw))})
+   variant-decode: (fn [args] (match (./first-arg args with: c) (ok x) (ok (ctor x)) (error e) (error e))),
+   variant-read: (fn [bs at] (./read-map ((codec-read c) bs at: at) with: ctor))})
+(macro (variant-case-of [kw tag])
+  {variant-tag: tag, variant-decode: (fn [_] (ok kw)), variant-read: (fn [_ at] (./read-ok kw next: at))})
 
 ;; Errors
 
 ;; `e` as a sentence, as Json.Decode's `errorToString` writes one.
 (claim (error-text decode-error) : text)
 (define (error-text e) (error-text-at e path: "json"))
+
 
 (claim (error-text-at decode-error path: text) : text)
 (define (error-text-at e path)
@@ -423,4 +742,6 @@
     (str "the value at `" path "` fails with " why ": " (to-text j))
     (not-json ends) (match ends
                       [] "the text is not JSON"
-                      [end _ ...] (str "the text is not JSON at " (row end) ":" (col end) ": " (reason end))))))
+                      [end _ ...] (str "the text is not JSON at " (row end) ":" (col end) ": " (reason end)))
+    (bad-bytes {failed-offset: at, failed-reason: why})
+    (str "the bytes of `" path "` fail at offset " at " with " why))))

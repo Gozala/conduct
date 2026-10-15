@@ -5,6 +5,28 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
+## A name of the source shadows a built-in, silently
+
+- **Found** writing conduct.codec's bytes: the library defines a codec
+  `byte`, so inside it `(byte n or: 0)` called the codec, not the
+  built-in, and the checker's error ("a record is not a function of 2
+  arguments", in another definition of the same cycle) did not say why.
+  `conduct/byte` fixes it. Same-source-first is what makes `codec/map`
+  possible, and this is its cost.
+- **Possible fix:** when a source's own name hides a built-in of the
+  same name, try the built-in too when the call does not check, as type
+  resolution does for names that are ambiguous; or warn. Your call,
+  since it makes resolution less predictable to read.
+
+## The bytes format of conduct.codec
+
+- **Chosen:** elm-serialize's idea (compact, positional), not its
+  encoding (it writes every number as a float64, for JavaScript).
+  LEB128 and zigzag as protobuf does.
+- **Open:** no version byte (elm-serialize prepends one), and no way to
+  evolve a variant but appending rows. If codec bytes go into Dialog,
+  this wants a decision first.
+
 ## Small literals are bytes
 
 - **Chosen:** a literal below 256 has type `byte`, the narrowest view
