@@ -51,8 +51,6 @@ pub struct Codebase {
     pub macros: BTreeMap<String, macros::Macro>,
     /// The last mark an expansion gave its template's symbols.
     marks: u64,
-    /// The domain of the source being added, if it names one.
-    domain: Option<String>,
 }
 
 /// The domain a built-in's whole name is in: `conduct/count` is the
@@ -180,95 +178,44 @@ impl Codebase {
     pub fn add_source(&mut self, source: &str) -> Result<Vec<Added>, Error> {
         let forms = reader::read(source).map_err(Error::Read)?;
         let saved = (self.claims.clone(), self.names.clone(), self.macros.clone());
-        let out = self.scoped(&forms).and_then(|rest| self.add_forms(rest));
-        self.domain = None;
+        let out = flatten_domains(&forms).and_then(|forms| self.add_forms(&forms));
         if out.is_err() {
             (self.claims, self.names, self.macros) = saved;
         }
         out
     }
 
-    /// Read the `domain` form a source may start with, which names the
-    /// domain its definitions go in, and answer the source's other forms.
-    fn scoped<'f>(&mut self, forms: &'f [Sexp]) -> Result<&'f [Sexp], Error> {
-        let heads = |form: &Sexp| match form {
-            Sexp::List(items, _) => items.first().and_then(Sexp::as_symbol) == Some("domain"),
-            _ => false,
-        };
-        let leading = forms.iter().take_while(|f| heads(f)).count();
-        let misplaced = forms[leading..].iter().find(|f| heads(f)).or(if leading > 1 { forms.get(1) } else { None });
-        if let Some(form) = misplaced {
-            return Err(Error::Syntax(syntax::SyntaxError {
-                message: "a source names one domain, first: `(domain io.gozala.parser)`".into(),
-                span: form.span(),
-            }));
-        }
-        if let Some(form) = forms[..leading].first() {
-            let Item::Domain(name) = syntax::item(form).map_err(Error::Syntax)? else {
-                unreachable!("only `domain` leads")
-            };
-            self.domain = Some(name);
-        }
-        Ok(&forms[leading..])
-    }
-
-    /// The whole name of a definition of the source being added: `./x`
-    /// and a name with no domain go in the source's domain.
-    fn full_name(&self, name: &str) -> String {
-        let local = name.strip_prefix("./").unwrap_or(name);
-        match &self.domain {
-            Some(domain) if !local.contains('/') => format!("{domain}/{local}"),
-            _ => local.to_string(),
-        }
-    }
-
-    /// The whole names `written` may stand for among the definitions of
-    /// the source being added: in its domain, or as written.
-    fn spellings(&self, written: &str) -> Vec<String> {
-        if let Some(local) = written.strip_prefix("./") {
-            return self.domain.iter().map(|d| format!("{d}/{local}")).collect();
-        }
-        if written.contains('/') {
-            return vec![written.to_string()];
-        }
-        let mut out: Vec<String> = self.domain.iter().map(|d| format!("{d}/{written}")).collect();
-        out.push(written.to_string());
-        out
-    }
-
-    /// The whole name in the codebase that `written` refers to. `./x` is
-    /// `x` in the source's domain, and `io.gozala.parser/x` is itself. A
-    /// name with no domain is the definition of that name with no
-    /// domain, if there is one; else the one definition of that name in
-    /// any domain. When the name is in several domains, or in one and
-    /// also built in, it is ambiguous, and the error lists each whole
-    /// name to write instead.
+    /// The whole name in the codebase that `written` refers to: the
+    /// definition with that whole name, else the one whose name ends in
+    /// the segments written (`parser/run` and `run` are both
+    /// `conduct.parser/run`), with a built-in of that name a candidate
+    /// too. When several match, the name is ambiguous, and the error
+    /// lists each whole name.
     fn resolve_name(&self, written: &str, defined: &dyn Fn(&str) -> bool) -> Result<Option<String>, Vec<String>> {
-        if let Some(local) = written.strip_prefix("./") {
-            return Ok(self.domain.as_ref().map(|d| format!("{d}/{local}")).filter(|n| defined(n)));
+        if defined(written) {
+            return Ok(Some(written.to_string()));
         }
-        if written.contains('/') || defined(written) {
-            return Ok(Some(written.to_string()).filter(|n| defined(n)));
-        }
-        let suffix = format!("/{written}");
-        let mut candidates: Vec<String> = self.names.keys().filter(|n| n.ends_with(&suffix)).cloned().collect();
-        let builtin = Op::from_name(written).is_some();
+        let mut candidates: Vec<String> =
+            self.names.keys().filter(|n| ends_with_segments(n, written)).cloned().collect();
+        let builtin = Op::from_name(written).is_some()
+            || written.strip_prefix(&format!("{BUILTIN_DOMAIN}/")).is_some_and(|op| Op::from_name(op).is_some());
         match (candidates.len(), builtin) {
             (0, _) => Ok(None),
             (1, false) => Ok(candidates.pop()),
             _ => {
                 if builtin {
-                    candidates.push(format!("{BUILTIN_DOMAIN}/{written}"));
+                    let op = written.rsplit('/').next().unwrap_or(written);
+                    candidates.push(format!("{BUILTIN_DOMAIN}/{op}"));
                 }
                 Err(candidates)
             }
         }
     }
 
-    fn add_forms(&mut self, forms: &[Sexp]) -> Result<Vec<Added>, Error> {
+    fn add_forms(&mut self, forms: &[(Sexp, Option<String>)]) -> Result<Vec<Added>, Error> {
         let mut rules: BTreeMap<String, Vec<Rule>> = BTreeMap::new();
         let mut rest = Vec::new();
-        for form in forms {
+        for (form, prefix) in forms {
             if let Sexp::List(items, _) = form
                 && items.first().and_then(Sexp::as_symbol) == Some("macro")
             {
@@ -277,7 +224,7 @@ impl Codebase {
                     .map_err(|message| Error::Resolve { def: format!("({} ..)", m.name), message })?;
                 rules.entry(m.name).or_default().push(rule);
             } else {
-                rest.push(form);
+                rest.push((form, prefix));
             }
         }
         let closed: Vec<String> = rules.keys().cloned().collect();
@@ -295,9 +242,24 @@ impl Codebase {
             self.macros.insert(name.clone(), macros::Macro::close(&name, all).map_err(error)?);
         }
         let mut items = Vec::new();
-        for form in rest {
+        for (form, prefix) in rest {
             let form = self.expand_top(form, 0)?;
-            items.push(syntax::item(&form).map_err(Error::Syntax)?);
+            let mut item = syntax::item(&form).map_err(Error::Syntax)?;
+            // A domain prefixes the names its definitions and claims
+            // write, unless they write one already.
+            if let Some(prefix) = prefix {
+                let name = match &mut item {
+                    Item::Def(d) => Some(&mut d.name),
+                    Item::Claim(c) => Some(&mut c.name),
+                    _ => None,
+                };
+                if let Some(name) = name
+                    && !name.contains('/')
+                {
+                    *name = format!("{prefix}/{name}");
+                }
+            }
+            items.push(item);
         }
         let added = self.add_items(items)?;
         // What a macro's template names, it names as of its closing.
@@ -383,14 +345,13 @@ impl Codebase {
                 Item::Claim(c) => claims.push(c),
                 Item::Type(t) => types.push(t),
                 Item::Macro(_) => unreachable!("macro rules are closed before anything else"),
-                Item::Domain(_) => unreachable!("a source's domain is read first"),
+                Item::Domain(_) => {
+                    return Err(Error::Resolve {
+                        def: "(domain ..)".into(),
+                        message: "a domain wraps what it names: `(domain io.gozala.parser (define ..) ..)`".into(),
+                    });
+                }
             }
-        }
-        for d in &mut defs {
-            d.name = self.full_name(&d.name);
-        }
-        for c in &mut claims {
-            c.name = self.full_name(&c.name);
         }
         for name in defs.iter().map(|d| &d.name).chain(types.iter().map(|t| &t.name)) {
             if self.macros.contains_key(name) || self.macros.contains_key(&format!("{name}!")) {
@@ -625,7 +586,10 @@ impl Codebase {
                 free_names(&d.body, &mut Vec::new(), &mut names);
                 let mut out: Vec<usize> = names
                     .iter()
-                    .filter_map(|n| self.spellings(n).iter().find_map(|s| index.get(s.as_str()).copied()))
+                    .filter_map(|n| match in_batch(bare(n), &index) {
+                        Ok(Some(full)) => index.get(full.as_str()).copied(),
+                        _ => None,
+                    })
                     .collect();
                 out.sort();
                 out.dedup();
@@ -643,138 +607,162 @@ impl Codebase {
 
             // Resolve with provisional cycle indices: positions in
             // `members`.
-            let mut terms = Vec::new();
-            let ambiguous: std::cell::RefCell<Option<(String, Vec<String>)>> = std::cell::RefCell::new(None);
-            for d in &members {
-                let lookup = |name: &str| -> Option<Target> {
-                    // A name a macro's template wrote may be pinned to the
-                    // definition it named there.
-                    if let Some(h) = pin_of(name).and_then(Hash::from_hex) {
-                        let labels = match self.defs.get(&h).map(|d| &d.term) {
-                            Some(Term::Fn(labels, _)) => Some(labels.clone()),
-                            _ => None,
+            // One try at the component with the names in `chosen` taken
+            // as written there: resolve it, hash it, and check it if it is
+            // new. A name that could be several things fails the try as
+            // ambiguous, and `settle` tries each of them.
+            let attempt = |chosen: &HashMap<String, String>| -> Result<Attempt, Failure> {
+                let mut terms = Vec::new();
+                let ambiguous: std::cell::RefCell<Option<(String, Vec<String>)>> = std::cell::RefCell::new(None);
+                for d in &members {
+                    let lookup = |name: &str| -> Option<Target> {
+                        // A name a macro's template wrote may be pinned to the
+                        // definition it named there.
+                        if let Some(h) = pin_of(name).and_then(Hash::from_hex) {
+                            let labels = match self.defs.get(&h).map(|d| &d.term) {
+                                Some(Term::Fn(labels, _)) => Some(labels.clone()),
+                                _ => None,
+                            };
+                            return Some(Target::Hash(h, labels));
+                        }
+                        let written = bare(name);
+                        // A name settled by its type is that name; a built-in
+                        // is no definition, so it resolves as built in.
+                        let settled = chosen.get(written).cloned();
+                        if settled.as_deref().is_some_and(|f| f.starts_with(&format!("{BUILTIN_DOMAIN}/"))) {
+                            return None;
+                        }
+                        // A definition of this source comes before what the
+                        // codebase holds.
+                        let found = match settled {
+                            Some(full) => Ok(Some(full)),
+                            None => in_batch(written, &index),
                         };
-                        return Some(Target::Hash(h, labels));
-                    }
-                    let written = bare(name);
-                    // A definition of this source, in its namespace or as
-                    // written, comes before what the codebase holds.
-                    let in_batch = self.spellings(written).into_iter().find(|s| index.contains_key(s.as_str()));
-                    let name = match in_batch {
-                        Some(full) => full,
-                        None => match self.resolve_name(written, &|n| self.names.contains_key(n)) {
+                        let name = match found {
                             Ok(Some(full)) => full,
-                            Ok(None) => return None,
                             Err(candidates) => {
                                 ambiguous.replace(Some((written.to_string(), candidates)));
                                 return None;
                             }
-                        },
-                    };
-                    let name = name.as_str();
-                    if let Some(i) = names_in_cycle.iter().position(|n| *n == name)
-                        && recursive
-                    {
-                        let labels = match &members[i].body {
-                            Expr::Fn(params, _) => Some(canonical(params).into_iter().map(|p| p.label).collect()),
-                            Expr::Clauses(clauses) => clause_labels(clauses).ok(),
+                            Ok(None) => match self.resolve_name(written, &|n| self.names.contains_key(n)) {
+                                Ok(Some(full)) => full,
+                                Ok(None) => return None,
+                                Err(candidates) => {
+                                    ambiguous.replace(Some((written.to_string(), candidates)));
+                                    return None;
+                                }
+                            },
+                        };
+                        let name = name.as_str();
+                        if let Some(i) = names_in_cycle.iter().position(|n| *n == name)
+                            && recursive
+                        {
+                            let labels = match &members[i].body {
+                                Expr::Fn(params, _) => Some(canonical(params).into_iter().map(|p| p.label).collect()),
+                                Expr::Clauses(clauses) => clause_labels(clauses).ok(),
+                                _ => None,
+                            };
+                            return Some(Target::Cycle(i as u32, labels));
+                        }
+                        let h = resolved.get(name).or_else(|| self.names.get(name))?;
+                        let term = staged
+                            .iter()
+                            .find(|s| s.hash == *h)
+                            .map(|s| &s.term)
+                            .or_else(|| self.defs.get(h).map(|d| &d.term));
+                        let labels = match term {
+                            Some(Term::Fn(labels, _)) => Some(labels.clone()),
                             _ => None,
                         };
-                        return Some(Target::Cycle(i as u32, labels));
-                    }
-                    let h = resolved.get(name).or_else(|| self.names.get(name))?;
-                    let term = staged
-                        .iter()
-                        .find(|s| s.hash == *h)
-                        .map(|s| &s.term)
-                        .or_else(|| self.defs.get(h).map(|d| &d.term));
-                    let labels = match term {
-                        Some(Term::Fn(labels, _)) => Some(labels.clone()),
-                        _ => None,
+                        Some(Target::Hash(*h, labels))
                     };
-                    Some(Target::Hash(*h, labels))
-                };
-                let names = Names { lookup: &lookup, claims: &self.claims, macros: &self.macros };
-                let resolved_term = resolve(&d.body, &mut Vec::new(), &names);
-                // A name that could be several things is an error even
-                // where resolution went on to read it as a built-in.
-                let resolved_term = match (resolved_term, ambiguous.borrow().clone()) {
-                    (Ok(_), Some((name, _))) => Err(ResolveError::Unbound(name)),
-                    (other, _) => other,
-                };
-                let term = resolved_term.map_err(|e| match e {
-                    ResolveError::Unbound(name) if ambiguous.borrow().as_ref().is_some_and(|(n, _)| *n == name) => {
-                        let (_, candidates) = ambiguous.take().unwrap();
-                        Error::Resolve {
-                            def: d.name.clone(),
-                            message: format!(
-                                "`{name}` could be any of {}: write which",
-                                candidates.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ")
-                            ),
+                    let names = Names { lookup: &lookup, claims: &self.claims, macros: &self.macros };
+                    let resolved_term = resolve(&d.body, &mut Vec::new(), &names);
+                    // A name that could be several things is an error even
+                    // where resolution went on to read it as a built-in.
+                    let resolved_term = match (resolved_term, ambiguous.borrow().clone()) {
+                        (Ok(_), Some((name, _))) => Err(ResolveError::Unbound(name)),
+                        (other, _) => other,
+                    };
+                    let term = resolved_term.map_err(|e| match e {
+                        ResolveError::Unbound(name) if ambiguous.borrow().as_ref().is_some_and(|(n, _)| *n == name) => {
+                            let (_, candidates) = ambiguous.take().unwrap();
+                            Failure::Ambiguous { def: d.name.clone(), name, candidates }
                         }
+                        ResolveError::Unbound(name) => Failure::Error(Error::Unbound { name, def: d.name.clone() }),
+                        ResolveError::Invalid(message) => {
+                            Failure::Error(Error::Resolve { def: d.name.clone(), message })
+                        }
+                    })?;
+                    terms.push(term);
+                }
+
+                let hashes: Vec<Hash>;
+                let cycle_order: Vec<usize>;
+                // A signature is part of what a definition is: callers see
+                // its type.
+                let claim_text = |i: usize| signatures.get(&members[i].name).map(|c| c.text()).unwrap_or_default();
+                if !recursive {
+                    let mut bytes = Vec::new();
+                    terms[0].encode(&mut bytes, &|i| i);
+                    bytes.extend_from_slice(claim_text(0).as_bytes());
+                    hashes = vec![Hash::of(&bytes)];
+                    cycle_order = vec![0];
+                } else {
+                    // Order the members by their encoding with every cycle
+                    // reference written alike, so the order does not depend
+                    // on names. Members that encode identically are ordered
+                    // by name, which is a known gap: Unison would treat them
+                    // as one definition.
+                    let mut keyed: Vec<(Vec<u8>, &str, usize)> = terms
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| {
+                            let mut bytes = Vec::new();
+                            t.encode(&mut bytes, &|_| 0);
+                            bytes.extend_from_slice(claim_text(i).as_bytes());
+                            (bytes, members[i].name.as_str(), i)
+                        })
+                        .collect();
+                    keyed.sort();
+                    cycle_order = keyed.iter().map(|k| k.2).collect();
+                    let canonical = |provisional: u32| -> u32 {
+                        cycle_order.iter().position(|&p| p == provisional as usize).unwrap() as u32
+                    };
+                    let mut whole = Vec::new();
+                    for &p in &cycle_order {
+                        terms[p].encode(&mut whole, &canonical);
+                        whole.extend_from_slice(claim_text(p).as_bytes());
                     }
-                    ResolveError::Unbound(name) => Error::Unbound { name, def: d.name.clone() },
-                    ResolveError::Invalid(message) => Error::Resolve { def: d.name.clone(), message },
-                })?;
-                terms.push(term);
-            }
+                    let cycle_hash = Hash::of(&whole);
+                    let mut by_provisional = vec![Hash([0; 32]); members.len()];
+                    for (position, &p) in cycle_order.iter().enumerate() {
+                        let mut bytes = cycle_hash.0.to_vec();
+                        bytes.extend_from_slice(&(position as u32).to_le_bytes());
+                        by_provisional[p] = Hash::of(&bytes);
+                    }
+                    hashes = by_provisional;
+                    // Rewrite provisional cycle indices to canonical ones.
+                    for t in terms.iter_mut() {
+                        renumber_cycle(t, &canonical);
+                    }
+                }
+                let cycle: Vec<Hash> =
+                    if recursive { cycle_order.iter().map(|&p| hashes[p]).collect() } else { vec![] };
 
-            let hashes: Vec<Hash>;
-            let cycle_order: Vec<usize>;
-            // A signature is part of what a definition is: callers see
-            // its type.
-            let claim_text = |i: usize| signatures.get(&members[i].name).map(|c| c.text()).unwrap_or_default();
-            if !recursive {
-                let mut bytes = Vec::new();
-                terms[0].encode(&mut bytes, &|i| i);
-                bytes.extend_from_slice(claim_text(0).as_bytes());
-                hashes = vec![Hash::of(&bytes)];
-                cycle_order = vec![0];
-            } else {
-                // Order the members by their encoding with every cycle
-                // reference written alike, so the order does not depend
-                // on names. Members that encode identically are ordered
-                // by name, which is a known gap: Unison would treat them
-                // as one definition.
-                let mut keyed: Vec<(Vec<u8>, &str, usize)> = terms
-                    .iter()
-                    .enumerate()
-                    .map(|(i, t)| {
-                        let mut bytes = Vec::new();
-                        t.encode(&mut bytes, &|_| 0);
-                        bytes.extend_from_slice(claim_text(i).as_bytes());
-                        (bytes, members[i].name.as_str(), i)
-                    })
-                    .collect();
-                keyed.sort();
-                cycle_order = keyed.iter().map(|k| k.2).collect();
-                let canonical = |provisional: u32| -> u32 {
-                    cycle_order.iter().position(|&p| p == provisional as usize).unwrap() as u32
+                let fresh = !self.defs.contains_key(&hashes[0]) && !staged.iter().any(|d| d.hash == hashes[0]);
+                let schemes = if fresh {
+                    let order: &[usize] = if recursive { &cycle_order } else { &[] };
+                    Some(self.check(&members, &terms, order, &staged, signatures).map_err(Failure::Error)?)
+                } else {
+                    None
                 };
-                let mut whole = Vec::new();
-                for &p in &cycle_order {
-                    terms[p].encode(&mut whole, &canonical);
-                    whole.extend_from_slice(claim_text(p).as_bytes());
-                }
-                let cycle_hash = Hash::of(&whole);
-                let mut by_provisional = vec![Hash([0; 32]); members.len()];
-                for (position, &p) in cycle_order.iter().enumerate() {
-                    let mut bytes = cycle_hash.0.to_vec();
-                    bytes.extend_from_slice(&(position as u32).to_le_bytes());
-                    by_provisional[p] = Hash::of(&bytes);
-                }
-                hashes = by_provisional;
-                // Rewrite provisional cycle indices to canonical ones.
-                for t in terms.iter_mut() {
-                    renumber_cycle(t, &canonical);
-                }
-            }
-            let cycle: Vec<Hash> = if recursive { cycle_order.iter().map(|&p| hashes[p]).collect() } else { vec![] };
-
-            let fresh = !self.defs.contains_key(&hashes[0]) && !staged.iter().any(|d| d.hash == hashes[0]);
-            if fresh {
-                let order: &[usize] = if recursive { &cycle_order } else { &[] };
-                let schemes = self.check(&members, &terms, order, &staged, signatures)?;
+                Ok(Attempt { terms, hashes, cycle, schemes })
+            };
+            let Attempt { terms, hashes, cycle, schemes } =
+                settle(&attempt, HashMap::new()).map_err(Failure::into_error)?;
+            let fresh = schemes.is_some();
+            if let Some(schemes) = schemes {
                 for ((term, scheme), hash) in terms.into_iter().zip(schemes).zip(hashes.iter()) {
                     staged.push(Definition { hash: *hash, term, cycle: cycle.clone(), scheme });
                 }
@@ -1967,5 +1955,137 @@ fn pat_text(p: &Pat) -> String {
             }
             format!("[{}]", parts.join(" "))
         }
+    }
+}
+
+/// The forms of a source, each with the domain that wraps it, if any:
+/// `(domain p form ..)` stands for its forms, whose definitions and
+/// claims are named in `p`, and in which `./x` is `p/x`.
+fn flatten_domains(forms: &[Sexp]) -> Result<Vec<(Sexp, Option<String>)>, Error> {
+    let mut out = Vec::new();
+    for form in forms {
+        match form {
+            Sexp::List(items, span) if items.first().and_then(Sexp::as_symbol) == Some("domain") => {
+                let Some(name) = items.get(1) else {
+                    return Err(Error::Syntax(syntax::SyntaxError {
+                        message: "a domain is `(domain io.gozala.parser (define ..) ..)`".into(),
+                        span: *span,
+                    }));
+                };
+                let prefix = syntax::domain_name(name).map_err(Error::Syntax)?;
+                if items.len() == 2 {
+                    return Err(Error::Syntax(syntax::SyntaxError {
+                        message: format!("a domain wraps what it names: `(domain {prefix} (define ..) ..)`"),
+                        span: *span,
+                    }));
+                }
+                for inner in &items[2..] {
+                    if matches!(inner, Sexp::List(xs, _) if xs.first().and_then(Sexp::as_symbol) == Some("domain")) {
+                        return Err(Error::Syntax(syntax::SyntaxError {
+                            message: "domains do not nest: write the whole name, `(domain a.b.c ..)`".into(),
+                            span: inner.span(),
+                        }));
+                    }
+                    out.push((relative(inner, &prefix), Some(prefix.clone())));
+                }
+            }
+            other => out.push((other.clone(), None)),
+        }
+    }
+    Ok(out)
+}
+
+/// `form` with each `./x` written as `prefix/x`.
+fn relative(form: &Sexp, prefix: &str) -> Sexp {
+    match form {
+        Sexp::Symbol(s, span) => match s.strip_prefix("./") {
+            Some(rest) => Sexp::Symbol(format!("{prefix}/{rest}"), *span),
+            None => form.clone(),
+        },
+        Sexp::List(items, span) => Sexp::List(items.iter().map(|i| relative(i, prefix)).collect(), *span),
+        Sexp::Vector(items, span) => Sexp::Vector(items.iter().map(|i| relative(i, prefix)).collect(), *span),
+        Sexp::Map(items, span) => Sexp::Map(items.iter().map(|i| relative(i, prefix)).collect(), *span),
+        other => other.clone(),
+    }
+}
+
+/// Whether the whole name `name` ends in the segments `written` writes,
+/// where `.` and `/` both separate segments: `conduct.parser/run` ends in
+/// `run`, `parser/run` and itself, not in `arser/run`.
+fn ends_with_segments(name: &str, written: &str) -> bool {
+    let segments = |n: &str| n.split(['.', '/']).map(str::to_string).collect::<Vec<_>>();
+    let (whole, part) = (segments(name), segments(written));
+    part.len() <= whole.len() && whole[whole.len() - part.len()..] == part[..]
+}
+
+/// The definition of the source being added that `written` names: the
+/// one with that whole name, else the one whose name ends in the
+/// segments written. Several such are ambiguous.
+fn in_batch(written: &str, index: &HashMap<&str, usize>) -> Result<Option<String>, Vec<String>> {
+    if index.contains_key(written) {
+        return Ok(Some(written.to_string()));
+    }
+    let mut found: Vec<String> =
+        index.keys().filter(|n| ends_with_segments(n, written)).map(|n| n.to_string()).collect();
+    found.sort();
+    match found.len() {
+        0 => Ok(None),
+        1 => Ok(found.pop()),
+        _ => Err(found),
+    }
+}
+
+/// A component resolved, hashed, and checked if it is new.
+struct Attempt {
+    terms: Vec<Term>,
+    hashes: Vec<Hash>,
+    cycle: Vec<Hash>,
+    schemes: Option<Vec<Scheme>>,
+}
+
+/// Why a try at a component failed: a name that could be several
+/// definitions, or anything else.
+enum Failure {
+    Ambiguous { def: String, name: String, candidates: Vec<String> },
+    Error(Error),
+}
+
+impl Failure {
+    fn into_error(self) -> Error {
+        match self {
+            Failure::Ambiguous { def, name, candidates } => Error::Resolve {
+                def,
+                message: format!(
+                    "`{name}` could be any of {}: write which",
+                    candidates.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ")
+                ),
+            },
+            Failure::Error(e) => e,
+        }
+    }
+}
+
+/// One way of checking a component, given the names chosen so far.
+type Trial<'a> = dyn Fn(&HashMap<String, String>) -> Result<Attempt, Failure> + 'a;
+
+/// Unison's type-directed name resolution: where a name could be several
+/// definitions, the one with which the component checks, if exactly one
+/// does. Each candidate is tried with the names settled so far, and
+/// settles any further ambiguity the same way. None or several fitting is
+/// the ambiguity it was.
+fn settle(attempt: &Trial, chosen: HashMap<String, String>) -> Result<Attempt, Failure> {
+    match attempt(&chosen) {
+        Err(Failure::Ambiguous { def, name, candidates }) => {
+            let mut fits = Vec::new();
+            for candidate in &candidates {
+                let mut with = chosen.clone();
+                with.insert(name.clone(), candidate.clone());
+                if let Ok(found) = settle(attempt, with) {
+                    fits.push(found);
+                }
+            }
+            if fits.len() == 1 { Ok(fits.pop().unwrap()) } else { Err(Failure::Ambiguous { def, name, candidates }) }
+        }
+        other => other,
     }
 }

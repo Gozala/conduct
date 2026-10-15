@@ -22,7 +22,7 @@
 ;;
 ;; Requires conduct.parser.
 
-(domain conduct.route)
+(domain conduct.route
 
 (type route-parse : (conduct.route/parse ?parser))
 (type route-format : (conduct.route/format ?formatter))
@@ -76,4 +76,4 @@
 
 ;; The first of `routes`, each made with `on`, that matches `path`:
 ;; `(ok answer)`, or `(error dead-ends)` with every route's.
-(define (dispatch routes path) (run (one-of routes) text: path))
+(define (dispatch routes path) (run (one-of routes) text: path)))

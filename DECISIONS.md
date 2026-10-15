@@ -287,30 +287,44 @@ it. Newest first.
   `murmur.x64.hash126`, which does not exist, so the default
   configuration cannot hash a key without a hasher passed in.
 
-## Names are pointers, in domains
+## Names are as written; a domain only writes prefixes
 
 - **Every definition is its hash, and a name is only a pointer to one.**
   There are no modules and no imports. A name is resolved once, when its
   source is added, and the hash is what is stored; a definition added
   later never changes what an earlier one meant. That is what makes a
-  bare name that guesses safe, as Unison's suffix names are.
-- **A domain is Dialog's:** `(domain io.gozala.parser)` first in a
-  source puts its definitions there, as an attribute's domain does in
-  Dialog, so one naming scheme covers what the database stores and what
-  the codebase defines. Dialog's grammar applies to the domain.
-- **Three spellings:** whole, `io.gozala.parser/succeed`; relative,
-  `./succeed`, in the source's own domain; and bare, `succeed`. A bare
-  name is a definition with no domain if there is one, else the one
-  definition of that name in any domain. Several domains with it, or one
-  and a built-in, make it ambiguous, and the error lists each whole name.
-  A definition of the same source comes first, so a recursive call needs
-  no `./`. A built-in's whole name is `conduct/count`.
+  name that guesses safe, as Unison's suffix names are.
+- **A name is written as meant** (you, Oct 14): `succeed` or
+  `io.gozala.parser/succeed`, the part before `/` optional and only for
+  telling names apart. Identity is the hash either way.
+- **`domain` wraps what it names:** `(domain io.gozala.parser forms..)`
+  prefixes each definition and claim inside it whose name has no `/`,
+  and `./x` inside it is `io.gozala.parser/x`. It is a rewrite of names
+  before anything else sees them, so it can be a macro later. An empty
+  domain and a domain inside a domain are errors.
+  - *Instead of* the earlier `(domain x)` heading a source: you found it
+    unclear where such a domain ends, as a Racket module's body is not.
+  - *Instead of* provide and use: names are not hidden, and what a name
+    means is settled by suffix and type rather than by what a source
+    imports, so there is nothing for an import to say.
+- **A name used is a suffix, by segment:** it reaches every definition
+  whose name ends with its segments, split at `.` and `/`, as Unison's
+  suffix names do. In order: a definition named exactly that, then one of
+  the same source, then those in the codebase, with a built-in
+  (`conduct/count`) as a candidate alongside them.
+- **Type decides what is left** (Unison's type-directed name
+  resolution): a name with several candidates is the one with which the
+  definition using it checks, trying each and settling further
+  ambiguity the same way. None or several fitting is an error listing
+  each whole name. The cost is a check per candidate, only where a name
+  is ambiguous.
+- **Held:** whether labels and attributes get distinct notation
+  (Clojure's `:foo` and `:ns/foo`). Attributes are still named
+  codebase-wide.
 - **Not yet:** a name that points at several hashes, which an editor
   lets a person choose among, and a pinned `name#hash` for text to say
   which; the same full name added again moves the name to the new hash.
-  Attributes, types and macros are not named in domains yet: an
-  attribute's identity becomes its name and its type, hashed as Dialog
-  hashes it, next.
+  Types and macros are not named this way yet.
 
 ## Naturals, and what a standard library builds on them
 
