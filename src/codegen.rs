@@ -158,6 +158,87 @@ fn fv(term: &Term, env: &[Slot]) -> Names {
 }
 
 /// Drop each of `names`, then evaluate `body`.
+/// `code` with each `$dup` and `$drop` of a local guarded by a test that
+/// it holds an object, so a value that is not one (a number, a Boolean)
+/// costs no call: Wasmtime does not inline across functions.
+fn inline_counts(code: &str) -> String {
+    const DUP: &str = "(call $dup (local.get ";
+    const DROP: &str = "(call $drop (local.get ";
+    let mut out = String::with_capacity(code.len() + code.len() / 4);
+    let mut rest = code;
+    loop {
+        let next = [(rest.find(DUP), true), (rest.find(DROP), false)]
+            .into_iter()
+            .filter_map(|(at, dup)| at.map(|a| (a, dup)))
+            .min_by_key(|(a, _)| *a);
+        let Some((at, dup)) = next else { break };
+        let prefix = if dup { DUP } else { DROP };
+        let after = &rest[at + prefix.len()..];
+        // `name))`: the local, then the two closing parentheses.
+        let Some(end) = after.find("))") else { break };
+        let name = &after[..end];
+        if name.contains(['(', ' ']) {
+            out.push_str(&rest[..at + prefix.len()]);
+            rest = after;
+            continue;
+        }
+        out.push_str(&rest[..at]);
+        let object = format!("(i64.eqz (i64.and (local.get {name}) (i64.const 7)))");
+        if dup {
+            let _ = write!(
+                out,
+                "(block (result i64) (if {object} (then (drop (call $dup (local.get {name}))))) (local.get {name}))"
+            );
+        } else {
+            let _ = write!(out, "(if {object} (then (call $drop (local.get {name}))))");
+        }
+        rest = &after[end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether argument `i` of `op` can never be a heap object, by its
+/// type: an integer or a Boolean, which need no dropping.
+fn never_object(op: Op, i: usize) -> bool {
+    match op {
+        Op::Add
+        | Op::Sub
+        | Op::Mul
+        | Op::Quot
+        | Op::Rem
+        | Op::Lt
+        | Op::Gt
+        | Op::Le
+        | Op::Ge
+        | Op::Not
+        | Op::BitAnd
+        | Op::BitOr
+        | Op::BitXor
+        | Op::ShiftLeft
+        | Op::ShiftRight
+        | Op::CountOnes
+        | Op::FromCodePoint => true,
+        Op::Natural => true,
+        Op::Byte => i == 0,
+        Op::Item | Op::SetAt | Op::InsertAt | Op::RemoveAt | Op::ByteAt | Op::CodePointAt => i == 1,
+        Op::Slice | Op::Occurs => i >= 1 && !(op == Op::Occurs && i == 1),
+        Op::IndexOf => i == 2,
+        _ => false,
+    }
+}
+
+/// The local or captured value a `$dup` of `value` duplicates, to borrow
+/// instead, where it is still held after the call: a built-in only reads
+/// its arguments. A captured value lives as long as its closure.
+fn borrowed<'v>(value: &'v str, live: &Names) -> Option<&'v str> {
+    let inner = value.strip_prefix("(call $dup ")?.strip_suffix(')')?;
+    if let Some(name) = inner.strip_prefix("(local.get ").and_then(|n| n.strip_suffix(')')) {
+        return (!name.contains(['(', ' ']) && live.contains(name)).then_some(inner);
+    }
+    (inner.starts_with("(i64.load offset=") && inner.ends_with("(i32.wrap_i64 (local.get $env))))")).then_some(inner)
+}
+
 fn with_drops(names: &Names, body: String) -> String {
     if names.is_empty() {
         return body;
@@ -513,7 +594,7 @@ impl<'a> Builder<'a> {
                 frame.owned
             )));
         }
-        let body = with_drops(&unused, code);
+        let body = inline_counts(&with_drops(&unused, code));
         if std::mem::take(&mut self.looped) {
             // Each pass through the loop owns the parameters anew, so the
             // ones the body never uses are dropped on every pass.
@@ -936,14 +1017,23 @@ impl<'a> Builder<'a> {
                 let gets: Vec<String> = temps.iter().map(|t| format!("(local.get {t})")).collect();
                 let call = prim(*op, &gets, self);
                 let mut out = String::from("(block (result i64)");
-                for (t, v) in temps.iter().zip(values) {
-                    let _ = write!(out, " (local.set {t} {v})");
+                // What is not consumed needs no reference of its own: a
+                // local the code still holds is borrowed as it is, and a
+                // constant or a number is never dropped.
+                let mut kept = Vec::new();
+                for (i, (t, v)) in temps.iter().zip(&values).enumerate() {
+                    // Only what outlives the call may be lent: a later
+                    // argument may take the last reference to a local.
+                    let lent = if consumed == Some(i) { None } else { borrowed(v, live) };
+                    let _ = write!(out, " (local.set {t} {})", lent.unwrap_or(v));
+                    let constant = v.starts_with("(i64.const ");
+                    if consumed != Some(i) && lent.is_none() && !constant && !never_object(*op, i) {
+                        kept.push(t);
+                    }
                 }
                 let _ = write!(out, " (local.set {result} {call})");
-                for (i, t) in temps.iter().enumerate() {
-                    if consumed != Some(i) {
-                        let _ = write!(out, " (call $drop (local.get {t}))");
-                    }
+                for t in kept {
+                    let _ = write!(out, " (call $drop (local.get {t}))");
                 }
                 let _ = write!(out, " (local.get {result}))");
                 out
@@ -1075,19 +1165,29 @@ fn consumes(op: Op) -> Option<usize> {
 /// A built-in applied to argument expressions. Every built-in borrows
 /// its arguments and returns an owned value.
 fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
-    let bool = |e: String| format!("(call $bool {e})");
+    let bool = |e: String| format!("(select (i64.const {TRUE}) (i64.const {FALSE}) {e})");
+    // Values equal as words are equal; otherwise only two objects can be.
+    let eq = |x: &str, y: &str| {
+        format!(
+            "(if (result i32) (i64.eq {x} {y}) (then (i32.const 1)) (else (if (result i32)              (i64.eqz (i64.and (i64.or {x} {y}) (i64.const 7))) (then (call $eq {x} {y})) (else (i32.const 0)))))"
+        )
+    };
+    // Tagged integers, `(n << 1) | 1`, added and multiplied in place.
     match op {
-        Op::Add => format!("(call $int_add {} {})", a[0], a[1]),
-        Op::Sub => format!("(call $int_sub {} {})", a[0], a[1]),
-        Op::Mul => format!("(call $int_mul {} {})", a[0], a[1]),
+        Op::Add => format!("(i64.sub (i64.add {} {}) (i64.const 1))", a[0], a[1]),
+        Op::Sub => format!("(i64.add (i64.sub {} {}) (i64.const 1))", a[0], a[1]),
+        Op::Mul => format!(
+            "(i64.add (i64.mul (i64.shr_s {} (i64.const 1)) (i64.sub {} (i64.const 1))) (i64.const 1))",
+            a[0], a[1]
+        ),
         Op::Quot => format!("(call $int_quot {} {})", a[0], a[1]),
         Op::Rem => format!("(call $int_rem {} {})", a[0], a[1]),
         Op::Lt => bool(format!("(i64.lt_s {} {})", a[0], a[1])),
         Op::Gt => bool(format!("(i64.gt_s {} {})", a[0], a[1])),
         Op::Le => bool(format!("(i64.le_s {} {})", a[0], a[1])),
         Op::Ge => bool(format!("(i64.ge_s {} {})", a[0], a[1])),
-        Op::Eq => bool(format!("(call $eq {} {})", a[0], a[1])),
-        Op::NotEq => bool(format!("(i32.eqz (call $eq {} {}))", a[0], a[1])),
+        Op::Eq => bool(eq(&a[0], &a[1])),
+        Op::NotEq => bool(format!("(i32.eqz {})", eq(&a[0], &a[1]))),
         Op::Not => bool(format!("(i64.ne {} (i64.const {TRUE}))", a[0])),
         Op::Str => {
             if a.is_empty() {

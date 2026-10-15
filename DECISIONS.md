@@ -287,6 +287,26 @@ it. Newest first.
   `murmur.x64.hash126`, which does not exist, so the default
   configuration cannot hash a key without a hasher passed in.
 
+## What runs most is compiled in place
+
+- **Measured first:** a counting loop cost 51 ns an iteration, nine
+  runtime calls of which did nothing: duplicating and dropping numbers
+  and constants, and the arithmetic itself. Wasmtime does not inline
+  across functions.
+- **Integer `+ - *` and `=` inline.** Tagged arithmetic is a couple of
+  instructions; `=` compares words and calls `$eq` only when both are
+  objects.
+- **Built-ins borrow what outlives them.** An argument that is a local
+  the code still holds after the call is passed as it is, not
+  duplicated and dropped. Only after the call: a later argument may take
+  the last reference to the same local (`(occurs? u in: (str u u) at:
+  0)`), which a test now covers.
+- **No counting what is never an object:** constants, and arguments
+  that are integers or Booleans by their type.
+- **Every `dup` and `drop` of a local tests for an object** before
+  calling. Larger code (6% on the demo's elements) for 25 to 50 times
+  faster tight loops.
+
 ## Bytes are a list of bytes, kept one to a byte
 
 - **Roc's way:** bytes are `(list byte)`, not an opaque type with its

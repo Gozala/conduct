@@ -406,3 +406,17 @@ fn a_function_calling_itself_last_loops() {
         Value::Int(100_007)
     );
 }
+
+#[test]
+fn a_built_in_borrows_only_what_outlives_it() {
+    // `u` is lent to `occurs?` while a later argument takes its last
+    // reference, so it must be held until the call is done.
+    let src = "(define (f u) (occurs? u in: (str u u) at: 0))
+               (define (g n) (f (str \"ab\" n)))";
+    assert_eq!(run(src, "g", &[int(7)]), Value::Bool(true));
+    // A local still held after the call is lent, and a number is never
+    // counted: both are fine to read again.
+    let src = "(define (h t n) (if (occurs? t in: t at: 0) (+ n (byte-count t)) n))
+               (define (k n) (h (str \"x\" n) n: n))";
+    assert_eq!(run(src, "k", &[int(5)]), Value::Int(7));
+}

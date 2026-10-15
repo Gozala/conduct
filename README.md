@@ -769,6 +769,14 @@ compiles to a Wasm function and a closure object in static data;
 lambdas compile to functions in a table, called through the closures
 that capture their free variables.
 
+Wasmtime does not inline one Wasm function into another, so what runs
+most is written in place: tagged integers are added, subtracted,
+multiplied and compared without a call, `=` calls the runtime only for
+two objects, and each reference count change first tests that the value
+is an object. A built-in borrows a local that is still held after it
+returns, so passing one costs no count at all. A counting loop runs at
+about a nanosecond an iteration.
+
 ### Memory
 
 Values are reference counted, after [Perceus]: no garbage collector, and

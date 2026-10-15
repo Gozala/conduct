@@ -92,15 +92,25 @@ stands.
   back with its prefix when code is printed, so that what the text says
   never depends on what else is in the codebase.
 
-## Arithmetic and equality go through runtime calls
+## Components have grown since the benchmark
 
-- **Found:** a counting loop costs about 44 ns an iteration on
-  Wasmtime, almost all of it calls to `$dup`, `$eq`, `$add` and `$drop`
-  for values that are small integers. Wasmtime does not inline across
-  Wasm functions.
-- **Planned:** inline fast paths in generated code: a tagged integer is
-  compared and added in place, and `dup`/`drop` test for an object
-  before calling. Expected to be several times faster; not done yet.
+- **Found:** with the fast paths below, todo-item is 37 KB where the
+  benchmark measured 29 KB. About 6 KB is the runtime the text, bytes,
+  order and JSON primitives added, which every module carries whole;
+  about 2 KB is the inlined reference-count tests.
+- **Planned:** keep only the runtime functions a module reaches, which
+  would win back more than the growth. The benchmark's size claims
+  ("half of Rust's") should be rechecked after that.
+
+## Integer arithmetic and reference counts are inline
+
+- **Done:** `+`, `-`, `*` and `=` are compiled in place, a built-in
+  borrows a local that outlives the call instead of counting it up and
+  down, numbers and constants are never dropped, and every `dup` and
+  `drop` of a local tests for an object before calling. A counting loop
+  went from 51 ns to about 1 ns an iteration, and summing a list of two
+  million from 0.48 s to 0.20 s (`tests/speed.rs`, ignored by default).
+- **Cost:** 6% larger components.
 
 ## Unclaimed combinator code can exhaust the type checker
 
