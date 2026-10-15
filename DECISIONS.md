@@ -103,6 +103,15 @@ it. Newest first.
   leaves nothing to do after such a call: a local is dropped as soon as
   nothing later uses it, and the call's arguments moved the rest. A test
   runs a million calls deep, through a cycle too.
+- **A function calling itself last is a loop.** Its body is wrapped in
+  a Wasm `loop`, and the call sets the parameters, through temporaries,
+  and branches to the start, so no call is made at all. Measured on
+  Wasmtime over 50 million iterations it runs no faster than
+  `return_call` (2.23 s against 2.27 s), since Cranelift already turns a
+  self `return_call` into a jump; it helps engines that do not. What
+  each iteration costs is the runtime calls for `dup`, `=`, `+` and
+  `drop` on small integers, about 44 ns; inlining their fast paths is
+  what would make loops cheap.
 - **Not yet: calls through a closure.** `$applyN_take` drops the
   closure after the call, since the callee borrows what it captured, so
   a closure call cannot simply be `return_call_indirect`; the callee

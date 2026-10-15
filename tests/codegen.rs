@@ -384,3 +384,25 @@ fn calls_in_tail_position_run_in_constant_stack() {
         Value::List(vec![Value::Int(1_000_000), Value::Bool(false), Value::Keyword("done".into())])
     );
 }
+
+#[test]
+fn a_function_calling_itself_last_loops() {
+    // The body is a Wasm loop, and the self call branches to it: no
+    // `call` of the function remains in its own body.
+    let mut cb = Codebase::new();
+    cb.add_source("(define (down n acc) (if (= n 0) acc (down (- n 1) acc: (+ acc 1)))) (define out (down 5 acc: 0))")
+        .unwrap();
+    let wat = codegen::compile_exports(&cb, &[("out", cb.names["out"])]).unwrap();
+    let name = format!("$d_{}", &cb.names["down"].hex()[..16]);
+    let body: String = wat.lines().skip_while(|l| !l.contains(&format!("(func {name}"))).take(2).collect();
+    assert!(body.contains("(loop $self"), "{body}");
+    assert!(!body.contains(&format!("call {name}")), "{body}");
+    assert_eq!(
+        run(
+            "(define (down n acc) (if (= n 0) acc (down (- n 1) acc: (+ acc 1)))) (define out (down 100000 acc: 7))",
+            "out",
+            &[]
+        ),
+        Value::Int(100_007)
+    );
+}
