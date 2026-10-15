@@ -193,12 +193,19 @@ impl Ty {
     }
 
     pub fn update(record: Ty, field: String, value: Ty) -> Ty {
-        // Setting a field again sets it once.
-        let record = match record {
-            Ty::Update(inner, k, _) if k == field => (*inner).clone(),
-            r => r,
-        };
-        Ty::Update(Rc::new(record), field, Rc::new(value))
+        // Setting a field again sets it once, however many other fields
+        // were set in between: `(r with a: x, b: y) with a: z` is
+        // `(r with b: y) with a: z`. Otherwise a record updated in a loop
+        // or through a chain of functions, as a parser's state is, grows
+        // a type as deep as the chain.
+        fn without(t: Ty, field: &str) -> Ty {
+            match t {
+                Ty::Update(inner, k, _) if k == field => (*inner).clone(),
+                Ty::Update(inner, k, v) => Ty::Update(Rc::new(without((*inner).clone(), field)), k, v),
+                other => other,
+            }
+        }
+        Ty::Update(Rc::new(without(record, &field)), field, Rc::new(value))
     }
 
     /// The highest level of any variable in the type.

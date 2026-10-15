@@ -11,3 +11,7 @@ pub const PARSER: &str = include_str!("../lib/parser.cdt");
 /// `conduct.route`: routes that parse and format paths, after subroute.
 /// Needs [`PARSER`].
 pub const ROUTE: &str = include_str!("../lib/route.cdt");
+
+/// `conduct.json`: JSON values read and written in conduct. Needs
+/// [`PARSER`].
+pub const JSON: &str = include_str!("../lib/json.cdt");

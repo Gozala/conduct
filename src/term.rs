@@ -122,6 +122,8 @@ pub enum Op {
     IndexOf,
     /// `(from-code-point c)`: the text of one code point.
     FromCodePoint,
+    /// `(join pieces with: sep)`: the texts of a list, `sep` between them.
+    Join,
     /// `(compare a b)`: -1, 0 or 1, by a total order over every value
     /// that agrees with `=`.
     Compare,
@@ -198,6 +200,7 @@ impl Op {
         Op::Occurs,
         Op::IndexOf,
         Op::FromCodePoint,
+        Op::Join,
     ];
 
     pub fn name(self) -> &'static str {
@@ -258,6 +261,7 @@ impl Op {
             Op::Occurs => "occurs?",
             Op::IndexOf => "index-of",
             Op::FromCodePoint => "from-code-point",
+            Op::Join => "join",
             Op::HasField => "has-field?",
             Op::WithEnv => "with-env",
             Op::Nth => "nth",

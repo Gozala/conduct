@@ -206,6 +206,7 @@ The design the language is heading for is in
 (code-point-at t at: i or: d) (from-code-point c)           ; the code point that starts at `i`
 (slice t from: a to: b)                                     ; the bytes from `a` up to `b`
 (occurs? small in: t at: i) (index-of small in: t from: i or: d)
+(join pieces with: ", ")                                    ; one text of a list of texts
 (item xs at: 2 or: d) (set-at xs 2 x)                       ; a list's item by index, or the default
 (insert-at xs 2 x) (remove-at xs 2)                         ; updated in place when unique
 ```
@@ -675,6 +676,17 @@ A recursive parser is a function of the parse state, `(define (value s)
 (match-path calc path: "/calculator/313/+/3")    ; (ok {a: 313, b: 3})
 (format-path calc params: {a: 313, b: 3})       ; "/calculator/313/+/3"
 (dispatch [(on calc handler: (fn [p] (+ (a p) (b p))))] path: "/calculator/2/+/40")   ; (ok 42)
+```
+
+- **`conduct.json`** (`lib/json.cdt`, needs `conduct.parser`): JSON read
+  with the parser and written back, as tagged values `:null`, `(bool b)`,
+  `(number n)`, `(decimal t)`, `(string t)`, `(array items)` and `(object
+  members)`; a number with a fraction or exponent keeps its text, as
+  conduct has no floats yet.
+
+```
+(from-text "{\"a\": [1, 2.5]}")    ; (ok (object [{member-name: "a", member-value: (array [(number 1) (decimal "2.5")])}]))
+(to-text (array [(string "é") :null]))   ; "[\"é\",null]"
 ```
 
 ### Compiled code

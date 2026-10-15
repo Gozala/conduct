@@ -5,6 +5,22 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
+## Unclaimed combinator code can exhaust the type checker
+
+- **Found:** without claims, the JSON library ran the checker out of
+  memory. Libraries now claim their types, which fixes it for them.
+- **Revisit:** user code written in the same style (many small
+  higher-order functions over a record) would hit it too; the general
+  fixes are structure sharing between types and simplifying bounds as
+  they are added. Worth doing before more people write conduct.
+
+## JSON shape
+
+- **Chosen:** JSON values are tagged variants, objects are ordered lists
+  of members, non-integers are `(decimal text)`.
+- **Revisit** when conduct has decimals, and if objects should be
+  `conduct.map` maps for lookup speed.
+
 ## The router design is new, not the one you approved
 
 - **Found:** you said an earlier router proposal "sounds great", but it

@@ -116,3 +116,12 @@ fn what_may_be_missing_answers_its_default() {
     assert_eq!(cb.type_of("find").unwrap(), "((\\ text) : [natural :none])");
     assert_eq!(cb.type_of("piece").unwrap(), "((\\ text) : text)");
 }
+
+#[test]
+fn texts_join() {
+    let items = list(
+        "(define out [(join [\"a\" \"bc\" \"\" \"é\"] with: \", \") (join [] with: \",\") (join [\"only\"] with: \"-\")
+                      (join [\"x\" \"y\"] with: \"\")])",
+    );
+    assert_eq!(items, vec![text("a, bc, , é"), text(""), text("only"), text("xy")]);
+}

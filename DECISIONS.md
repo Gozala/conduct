@@ -3,6 +3,42 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Libraries carry their types
+
+- **Unclaimed combinators made types explode.** conduct.json's
+  `string-literal`, three combinators deep, took the checker 51 seconds
+  and all memory, and the JSON library as a whole overflowed its stack:
+  each parser's inferred type carried the open parse-state record, with
+  every update the combinators made, and composing parsers multiplied
+  them.
+- **The parser library now names its types** (`(parser ?a problem: ?x)`,
+  `parse-state`, `parse-step`, `parse-dead-end`) and claims every public
+  combinator with them, as Elm's opaque `Parser a` keeps parser types
+  small. Every JSON definition checks in about a tenth of a second.
+- **Also: updating a field again drops the earlier update** however many
+  other fields were updated in between, `(r with a: x, b: y) with a: z`
+  being `(r with b: y) with a: z`. It did not fix this case alone.
+- **The risk remains for code without claims.** A library of
+  higher-order functions over records should claim its public types;
+  what would remove the risk is sharing structure between types (hash-
+  consing) and simplifying bounds as they are added.
+
+## JSON in conduct
+
+- **`conduct.json` reads JSON with conduct.parser and writes it back,**
+  as the first library that replaces something the runtime builds in
+  (`parse-json`). Values are tagged variants, because a `match` cannot
+  ask whether a value is text or a list; objects keep their members in
+  order as a list.
+- **Numbers:** a whole number is `(number n)`; one with a fraction or an
+  exponent is `(decimal text)`, its text as written, until conduct has
+  decimals (Dialog's numbers are decimal).
+- **`join`** is a new built-in: a list of texts in one allocation, which
+  writing JSON (and any text built of many pieces) needs.
+- **Tested:** values and strings round-trip, escapes and surrogate pairs
+  read, control characters are escaped, thirteen malformed inputs are
+  refused, and a 10,000-item array and 200-deep nesting read.
+
 ## Routes from one description, in both directions
 
 - **`conduct.route` follows subroute:** a route parses a path into

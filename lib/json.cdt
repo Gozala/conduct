@@ -1,0 +1,208 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at https://mozilla.org/MPL/2.0/.
+;;
+;; conduct.json: JSON values, read from text with conduct.parser and
+;; written back, in conduct rather than built into the runtime.
+;;
+;; A JSON value is one of
+;;   :null  (bool b)  (number n)  (decimal t)  (string t)
+;;   (array items)  (object members)
+;; where a number with a fraction or an exponent is a `decimal`, kept as
+;; the text it was written as, since conduct has no floats yet, and an
+;; object's members are `{member-name member-value}` in the order written.
+;;
+;; Requires conduct.parser.
+
+(domain conduct.json)
+
+(type (bool ?b) : {(conduct.json/bool ?b)})
+(type (number ?n) : {(conduct.json/number ?n)})
+(type (decimal ?t) : {(conduct.json/decimal ?t)})
+(type (string ?t) : {(conduct.json/string ?t)})
+(type (array ?items) : {(conduct.json/array ?items)})
+(type (object ?members) : {(conduct.json/object ?members)})
+(type member-name : (conduct.json/member-name text))
+(type member-value : (conduct.json/member-value ?json))
+
+;; Reading
+
+;; The JSON value `t` holds: `(ok json)`, or `(error dead-ends)`.
+(define (from-text t) (run (keep json-value ignoring: (end :expecting-end)) text: t))
+
+;; A value, with any whitespace around it.
+(define (json-value s)
+  ((skip spaces then:
+     (keep (one-of [(map-value (token "null" expecting: :expecting-value) with: (fn [_] :null))
+                    (map-value (token "true" expecting: :expecting-value) with: (fn [_] (bool true)))
+                    (map-value (token "false" expecting: :expecting-value) with: (fn [_] (bool false)))
+                    (map-value string-literal with: (fn [t] (string t)))
+                    number-literal
+                    (map-value (sequence json-value open: (symbol "[") separator: (symbol ",") close: (symbol "]")
+                                         spaces: spaces trailing: :forbidden)
+                               with: (fn [items] (array items)))
+                    (map-value (sequence json-member open: (symbol "{") separator: (symbol ",") close: (symbol "}")
+                                         spaces: spaces trailing: :forbidden)
+                               with: (fn [members] (object members)))])
+           ignoring: spaces))
+   s))
+
+(define (json-member s)
+  ((parsing [name string-literal _ spaces _ (symbol ":") v json-value]
+     (succeed {member-name: name, member-value: v}))
+   s))
+
+;; Strings
+
+(define string-literal (skip (symbol "\"") then: (loop [] with: string-piece)))
+
+;; The next piece of a string's text: up to the closing quote, an escape,
+;; or a run of characters that need none.
+(define (string-piece pieces)
+  (one-of [(map-value (symbol "\"") with: (fn [_] (done (join pieces with: ""))))
+           (map-value (skip (symbol "\\") then: escape) with: (fn [t] (continue (conj pieces t))))
+           (map-value (get-chomped (skip (chomp-if plain? expecting: :expecting-character) then: (chomp-while plain?)))
+                      with: (fn [t] (continue (conj pieces t))))]))
+
+;; A character a string holds as it is: not a quote, a backslash, or a
+;; control character.
+(define (plain? c) (and (>= c 32) (not= c 34) (not= c 92)))
+
+(define escape
+  (one-of [(map-value (symbol "\"") with: (fn [_] "\""))
+           (map-value (symbol "\\") with: (fn [_] "\\"))
+           (map-value (symbol "/") with: (fn [_] "/"))
+           (map-value (symbol "b") with: (fn [_] (from-code-point 8)))
+           (map-value (symbol "f") with: (fn [_] (from-code-point 12)))
+           (map-value (symbol "n") with: (fn [_] "\n"))
+           (map-value (symbol "r") with: (fn [_] (from-code-point 13)))
+           (map-value (symbol "t") with: (fn [_] (from-code-point 9)))
+           (skip (symbol "u") then: unicode-escape)]))
+
+;; `\uXXXX`, and a surrogate pair as one code point. A surrogate that is
+;; not half of a pair is U+FFFD.
+(define unicode-escape
+  (and-then hex4 with: (fn [high]
+    (if (and (>= high 0xd800) (<= high 0xdbff))
+      (one-of [(backtrackable (map-value (skip (symbol "\\u") then: hex4) with: (fn [low] (surrogates high low: low))))
+               (succeed (from-code-point high))])
+      (succeed (from-code-point high))))))
+
+(define (surrogates high low)
+  (if (and (>= low 0xdc00) (<= low 0xdfff))
+    (from-code-point (+ 0x10000 (+ (shift-left (natural (- high 0xd800) or: 0) 10) (natural (- low 0xdc00) or: 0))))
+    (str (from-code-point high) (from-code-point low))))
+
+(define hex4
+  (map-value (get-chomped (skip hex-digit then: (skip hex-digit then: (skip hex-digit then: hex-digit))))
+             with: (fn [t] (hex-value t at: 0 total: 0))))
+
+(define hex-digit (chomp-if hex? expecting: :expecting-hex-digit))
+
+(define (hex? c) (or (digit? c) (and (>= c 97) (<= c 102)) (and (>= c 65) (<= c 70))))
+
+(define (hex-value t at total)
+  (let [c (byte-at t at: at or: 0)]
+    (if (= c 0)
+      total
+      (hex-value t at: (+ at 1) total: (+ (* total 16) (hex-digit-value c))))))
+
+(define (hex-digit-value c)
+  (cond
+    (digit? c) (natural (- c 48) or: 0)
+    (>= c 97) (natural (- c 87) or: 0)
+    :else (natural (- c 55) or: 0)))
+
+;; Numbers
+
+;; JSON's number grammar: an optional minus, `0` or digits not starting
+;; with `0`, an optional fraction and an optional exponent.
+(define number-literal
+  (map-value
+    (get-chomped
+      (skip (one-of [(chomp-if (fn [c] (= c 45)) expecting: :expecting-value) (succeed {})])
+        then: (skip (one-of [(chomp-if (fn [c] (= c 48)) expecting: :expecting-value)
+                             (skip (chomp-if (fn [c] (and (>= c 49) (<= c 57))) expecting: :expecting-value)
+                                   then: (chomp-while digit?))])
+          then: (skip fraction then: exponent))))
+    with: number-of))
+
+(define fraction
+  (one-of [(skip (symbol ".") then: (skip (chomp-if digit? expecting: :expecting-digit) then: (chomp-while digit?)))
+           (succeed {})]))
+
+(define exponent
+  (one-of [(skip (chomp-if (fn [c] (or (= c 101) (= c 69))) expecting: :expecting-exponent)
+                 then: (skip (one-of [(chomp-if (fn [c] (or (= c 43) (= c 45))) expecting: :expecting-sign) (succeed {})])
+                             then: (skip (chomp-if digit? expecting: :expecting-digit) then: (chomp-while digit?))))
+           (succeed {})]))
+
+;; A whole number as `(number n)`, anything else as `(decimal text)`.
+(define (number-of t)
+  (if (occurs-any? t at: 0)
+    (decimal t)
+    (if (= (byte-at t at: 0 or: 0) 45)
+      (number (- 0 (digits-value t from: 1 to: (byte-count t) total: 0)))
+      (number (digits-value t from: 0 to: (byte-count t) total: 0)))))
+
+;; Whether `t` has a `.`, `e` or `E` at or after `at`.
+(define (occurs-any? t at)
+  (let [c (byte-at t at: at or: 0)]
+    (cond
+      (= c 0) false
+      (or (= c 46) (= c 101) (= c 69)) true
+      :else (occurs-any? t at: (+ at 1)))))
+
+;; Writing
+
+;; `j` as JSON text, with no whitespace.
+(define (to-text j)
+  (match j
+    :null "null"
+    (bool b) (if b "true" "false")
+    (number n) (str n)
+    (decimal t) t
+    (string t) (quote-text t)
+    (array items) (str "[" (join (map items each: to-text) with: ",") "]")
+    (object members) (str "{" (join (map members each: member-text) with: ",") "}")))
+
+(define (member-text m) (str (quote-text (member-name m)) ":" (to-text (member-value m))))
+
+;; `t` as a JSON string: quoted, with quotes, backslashes and control
+;; characters escaped.
+(define (quote-text t) (str "\"" (join (escape-from t from: 0 at: 0 pieces: []) with: "") "\""))
+
+(define (escape-from t from at pieces)
+  (let [b (byte-at t at: at or: 256)]
+    (cond
+      (= b 256) (conj pieces (slice t from: from to: at))
+      (or (< b 32) (= b 34) (= b 92))
+      (escape-from t from: (+ at 1) at: (+ at 1) pieces: (conj (conj pieces (slice t from: from to: at)) (escape-of b)))
+      :else (escape-from t from: from at: (+ at 1) pieces: pieces))))
+
+(define (escape-of b)
+  (cond
+    (= b 34) "\\\""
+    (= b 92) "\\\\"
+    (= b 10) "\\n"
+    (= b 13) "\\r"
+    (= b 9) "\\t"
+    (= b 8) "\\b"
+    (= b 12) "\\f"
+    :else (str "\\u00" (hex-char (shift-right b 4)) (hex-char (bit-and b 15)))))
+
+(define (hex-char n) (slice "0123456789abcdef" from: n to: (+ n 1)))
+
+;; Reading values
+
+;; The value of the member named `name`, or `or` when `j` is not an
+;; object or has none.
+(define (member j name or: default)
+  (match j
+    (object members) (member-in members name: name default: default)
+    _ default))
+
+(define (member-in members name default)
+  (match members
+    [] default
+    [m rest ...] (if (= (member-name m) name) (member-value m) (member-in rest name: name default: default))))
