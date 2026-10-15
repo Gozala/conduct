@@ -203,6 +203,12 @@ pub struct Builder<'a> {
     /// only to the parts of that expression that are in tail position
     /// too.
     tail: bool,
+    /// The definition whose body is being compiled, with its arity, when
+    /// it is a function: a call of it in tail position loops back to the
+    /// start of its body instead of calling. `looped` is set when one did,
+    /// so the body is wrapped in the loop it branches to.
+    current: Option<(Hash, usize)>,
+    looped: bool,
 }
 
 impl<'a> Builder<'a> {
@@ -231,6 +237,8 @@ impl<'a> Builder<'a> {
                 .flat_map(|(cap, fs)| fs.keys().map(move |f| (f.clone(), cap.clone())))
                 .collect(),
             tail: false,
+            current: None,
+            looped: false,
         };
         b.rtdata = b.static_bytes(RUNTIME_DATA.to_vec());
         b
@@ -462,7 +470,10 @@ impl<'a> Builder<'a> {
                 Term::Fn(labels, body) => {
                     let arity = &(labels.len() as u32);
                     let env: Vec<Slot> = (0..*arity).map(|i| Slot::Local(format!("$p{i}"))).collect();
-                    let (body, frame) = self.function_body(body, env, &cycle)?;
+                    self.current = Some((hash, labels.len()));
+                    let compiled = self.function_body(body, env, &cycle);
+                    self.current = None;
+                    let (body, frame) = compiled?;
                     let params: String = (0..*arity).map(|i| format!(" (param $p{i} i64)")).collect();
                     format!("  (func {name} (param $env i64){params} (result i64){}\n    {body})", locals(&frame))
                 }
@@ -500,7 +511,13 @@ impl<'a> Builder<'a> {
                 frame.owned
             )));
         }
-        Ok((with_drops(&unused, code), frame))
+        let body = with_drops(&unused, code);
+        if std::mem::take(&mut self.looped) {
+            // Each pass through the loop owns the parameters anew, so the
+            // ones the body never uses are dropped on every pass.
+            return Ok((format!("(loop $self (result i64) {body})"), frame));
+        }
+        Ok((body, frame))
     }
 
     /// The live set for each of a sequence of subterms evaluated in
@@ -730,7 +747,27 @@ impl<'a> Builder<'a> {
                 match direct {
                     Some(h) => {
                         let args = self.sequence(&arg_refs, env, frame, cycle, live)?;
-                        if tail { self.tail_call(h, &args)? } else { self.call(h, &args)? }
+                        if tail && self.current == Some((h, args.len())) {
+                            // The function calling itself last: set its
+                            // parameters and go back to the start, through
+                            // temporaries so no argument reads a parameter
+                            // already set.
+                            self.looped = true;
+                            let temps: Vec<String> = args.iter().map(|_| frame.local()).collect();
+                            let mut out = String::from("(block (result i64)");
+                            for (t, a) in temps.iter().zip(&args) {
+                                let _ = write!(out, " (local.set {t} {a})");
+                            }
+                            for (i, t) in temps.iter().enumerate() {
+                                let _ = write!(out, " (local.set $p{i} (local.get {t}))");
+                            }
+                            out.push_str(" (br $self))");
+                            out
+                        } else if tail {
+                            self.tail_call(h, &args)?
+                        } else {
+                            self.call(h, &args)?
+                        }
                     }
                     None => {
                         let mut items = vec![&**callee];
@@ -940,7 +977,12 @@ impl<'a> Builder<'a> {
         self.table.push(name.clone());
         self.code_ids.push(code_id);
         self.max_arity = self.max_arity.max(arity as usize);
-        let (code, inner_frame) = self.function_body(body, inner, cycle)?;
+        // A lambda's body is its own function: a call of the definition
+        // around it is a call, not a loop.
+        let outer = (self.current.take(), std::mem::take(&mut self.looped));
+        let compiled = self.function_body(body, inner, cycle);
+        (self.current, self.looped) = outer;
+        let (code, inner_frame) = compiled?;
         let params: String = (0..arity).map(|i| format!(" (param $p{i} i64)")).collect();
         self.funcs
             .push(format!("  (func {name} (param $env i64){params} (result i64){}\n    {code})", locals(&inner_frame)));

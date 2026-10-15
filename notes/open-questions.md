@@ -5,6 +5,16 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
+## Arithmetic and equality go through runtime calls
+
+- **Found:** a counting loop costs about 44 ns an iteration on
+  Wasmtime, almost all of it calls to `$dup`, `$eq`, `$add` and `$drop`
+  for values that are small integers. Wasmtime does not inline across
+  Wasm functions.
+- **Planned:** inline fast paths in generated code: a tagged integer is
+  compared and added in place, and `dup`/`drop` test for an object
+  before calling. Expected to be several times faster; not done yet.
+
 ## Unclaimed combinator code can exhaust the type checker
 
 - **Found:** without claims, the JSON library ran the checker out of
