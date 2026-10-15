@@ -867,6 +867,8 @@ impl Codebase {
                 let fail = |message: String| Error::Type { def: d.name.clone(), error: TypeError(message) };
                 let claimed = self.signature(claim, term, &schemes[i]).map_err(fail)?;
                 schemes[i] = Scheme { level: 0, body: claimed };
+            } else {
+                schemes[i] = Scheme { level: 0, body: s.compact(&schemes[i].body, 0) };
             }
         }
         Ok(schemes)

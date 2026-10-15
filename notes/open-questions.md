@@ -111,14 +111,24 @@ stands.
   million from 0.48 s to 0.20 s (`tests/speed.rs`, ignored by default).
 - **Cost:** 6% larger components, before the runtime was shaken.
 
-## Unclaimed combinator code can exhaust the type checker
+## Unclaimed combinator code checks, and shows badly
 
-- **Found:** without claims, the JSON library ran the checker out of
-  memory. Libraries now claim their types, which fixes it for them.
-- **Revisit:** user code written in the same style (many small
-  higher-order functions over a record) would hit it too; the general
-  fixes are structure sharing between types and simplifying bounds as
-  they are added. Worth doing before more people write conduct.
+- **Found:** what ran out of memory was mostly showing types, not
+  checking them: with the parser and JSON libraries' claims taken out,
+  checking took 1.6 s, and the largest stored type had 260,000 nodes,
+  because each use of a polymorphic definition copies its type and the
+  copies kept every bound. Showing one built a tree of all of it.
+- **Done:** a scheme is compacted before it is stored (variables that
+  occur one way only become what they are bounded by, and copies of the
+  same bounded shape are merged), so the largest is 44,000 nodes and
+  checking takes under a second; showing stops at 20,000 nodes and
+  writes `…` for the rest. `tests/unclaimed.rs` checks both libraries
+  without claims.
+- **Still:** an unclaimed combinator's type is shown with dozens of
+  variables (`(& ?a ?b ?c ...)`) that always occur together; Simple-sub's
+  co-occurrence analysis would merge them, on the graph, before storing.
+  And a debug build needs a larger stack than a test thread's 2 MB for
+  it, since its frames are large; release builds are fine.
 
 ## JSON shape
 

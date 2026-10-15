@@ -707,6 +707,129 @@ impl Solver {
         }
     }
 
+    /// A scheme's body, generalized above `limit`, without the variables
+    /// that carry nothing: one that only values flow out of is the union
+    /// of what flows into it, and one that only flows into things is the
+    /// intersection of what it flows into. Simple-sub's simplification,
+    /// done on the graph and before a scheme is stored, so that each use,
+    /// which copies the scheme, copies only what matters. Without it a
+    /// definition built of many small polymorphic ones (a parser of
+    /// combinators) has a type the size of every copy it was made of.
+    pub fn compact(&self, ty: &Ty, limit: u32) -> Ty {
+        let mut polarity: HashMap<u32, (bool, bool)> = HashMap::new();
+        let mut seen: HashSet<(u32, bool)> = HashSet::new();
+        polarities(ty, true, limit, &mut polarity, &mut seen);
+        let mut c = Compactor {
+            solver: self,
+            limit,
+            polarity,
+            kept: HashMap::new(),
+            memo: HashMap::new(),
+            in_progress: HashSet::new(),
+            recursive: HashMap::new(),
+            transparent: HashSet::new(),
+        };
+        let compacted = c.go(ty, true);
+        self.minimize(&compacted, limit, &c.transparent)
+    }
+
+    /// `ty` with nodes that denote the same type merged: two variables
+    /// with the same bounds, two records of the same fields, and so on,
+    /// found by partition refinement as states of an automaton are. Each
+    /// use of a polymorphic definition copies its type, so a type built of
+    /// many uses holds many copies that are the same.
+    /// Only `transparent` variables, which stand for their one bound, may
+    /// merge: two variables with the same bounds are still two unknowns.
+    fn minimize(&self, ty: &Ty, limit: u32, transparent: &HashSet<u32>) -> Ty {
+        // Every node reachable, by identity, and its children.
+        let mut index: HashMap<Key, usize> = HashMap::new();
+        let mut nodes: Vec<Ty> = Vec::new();
+        let mut stack = vec![ty.clone()];
+        while let Some(t) = stack.pop() {
+            let key = t.key();
+            if index.contains_key(&key) {
+                continue;
+            }
+            index.insert(key, nodes.len());
+            for c in children(&t, limit) {
+                stack.push(c);
+            }
+            nodes.push(t);
+        }
+        let kids: Vec<Vec<usize>> =
+            nodes.iter().map(|t| children(t, limit).iter().map(|c| index[&c.key()]).collect()).collect();
+        // Start from what each node is on its own, then split classes by
+        // their children's classes until nothing splits.
+        let mut class: Vec<usize> = {
+            let mut shapes: HashMap<String, usize> = HashMap::new();
+            nodes
+                .iter()
+                .map(|t| {
+                    let n = shapes.len();
+                    *shapes.entry(shape(t, limit, transparent)).or_insert(n)
+                })
+                .collect()
+        };
+        let mut count = class.iter().copied().max().map_or(0, |m| m + 1);
+        loop {
+            let mut signatures: HashMap<(usize, Vec<usize>), usize> = HashMap::new();
+            let next: Vec<usize> = (0..nodes.len())
+                .map(|i| {
+                    let mut sig: Vec<usize> = kids[i].iter().map(|&k| class[k]).collect();
+                    // A variable's bounds are sets: order and repetition
+                    // say nothing. A marker keeps lower from upper.
+                    if let Ty::Var(v) = &nodes[i]
+                        && v.level > limit
+                    {
+                        let lowers = v.lower.borrow().len();
+                        let (l, u) = sig.split_at_mut(lowers);
+                        l.sort_unstable();
+                        u.sort_unstable();
+                        let mut l = l.to_vec();
+                        let mut u = u.to_vec();
+                        l.dedup();
+                        u.dedup();
+                        sig = l;
+                        sig.push(usize::MAX);
+                        sig.extend(u);
+                    }
+                    let n = signatures.len();
+                    *signatures.entry((class[i], sig)).or_insert(n)
+                })
+                .collect();
+            let next_count = signatures.len();
+            class = next;
+            if next_count == count {
+                break;
+            }
+            count = next_count;
+        }
+        // One node for each class.
+        let mut built: HashMap<usize, Ty> = HashMap::new();
+        let mut vars: HashMap<usize, Var> = HashMap::new();
+        let mut pending: Vec<(Var, usize)> = Vec::new();
+        let root = index[&ty.key()];
+        let out = rebuild(root, &nodes, &kids, &class, limit, self, &mut built, &mut vars, &mut pending);
+        // A variable's bounds are filled once every class has its node.
+        while let Some((nv, i)) = pending.pop() {
+            let Ty::Var(v) = &nodes[i] else { unreachable!() };
+            let lowers = v.lower.borrow().len();
+            let mut seen = HashSet::new();
+            let mut l = Vec::new();
+            let mut u = Vec::new();
+            for (j, &k) in kids[i].iter().enumerate() {
+                let lower = j < lowers;
+                if seen.insert((lower, class[k])) {
+                    let t = rebuild(k, &nodes, &kids, &class, limit, self, &mut built, &mut vars, &mut pending);
+                    if lower { l.push(t) } else { u.push(t) }
+                }
+            }
+            *nv.lower.borrow_mut() = l;
+            *nv.upper.borrow_mut() = u;
+        }
+        out
+    }
+
     /// A copy of the scheme's body with fresh variables, at `level`.
     pub fn instantiate(&self, scheme: &Scheme, level: u32) -> Ty {
         let mut map = HashMap::new();
@@ -857,6 +980,285 @@ impl fmt::Display for Shallow<'_> {
 
 /// A type's name as a sentence says it: `an integer`, `a text`, and
 /// as it is where it is not a word.
+/// In which polarities each variable above `limit` occurs in `ty`.
+fn polarities(ty: &Ty, pol: bool, limit: u32, out: &mut HashMap<u32, (bool, bool)>, seen: &mut HashSet<(u32, bool)>) {
+    let mut go = |t: &Ty, p: bool| polarities(t, p, limit, out, seen);
+    match ty {
+        Ty::Var(v) if v.level > limit => {
+            if !seen.insert((v.id, pol)) {
+                return;
+            }
+            let entry = out.entry(v.id).or_insert((false, false));
+            if pol {
+                entry.0 = true;
+            } else {
+                entry.1 = true;
+            }
+            let bounds = if pol { v.lower.borrow().clone() } else { v.upper.borrow().clone() };
+            for b in &bounds {
+                polarities(b, pol, limit, out, seen);
+            }
+        }
+        Ty::Fn(params, ret, eff, _) => {
+            params.iter().for_each(|p| go(p, !pol));
+            go(ret, pol);
+            go(eff, pol);
+        }
+        Ty::Record(fields) => fields.values().for_each(|t| go(t, pol)),
+        Ty::List(t) | Ty::Dict(t) | Ty::Opt(t) | Ty::IfHas(_, t) | Ty::CapsPlus(t, _) => go(t, pol),
+        Ty::Task(a, b) | Ty::Update(a, _, b, _) => {
+            go(a, pol);
+            go(b, pol);
+        }
+        Ty::Tags(tags) => tags.values().flatten().for_each(|t| go(t, pol)),
+        Ty::Union(ts) | Ty::Inter(ts) => ts.iter().for_each(|t| go(t, pol)),
+        _ => {}
+    }
+}
+
+/// The nodes a node is made of, in order; a generic variable's lower
+/// bounds then its upper ones.
+fn children(t: &Ty, limit: u32) -> Vec<Ty> {
+    match t {
+        Ty::Var(v) if v.level > limit => v.lower.borrow().iter().chain(v.upper.borrow().iter()).cloned().collect(),
+        Ty::Fn(params, ret, eff, _) => params.iter().cloned().chain([(**ret).clone(), (**eff).clone()]).collect(),
+        Ty::Record(fields) => fields.values().cloned().collect(),
+        Ty::List(t) | Ty::Dict(t) | Ty::Opt(t) | Ty::IfHas(_, t) | Ty::CapsPlus(t, _) => vec![(**t).clone()],
+        Ty::Task(a, b) | Ty::Update(a, _, b, _) => vec![(**a).clone(), (**b).clone()],
+        Ty::Tags(tags) => tags.values().flatten().cloned().collect(),
+        Ty::Union(ts) | Ty::Inter(ts) => ts.iter().cloned().collect(),
+        _ => vec![],
+    }
+}
+
+/// What a node is apart from its children.
+fn shape(t: &Ty, limit: u32, transparent: &HashSet<u32>) -> String {
+    match t {
+        Ty::Var(v) if v.level > limit && transparent.contains(&v.id) => {
+            format!("bound {} {}", v.lower.borrow().len(), v.upper.borrow().len())
+        }
+        Ty::Var(v) if v.level > limit => format!("var {}", v.id),
+        // A variable that is not generic is itself.
+        Ty::Var(v) => format!("outer {}", v.id),
+        Ty::Fn(params, _, _, labels) => format!("fn {} {labels:?}", params.len()),
+        Ty::Record(fields) => format!("record {:?}", fields.keys().collect::<Vec<_>>()),
+        Ty::List(_) => "list".into(),
+        Ty::Dict(_) => "dict".into(),
+        Ty::Opt(_) => "opt".into(),
+        Ty::IfHas(k, _) => format!("ifhas {k}"),
+        Ty::CapsPlus(_, l) => format!("capsplus {l:?}"),
+        Ty::Task(..) => "task".into(),
+        Ty::Update(_, k, _, m) => format!("update {k} {m}"),
+        Ty::Tags(tags) => format!("tags {:?}", tags.iter().map(|(k, p)| (k, p.is_some())).collect::<Vec<_>>()),
+        Ty::Union(ts) => format!("union {}", ts.len()),
+        Ty::Inter(ts) => format!("inter {}", ts.len()),
+        Ty::Top => "top".into(),
+        Ty::Bot => "bot".into(),
+        Ty::Prim(p) => format!("prim {p:?}"),
+        Ty::View => "view".into(),
+        Ty::Effect => "effect".into(),
+        Ty::Rigid(n) => format!("rigid {n}"),
+        Ty::Caps(c) => format!("caps {c:?}"),
+    }
+}
+
+/// The node of class `class[i]`, built once.
+#[allow(clippy::too_many_arguments)]
+fn rebuild(
+    i: usize,
+    nodes: &[Ty],
+    kids: &[Vec<usize>],
+    class: &[usize],
+    limit: u32,
+    solver: &Solver,
+    built: &mut HashMap<usize, Ty>,
+    vars: &mut HashMap<usize, Var>,
+    pending: &mut Vec<(Var, usize)>,
+) -> Ty {
+    let c = class[i];
+    if let Some(t) = built.get(&c) {
+        return t.clone();
+    }
+    let t = match &nodes[i] {
+        Ty::Var(v) if v.level > limit => {
+            let nv = solver.fresh(v.level);
+            vars.insert(c, nv.clone());
+            pending.push((nv.clone(), i));
+            Ty::Var(nv)
+        }
+        node => {
+            let mut sub = |k: usize| rebuild(kids[i][k], nodes, kids, class, limit, solver, built, vars, pending);
+            match node {
+                Ty::Fn(params, _, _, labels) => {
+                    let n = params.len();
+                    let ps = (0..n).map(&mut sub).collect();
+                    let ret = sub(n);
+                    let eff = sub(n + 1);
+                    Ty::func_eff(ps, ret, eff, (**labels).clone())
+                }
+                Ty::Record(fields) => {
+                    let keys: Vec<String> = fields.keys().cloned().collect();
+                    let vals: Vec<Ty> = (0..keys.len()).map(&mut sub).collect();
+                    Ty::record(keys.into_iter().zip(vals))
+                }
+                Ty::List(_) => Ty::list(sub(0)),
+                Ty::Dict(_) => Ty::dict(sub(0)),
+                Ty::Opt(_) => Ty::opt(sub(0)),
+                Ty::IfHas(k, _) => Ty::if_has(k.clone(), sub(0)),
+                Ty::CapsPlus(_, l) => Ty::CapsPlus(Rc::new(sub(0)), l.clone()),
+                Ty::Task(..) => {
+                    let a = sub(0);
+                    Ty::task(a, sub(1))
+                }
+                Ty::Update(_, k, _, m) => {
+                    let r = sub(0);
+                    let v = sub(1);
+                    Ty::Update(Rc::new(r), k.clone(), Rc::new(v), *m)
+                }
+                Ty::Tags(tags) => {
+                    let mut at = 0;
+                    let tags: Vec<(String, Option<Ty>)> = tags
+                        .iter()
+                        .map(|(k, p)| {
+                            let p = p.as_ref().map(|_| {
+                                at += 1;
+                                sub(at - 1)
+                            });
+                            (k.clone(), p)
+                        })
+                        .collect();
+                    Ty::tags(tags)
+                }
+                Ty::Union(ts) => Ty::Union(Rc::new((0..ts.len()).map(&mut sub).collect())),
+                Ty::Inter(ts) => Ty::Inter(Rc::new((0..ts.len()).map(&mut sub).collect())),
+                other => other.clone(),
+            }
+        }
+    };
+    built.insert(c, t.clone());
+    t
+}
+
+/// The state of [`Solver::compact`].
+struct Compactor<'s> {
+    solver: &'s Solver,
+    limit: u32,
+    polarity: HashMap<u32, (bool, bool)>,
+    /// Variables that occur both ways, each copied once.
+    kept: HashMap<u32, Var>,
+    /// What a variable that occurs one way became.
+    memo: HashMap<(u32, bool), Ty>,
+    in_progress: HashSet<(u32, bool)>,
+    /// A variable met again inside its own bounds: the copy stands for
+    /// it, bounded by what it became.
+    recursive: HashMap<(u32, bool), Var>,
+    /// The variables made to stand for a type bounded one way, which are
+    /// that type and nothing else.
+    transparent: HashSet<u32>,
+}
+
+impl Compactor<'_> {
+    fn go(&mut self, ty: &Ty, pol: bool) -> Ty {
+        match ty {
+            Ty::Var(v) if v.level > self.limit => {
+                if self.polarity.get(&v.id) == Some(&(true, true)) {
+                    if let Some(nv) = self.kept.get(&v.id) {
+                        return Ty::Var(nv.clone());
+                    }
+                    let nv = self.solver.fresh(v.level);
+                    self.kept.insert(v.id, nv.clone());
+                    let lowers = v.lower.borrow().clone();
+                    let uppers = v.upper.borrow().clone();
+                    let l = lowers.iter().map(|t| self.go(t, true)).collect();
+                    let u = uppers.iter().map(|t| self.go(t, false)).collect();
+                    *nv.lower.borrow_mut() = l;
+                    *nv.upper.borrow_mut() = u;
+                    return Ty::Var(nv);
+                }
+                let key = (v.id, pol);
+                if let Some(t) = self.memo.get(&key) {
+                    return t.clone();
+                }
+                if self.in_progress.contains(&key) {
+                    let level = v.level;
+                    let rv = self.recursive.entry(key).or_insert_with(|| self.solver.fresh(level)).clone();
+                    return Ty::Var(rv);
+                }
+                self.in_progress.insert(key);
+                let bounds = if pol { v.lower.borrow().clone() } else { v.upper.borrow().clone() };
+                let mut parts: Vec<Ty> = Vec::new();
+                for b in &bounds {
+                    let t = self.go(b, pol);
+                    // What adds nothing to a union or an intersection.
+                    if !matches!((&t, pol), (Ty::Bot, true) | (Ty::Top, false)) {
+                        parts.push(t);
+                    }
+                }
+                self.in_progress.remove(&key);
+                let t = match parts.len() {
+                    0 if pol => Ty::Bot,
+                    0 => Ty::Top,
+                    1 => parts.pop().unwrap(),
+                    _ if pol => Ty::Union(Rc::new(parts)),
+                    _ => Ty::Inter(Rc::new(parts)),
+                };
+                let t = match self.recursive.get(&key) {
+                    Some(rv) => {
+                        rv.lower.borrow_mut().push(t.clone());
+                        rv.upper.borrow_mut().push(t);
+                        Ty::Var(rv.clone())
+                    }
+                    // What is not a variable or a primitive stays behind
+                    // one, bounded one way, so the copies each use of the
+                    // scheme makes share it as they share variables.
+                    None if !matches!(t, Ty::Var(_) | Ty::Prim(_) | Ty::Top | Ty::Bot | Ty::Rigid(_)) => {
+                        let nv = self.solver.fresh(v.level);
+                        self.transparent.insert(nv.id);
+                        if pol {
+                            nv.lower.borrow_mut().push(t);
+                        } else {
+                            nv.upper.borrow_mut().push(t);
+                        }
+                        Ty::Var(nv)
+                    }
+                    None => t,
+                };
+                self.memo.insert(key, t.clone());
+                t
+            }
+            Ty::Fn(params, ret, eff, labels) => Ty::func_eff(
+                params.iter().map(|p| self.go(p, !pol)).collect(),
+                self.go(ret, pol),
+                self.go(eff, pol),
+                (**labels).clone(),
+            ),
+            Ty::Record(fields) => {
+                let fields: Vec<(String, Ty)> = fields.iter().map(|(k, t)| (k.clone(), self.go(t, pol))).collect();
+                Ty::record(fields)
+            }
+            Ty::List(t) => Ty::list(self.go(t, pol)),
+            Ty::Dict(t) => Ty::dict(self.go(t, pol)),
+            Ty::Opt(t) => Ty::opt(self.go(t, pol)),
+            Ty::IfHas(k, t) => Ty::if_has(k.clone(), self.go(t, pol)),
+            Ty::CapsPlus(c, l) => Ty::CapsPlus(Rc::new(self.go(c, pol)), l.clone()),
+            Ty::Task(t, c) => Ty::task(self.go(t, pol), self.go(c, pol)),
+            Ty::Update(r, k, v, m) => {
+                let r = self.go(r, pol);
+                let v = self.go(v, pol);
+                Ty::set(r, k.clone(), v, *m)
+            }
+            Ty::Tags(tags) => {
+                let tags: Vec<(String, Option<Ty>)> =
+                    tags.iter().map(|(k, p)| (k.clone(), p.as_ref().map(|p| self.go(p, pol)))).collect();
+                Ty::tags(tags)
+            }
+            Ty::Union(ts) => Ty::Union(Rc::new(ts.iter().map(|t| self.go(t, pol)).collect())),
+            Ty::Inter(ts) => Ty::Inter(Rc::new(ts.iter().map(|t| self.go(t, pol)).collect())),
+            other => other.clone(),
+        }
+    }
+}
+
 fn article(name: &str) -> String {
     match name.chars().next() {
         _ if name.starts_with("a ") || name.starts_with("an ") => name.to_string(),
@@ -907,12 +1309,20 @@ pub enum Type {
 }
 
 /// Turn an inferred type into a displayable one and simplify it.
+///
+/// A type whose variables share bounds a great deal turns into a tree far
+/// larger than its graph; past [`SHOWN`] nodes the rest is shown as `…`
+/// rather than built.
 pub fn coalesce(ty: &Ty) -> Type {
     let mut recursive: HashMap<(u32, bool), u32> = HashMap::new();
     let mut next = 0x8000_0000u32;
-    let raw = coalesce_go(ty, true, &mut Vec::new(), &mut recursive, &mut next);
+    let mut budget = SHOWN;
+    let raw = coalesce_go(ty, true, &mut Vec::new(), &mut recursive, &mut next, &mut budget);
     simplify(raw)
 }
+
+/// How many nodes a type is built of, at most, to be shown.
+const SHOWN: usize = 20_000;
 
 fn coalesce_go(
     ty: &Ty,
@@ -920,7 +1330,12 @@ fn coalesce_go(
     in_process: &mut Vec<(u32, bool)>,
     recursive: &mut HashMap<(u32, bool), u32>,
     next: &mut u32,
+    budget: &mut usize,
 ) -> Type {
+    if *budget == 0 {
+        return Type::Named("…".into());
+    }
+    *budget -= 1;
     match ty {
         Ty::Top => Type::Top,
         Ty::Bot => Type::Bot,
@@ -930,40 +1345,44 @@ fn coalesce_go(
         Ty::Effect => Type::Effect,
         Ty::Tags(tags) => Type::Tags(
             tags.iter()
-                .map(|(k, p)| (k.clone(), p.as_ref().map(|p| coalesce_go(p, pol, in_process, recursive, next))))
+                .map(|(k, p)| (k.clone(), p.as_ref().map(|p| coalesce_go(p, pol, in_process, recursive, next, budget))))
                 .collect(),
         ),
         // Asking for `k` only if it is there is a record with `k?`, and
         // asks nothing if anything may be there.
-        Ty::IfHas(k, t) => match coalesce_go(t, pol, in_process, recursive, next) {
+        Ty::IfHas(k, t) => match coalesce_go(t, pol, in_process, recursive, next, budget) {
             Type::Top => Type::Top,
             t => Type::Record([(k.clone(), Type::Opt(Box::new(t)))].into_iter().collect()),
         },
         Ty::Caps(c) => Type::Caps((**c).clone()),
         Ty::Fn(params, ret, eff, labels) => Type::Fn(
-            params.iter().map(|p| coalesce_go(p, !pol, in_process, recursive, next)).collect(),
-            Box::new(coalesce_go(ret, pol, in_process, recursive, next)),
-            Box::new(coalesce_go(eff, pol, in_process, recursive, next)),
+            params.iter().map(|p| coalesce_go(p, !pol, in_process, recursive, next, budget)).collect(),
+            Box::new(coalesce_go(ret, pol, in_process, recursive, next, budget)),
+            Box::new(coalesce_go(eff, pol, in_process, recursive, next, budget)),
             (**labels).clone(),
         ),
         Ty::Record(fields) => Type::Record(
-            fields.iter().map(|(k, t)| (k.clone(), coalesce_go(t, pol, in_process, recursive, next))).collect(),
+            fields.iter().map(|(k, t)| (k.clone(), coalesce_go(t, pol, in_process, recursive, next, budget))).collect(),
         ),
-        Ty::List(t) => Type::List(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
+        Ty::List(t) => Type::List(Box::new(coalesce_go(t, pol, in_process, recursive, next, budget))),
         Ty::Task(t, c) => Type::Task(
-            Box::new(coalesce_go(t, pol, in_process, recursive, next)),
-            Box::new(coalesce_go(c, pol, in_process, recursive, next)),
+            Box::new(coalesce_go(t, pol, in_process, recursive, next, budget)),
+            Box::new(coalesce_go(c, pol, in_process, recursive, next, budget)),
         ),
-        Ty::CapsPlus(c, _) => coalesce_go(c, pol, in_process, recursive, next),
-        Ty::Dict(t) => Type::Dict(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
-        Ty::Opt(t) => Type::Opt(Box::new(coalesce_go(t, pol, in_process, recursive, next))),
+        Ty::CapsPlus(c, _) => coalesce_go(c, pol, in_process, recursive, next, budget),
+        Ty::Dict(t) => Type::Dict(Box::new(coalesce_go(t, pol, in_process, recursive, next, budget))),
+        Ty::Opt(t) => Type::Opt(Box::new(coalesce_go(t, pol, in_process, recursive, next, budget))),
         Ty::Update(r, k, v, _) => Type::Update(
-            Box::new(coalesce_go(r, pol, in_process, recursive, next)),
+            Box::new(coalesce_go(r, pol, in_process, recursive, next, budget)),
             k.clone(),
-            Box::new(coalesce_go(v, pol, in_process, recursive, next)),
+            Box::new(coalesce_go(v, pol, in_process, recursive, next, budget)),
         ),
-        Ty::Union(ts) => Type::Union(ts.iter().map(|t| coalesce_go(t, pol, in_process, recursive, next)).collect()),
-        Ty::Inter(ts) => Type::Inter(ts.iter().map(|t| coalesce_go(t, pol, in_process, recursive, next)).collect()),
+        Ty::Union(ts) => {
+            Type::Union(ts.iter().map(|t| coalesce_go(t, pol, in_process, recursive, next, budget)).collect())
+        }
+        Ty::Inter(ts) => {
+            Type::Inter(ts.iter().map(|t| coalesce_go(t, pol, in_process, recursive, next, budget)).collect())
+        }
         Ty::Var(v) => {
             let key = (v.id, pol);
             if in_process.contains(&key) {
@@ -977,10 +1396,10 @@ fn coalesce_go(
             let mut parts = vec![Type::Var(v.id)];
             if pol {
                 let lowers = v.lower.borrow().clone();
-                parts.extend(lowers.iter().map(|l| coalesce_go(l, pol, in_process, recursive, next)));
+                parts.extend(lowers.iter().map(|l| coalesce_go(l, pol, in_process, recursive, next, budget)));
             } else {
                 let uppers = v.upper.borrow().clone();
-                parts.extend(uppers.iter().map(|u| coalesce_go(u, pol, in_process, recursive, next)));
+                parts.extend(uppers.iter().map(|u| coalesce_go(u, pol, in_process, recursive, next, budget)));
             }
             in_process.pop();
             let body = if pol { Type::Union(parts) } else { Type::Inter(parts) };

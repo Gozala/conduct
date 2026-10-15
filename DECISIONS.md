@@ -287,6 +287,27 @@ it. Newest first.
   `murmur.x64.hash126`, which does not exist, so the default
   configuration cannot hash a key without a hasher passed in.
 
+## A scheme is compacted before it is stored
+
+- **Found:** with no claims, a library of parser combinators gave
+  definitions types of hundreds of thousands of nodes: every use of a
+  polymorphic definition copies its scheme, bounds and all, and a
+  variable's bounds in the polarity it never occurs in were copied too.
+- **Chosen:** Simple-sub's simplification, applied to the graph when a
+  definition's scheme is stored rather than only when it is shown. A
+  variable that occurs only positively stands for the union of its lower
+  bounds, and one that occurs only negatively for the intersection of
+  its upper bounds; what such a variable becomes stays behind a variable
+  of its own if it is not a primitive, so the copies a use makes still
+  share it. Then nodes that denote the same type are merged by partition
+  refinement, except variables that occur both ways: two unknowns with
+  the same bounds are still two unknowns, so merging them would be
+  unsound (`(\ ?a ?b) : ?a` is not `(\ ?a ?a) : ?a`).
+- **Showing is bounded:** past 20,000 nodes a shown type writes `…`.
+- **A consequence:** `{phone?: ?a, age?: any}` shows as `{phone?: ?a}`,
+  since asking for `age` only where it is there, with any value, asks
+  nothing; it always meant that.
+
 ## A module carries the runtime it reaches
 
 - **Found:** every component carried the whole runtime, so each new

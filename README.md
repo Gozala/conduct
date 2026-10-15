@@ -86,7 +86,7 @@ $ cargo run -- check examples/todo-item.cdt
 #4747ea7b44 init : ((\ (dict text)) : {done: boolean, editing: boolean, title: text, todo-id: text})
 #a65931f7a3 stay : ((\ ?a) : {effects: (list nothing), model: ?a})
 #6716c18e6a save : ((\ any model: {todo-id: any ?a ...}) : {effects: (list effect), model: (?a with editing: boolean)})
-#7dd369880c update : ((\ {action?: any, attribute?: any, key?: any, value?: (& ?a text)} model: {editing?: any, todo-id: text ?b ...}) : {effects: (list effect), model: [?b (?b with done: boolean) (?b with editing: boolean) (?b with todo-id: ?a) (?b with title: ?a)]})
+#7dd369880c update : ((\ {value?: (& ?a text)} model: {todo-id: text ?b ...}) : {effects: (list effect), model: [?b (?b with done: boolean) (?b with editing: boolean) (?b with todo-id: ?a) (?b with title: ?a)]})
 #e670df2d1f view : ((\ {done: boolean, editing: boolean, title: text}) : view)
 
 $ cargo run -- element examples/todo-item.cdt -o todo-item.wasm

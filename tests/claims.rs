@@ -64,7 +64,8 @@ fn a_record_type_matches() {
          (define (call p) (match p (person phone: n) n _ \"none\"))"
     ));
     assert_eq!(cb.type_of("describe").unwrap(), "((\\ {age: any, name: any}) : text)");
-    assert_eq!(cb.type_of("call").unwrap(), "((\\ {age?: any, name?: any, phone?: ?a}) : [?a text])");
+    // Asking for `age` only if it is there, with any value, asks nothing.
+    assert_eq!(cb.type_of("call").unwrap(), "((\\ {phone?: ?a}) : [?a text])");
     let src = format!(
         "{PERSON}
          (define (describe p) (match p (person who age: years) (str who \" \" years)))
@@ -134,7 +135,7 @@ fn a_variant_ranks_overlapping_records() {
              (done description: d) (str \"Done: \" d)))"
     );
     let cb = check(&src);
-    assert_eq!(cb.type_of("report").unwrap(), "((\\ {completed-at?: any, description: any, started-at?: any}) : text)");
+    assert_eq!(cb.type_of("report").unwrap(), "((\\ {description: any}) : text)");
     let job = |fields: &str| run(&format!("{src} (define a (report {{{fields}}}))"), "a");
     assert_eq!(job("description: \"x\""), Value::Str("Idle: x".into()));
     assert_eq!(job("description: \"x\", started-at: 1"), Value::Str("Pending: x".into()));
