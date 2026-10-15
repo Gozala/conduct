@@ -14,7 +14,7 @@
 ;;
 ;; Requires conduct.parser.
 
-(domain conduct.json)
+(domain conduct.json
 
 (type (bool ?b) : {(conduct.json/bool ?b)})
 (type (number ?n) : {(conduct.json/number ?n)})
@@ -205,4 +205,4 @@
 (define (member-in members name default)
   (match members
     [] default
-    [m rest ...] (if (= (member-name m) name) (member-value m) (member-in rest name: name default: default))))
+    [m rest ...] (if (= (member-name m) name) (member-value m) (member-in rest name: name default: default)))))

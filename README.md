@@ -604,29 +604,37 @@ every module.
 
 ### Names and domains
 
-A definition is its hash; a name only points at one. A source may start
-with `(domain io.gozala.parser)`, as Dialog names attributes, and its
-definitions are then named in it: `(define (succeed v) ..)` is
-`io.gozala.parser/succeed`. A name is written three ways:
+A definition is its hash; a name only points at one. A name is written
+as it is meant, with or without a prefix before `/`: `succeed` and
+`io.gozala.parser/succeed` are both names a definition may have. The
+prefix is there to tell names apart, not to put anything in a module.
+`domain` writes a prefix for everything it wraps:
 
 ```
-io.gozala.parser/succeed     ; whole
-./succeed                    ; in this source's domain
-succeed                      ; bare: the one definition of that name
+(domain io.gozala.parser
+  (define (succeed v) ..)        ; io.gozala.parser/succeed
+  (define (map-value p with) ..)
+  (define (keep p) (./map-value p with: ..)))   ; ./ is this domain
 ```
 
-A bare name is a definition with no domain if there is one, or else the
-one definition of that name in any domain. Two domains with the name,
-or one and a built-in, make it ambiguous, and the error lists each whole
-name to write instead; a built-in's whole name is `conduct/count`. There
-are no imports: what a name refers to is decided when its source is
-added, and stored as a hash, so a definition added later never changes
-what an earlier one meant.
+A name used refers to every definition whose name ends with it, segment
+by segment, where segments split at `.` and `/`: `succeed`,
+`parser/succeed` and `gozala.parser/succeed` all reach
+`io.gozala.parser/succeed`. Among those, a definition of the same
+source comes first, so a source's own names need no prefix. A name that
+still reaches several definitions, or one and a built-in (whose whole
+name is `conduct/count`), is chosen by type, as Unison does: the one
+with which the definition using it checks. When none or several do, the
+error lists each whole name to write instead.
+
+There are no imports: what a name refers to is decided when its source
+is added, and stored as a hash, so a definition added later never
+changes what an earlier one meant.
 
 ### Libraries
 
-Libraries are written in conduct and live in `lib/`; each names its own
-domain, and a codebase adds one as it adds any source
+Libraries are written in conduct and live in `lib/`; each wraps its
+definitions in a `domain`, and a codebase adds one as it adds any source
 (`conduct::library::MAP`). So far:
 
 - **`conduct.map`** (`lib/map.cdt`), a persistent hash map: a port of

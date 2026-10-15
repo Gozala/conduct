@@ -29,7 +29,7 @@
 ;;   column agree with its offset; elm/parser's stop at the match's start
 ;;   but count rows and columns to its end.
 
-(domain conduct.parser)
+(domain conduct.parser
 
 (type source : (conduct.parser/source text))
 (type offset : (conduct.parser/offset natural))
@@ -457,4 +457,4 @@
 (define (space? c) (or (= c 32) (= c 9) (= c 10) (= c 13)))
 
 ;; The code point that `text` starts with, or `no-char`.
-(define (code text) (code-point-at text at: 0 or: no-char))
+(define (code text) (code-point-at text at: 0 or: no-char)))

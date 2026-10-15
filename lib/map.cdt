@@ -31,7 +31,7 @@
 ;; perma-map's transient builders have no counterpart here: a map that
 ;; nothing else holds is updated in place, as every unique value is.
 
-(domain conduct.map)
+(domain conduct.map
 
 (type datamap : (conduct.map/datamap natural))
 (type nodemap : (conduct.map/nodemap natural))
@@ -221,4 +221,4 @@
 (define (from-entries es)
   (match es
     [] empty
-    [e rest ...] (put (from-entries rest) key: (entry-key e) value: (entry-value e))))
+    [e rest ...] (put (from-entries rest) key: (entry-key e) value: (entry-value e)))))

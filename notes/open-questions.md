@@ -5,6 +5,19 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
+## Names resolved by type cost a check per candidate
+
+- **Chosen:** where a name reaches several definitions, each is tried by
+  checking the whole component, recursively for further ambiguous
+  names. Exact names and same-source definitions are tried first, so
+  this only runs for a genuinely ambiguous name.
+- **Revisit** if sources with many ambiguous names get slow: the
+  attempts multiply. Checking per name, in the checker, rather than per
+  component, is the fix.
+- **Open, for you:** whether a name settled by type should be written
+  back with its prefix when code is printed, so that what the text says
+  never depends on what else is in the codebase.
+
 ## Arithmetic and equality go through runtime calls
 
 - **Found:** a counting loop costs about 44 ns an iteration on
@@ -75,8 +88,10 @@ stands.
   would: `map-value` (not `map`), `fail` (not `problem`), `skip` and
   `keep` for `|.`, and `parsing` for pipelines. A library's bare name
   that a built-in also has makes every bare use ambiguous.
-- **Revisit** with domains for built-ins: if `conduct/map` could be
-  shadowed per source, the library could use Elm's names.
+- **Revisit** now that names resolve by type: inside the library its own
+  `map` would come first, and a user's `map` would be chosen by type
+  between `conduct/map` and the parser's. Elm's names would work; the
+  cost is that a reader can no longer tell which `map` from the text.
 
 ## Numbers in parsers
 
