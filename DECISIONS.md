@@ -761,8 +761,17 @@ it. Newest first.
 - **Ranking needs record types, and a variant's union is their join:**
   attributes every case has are required, the others optional. That is
   what a `job` parameter accepts.
-- **Recursive types are refused** for now: expanding a claim that
-  refers to itself stops at a depth and says so.
+- **A type may be made of itself** (was: refused). A type met again
+  inside its own expansion, with the same arguments, is a variable
+  bounded by its expansion both ways, as `(rec ?a ..)` writes one, so
+  `(type (tree ?a) : [(leaf ?a) (node (list (tree ?a)))])` and two types
+  made of each other through an attribute (JSON's value and member)
+  both work. An attribute's type is read again inside each type, not
+  cached, so the recursion is seen through it; and a source's
+  attributes are read after all its types are declared, so types may
+  refer to each other in any order. A type that recurs with growing
+  arguments, `(nest (list ?a))` inside `(nest ?a)`, is refused: it has
+  no finite expansion.
 - **A bare name in a pattern that names a record type tests for it;**
   any other name binds. Types and definitions share one namespace, so
   the reading is never ambiguous for a definition's name.

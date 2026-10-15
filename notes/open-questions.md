@@ -5,6 +5,35 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
+## A claim's hash names its types, not what they are
+
+- **Found:** `(claim (size jv) : natural)` hashes the same whichever
+  `jv` is declared, because a claim is hashed as written. Two codebases
+  that declare `jv` differently give one hash to two different
+  signatures. Harmless while a codebase is one set of sources; wrong
+  once definitions are shared.
+- **Planned:** with types hashed (Unison's unique and structural types,
+  below in "invariants"), a claim hashes the types it names by their
+  hashes.
+
+## Private names, invariants and tests (discussed Oct 14)
+
+- **Found:** hiding functions does not protect invariants in conduct:
+  anyone who can name an attribute can build or read a record with it.
+  What would: private attributes (only their domain constructs, reads
+  or matches them), opaque types that structural subtyping cannot see
+  into, no reflective record operations that bypass them, and a codec
+  defined in the type's domain as the only way in from outside, since a
+  value from storage or a peer was never built by the constructor.
+- **Held** at your call. Open: whether an opaque type's identity is by
+  name (Unison's unique types) so stored values survive a library
+  change.
+- **Tests:** Racket's `(module+ test ..)` gives tests beside the code,
+  access to private names, and no cost to users. Here a `(test ..)` form
+  in a domain would need no module system: nothing reaches a test, so
+  it is never compiled into a program, and a pure test's result can be
+  cached by its hash, as Unison does. Not built.
+
 ## Names resolved by type cost a check per candidate
 
 - **Chosen:** where a name reaches several definitions, each is tried by

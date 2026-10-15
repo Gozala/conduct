@@ -9,7 +9,7 @@
 //! down.
 
 use crate::syntax::{Member, TypeExpr};
-use crate::types::{Prim, Solver, Ty};
+use crate::types::{Prim, Solver, Ty, Var};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
@@ -41,6 +41,10 @@ pub struct Claims {
     pub attributes: BTreeMap<String, String>,
     /// Each global name's declared value type, as written and as a type.
     pub attribute_types: BTreeMap<String, (String, Ty)>,
+    /// The type of an attribute's values as written, where it names no
+    /// variable: read again inside a type, so a type made of itself
+    /// through an attribute is.
+    pub attribute_exprs: BTreeMap<String, TypeExpr>,
     /// Types: record types, variants, constructors and aliases.
     pub types: BTreeMap<String, TypeDef>,
 }
@@ -61,11 +65,14 @@ pub struct Env<'a> {
     /// Whether what is read flows out (a result) rather than in (a
     /// parameter).
     positive: bool,
+    /// The types being expanded, each with its arguments, the variable
+    /// that stands for it inside itself, and whether it did.
+    expanding: Vec<(String, Vec<Ty>, Var, bool)>,
 }
 
 impl<'a> Env<'a> {
     pub fn new(mode: Mode<'a>) -> Self {
-        Env { vars: HashMap::new(), mode, depth: 0, positive: true }
+        Env { vars: HashMap::new(), mode, depth: 0, positive: true, expanding: Vec::new() }
     }
 
     fn var(&mut self, name: &str) -> Ty {
@@ -218,7 +225,7 @@ impl Claims {
                         return self.expand(name, def, vec![], env);
                     }
                     if let Some(global) = self.attributes.get(name) {
-                        return Ok(self.attribute_types[global].1.clone());
+                        return self.attribute_ty(global, env);
                     }
                     return Err(format!(
                         "`{name}` is not a type: declare it, or use `text`, `integer`, `boolean`, `keyword`, `any`"
@@ -279,7 +286,7 @@ impl Claims {
                                     format!("`{n}` in a record type is not a declared attribute")
                                 }
                             })?;
-                            (global.clone(), self.attribute_types[global].1.clone())
+                            (global.clone(), self.attribute_ty(global, env)?)
                         }
                         Member::Inline(g, value) => (g.clone(), self.ty(value, env)?),
                         Member::Field(l, value, _) => {
@@ -366,6 +373,15 @@ impl Claims {
         })
     }
 
+    /// The type of an attribute's values, read inside a type.
+    fn attribute_ty(&self, global: &str, env: &mut Env) -> Result<Ty> {
+        let Some(expr) = self.attribute_exprs.get(global) else { return Ok(self.attribute_types[global].1.clone()) };
+        let outer = std::mem::take(&mut env.vars);
+        let out = self.ty(expr, env);
+        env.vars = outer;
+        out
+    }
+
     /// A function's parameters' types, each with its label.
     pub fn params(&self, params: &[(Option<String>, TypeExpr)], env: &mut Env) -> Result<Vec<(Option<String>, Ty)>> {
         env.positive = !env.positive;
@@ -374,16 +390,62 @@ impl Claims {
         out
     }
 
+    /// A type by its definition. A type met again inside itself, with
+    /// the same arguments, is the type again: a variable bounded by it
+    /// both ways, as `(rec ?a ..)` writes one.
     fn expand(&self, name: &str, def: &TypeDef, bound: Vec<(String, Ty)>, env: &mut Env) -> Result<Ty> {
-        if env.depth >= DEPTH {
-            return Err(format!("`{name}` refers to itself; recursive types are not supported yet"));
+        let args: Vec<Ty> = bound.iter().map(|(_, t)| t.clone()).collect();
+        if let Some(entry) = env
+            .expanding
+            .iter_mut()
+            .find(|(n, a, _, _)| n == name && a.len() == args.len() && a.iter().zip(&args).all(|(x, y)| same(x, y)))
+        {
+            entry.3 = true;
+            return Ok(Ty::Var(entry.2.clone()));
         }
+        if env.depth >= DEPTH {
+            let names: Vec<&str> = env.expanding.iter().map(|(n, ..)| n.as_str()).collect();
+            let recurring = names.iter().find(|n| names.iter().filter(|m| m == n).count() > 1).unwrap_or(&name);
+            return Err(format!(
+                "`{recurring}` refers to itself with other types each time; only a type that recurs with the same ones \
+                 is supported"
+            ));
+        }
+        let solver = match env.mode {
+            Mode::Rigid(s) | Mode::Flexible(s, _) => s,
+        };
+        let Ty::Var(var) = solver.fresh_ty(1) else { unreachable!() };
+        env.expanding.push((name.to_string(), args, var, false));
         let outer = std::mem::replace(&mut env.vars, bound.into_iter().collect());
         env.depth += 1;
         let out = self.ty(&def.body, env);
         env.depth -= 1;
         env.vars = outer;
-        out
+        let (_, _, var, recurs) = env.expanding.pop().unwrap();
+        let out = out?;
+        if !recurs {
+            return Ok(out);
+        }
+        var.lower.borrow_mut().push(out.clone());
+        var.upper.borrow_mut().push(out);
+        Ok(Ty::Var(var))
+    }
+}
+
+/// Whether two types are the same one: the same variable or primitive,
+/// or one built once and shared, as an argument passed on unchanged is.
+fn same(a: &Ty, b: &Ty) -> bool {
+    match (a, b) {
+        (Ty::Var(x), Ty::Var(y)) => Rc::ptr_eq(x, y),
+        (Ty::Rigid(x), Ty::Rigid(y)) => x == y,
+        (Ty::Prim(x), Ty::Prim(y)) => x == y,
+        (Ty::Top, Ty::Top) | (Ty::Bot, Ty::Bot) | (Ty::View, Ty::View) | (Ty::Effect, Ty::Effect) => true,
+        (Ty::List(x), Ty::List(y)) | (Ty::Dict(x), Ty::Dict(y)) | (Ty::Opt(x), Ty::Opt(y)) => Rc::ptr_eq(x, y),
+        (Ty::Record(x), Ty::Record(y)) => Rc::ptr_eq(x, y),
+        (Ty::Tags(x), Ty::Tags(y)) => Rc::ptr_eq(x, y),
+        (Ty::Union(x), Ty::Union(y)) | (Ty::Inter(x), Ty::Inter(y)) => Rc::ptr_eq(x, y),
+        (Ty::Fn(x, ..), Ty::Fn(y, ..)) => Rc::ptr_eq(x, y),
+        _ => false,
     }
 }
 

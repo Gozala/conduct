@@ -262,6 +262,9 @@ what a name is:
   `(result ?value error: ?reason)`.
 - `(type job : [done pending idle])` is a variant: its cases in rank
   order.
+- A type may be made of itself, directly or through other types:
+  `(type (tree ?a) : [(leaf ?a) (node (list (tree ?a)))])`. It is shown
+  as `(rec ?a ..)`.
 
 `claim` is a definition's **signature**, and goes with a `define` of the
 same name in the same source; a claim of anything else is an error that

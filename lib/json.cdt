@@ -23,32 +23,42 @@
 (type (array ?items) : {(conduct.json/array ?items)})
 (type (object ?members) : {(conduct.json/object ?members)})
 (type member-name : (conduct.json/member-name text))
-(type member-value : (conduct.json/member-value ?json))
+(type member-value : (conduct.json/member-value json-value))
+
+;; A JSON value, and an object's member: each made of the other.
+(type json-member : {member-name member-value})
+(type json-value : [:null (bool boolean) (number integer) (decimal text) (string text)
+                    (array (list json-value)) (object (list json-member))])
+
+;; Why text is not JSON: what was expected where reading stopped.
+(type json-problem : [(expecting text) :expecting-character :expecting-digit :expecting-end :expecting-exponent
+                      :expecting-hex-digit :expecting-sign :expecting-value])
 
 ;; Reading
 
 ;; The JSON value `t` holds: `(ok json)`, or `(error dead-ends)`.
-(define (from-text t) (run (keep json-value ignoring: (end :expecting-end)) text: t))
+(claim (from-text text) : (result json-value error: (list (parse-dead-end json-problem))))
+(define (from-text t) (run (keep value-literal ignoring: (end :expecting-end)) text: t))
 
 ;; A value, with any whitespace around it.
-(define (json-value s)
+(define (value-literal s)
   ((skip spaces then:
      (keep (one-of [(map-value (token "null" expecting: :expecting-value) with: (fn [_] :null))
                     (map-value (token "true" expecting: :expecting-value) with: (fn [_] (bool true)))
                     (map-value (token "false" expecting: :expecting-value) with: (fn [_] (bool false)))
                     (map-value string-literal with: (fn [t] (string t)))
                     number-literal
-                    (map-value (sequence json-value open: (symbol "[") separator: (symbol ",") close: (symbol "]")
+                    (map-value (sequence value-literal open: (symbol "[") separator: (symbol ",") close: (symbol "]")
                                          spaces: spaces trailing: :forbidden)
                                with: (fn [items] (array items)))
-                    (map-value (sequence json-member open: (symbol "{") separator: (symbol ",") close: (symbol "}")
+                    (map-value (sequence member-literal open: (symbol "{") separator: (symbol ",") close: (symbol "}")
                                          spaces: spaces trailing: :forbidden)
                                with: (fn [members] (object members)))])
            ignoring: spaces))
    s))
 
-(define (json-member s)
-  ((parsing [name string-literal _ spaces _ (symbol ":") v json-value]
+(define (member-literal s)
+  ((parsing [name string-literal _ spaces _ (symbol ":") v value-literal]
      (succeed {member-name: name, member-value: v}))
    s))
 
@@ -156,6 +166,7 @@
 ;; Writing
 
 ;; `j` as JSON text, with no whitespace.
+(claim (to-text json-value) : text)
 (define (to-text j)
   (match j
     :null "null"
@@ -166,6 +177,7 @@
     (array items) (str "[" (join (map items each: to-text) with: ",") "]")
     (object members) (str "{" (join (map members each: member-text) with: ",") "}")))
 
+(claim (member-text json-member) : text)
 (define (member-text m) (str (quote-text (member-name m)) ":" (to-text (member-value m))))
 
 ;; `t` as a JSON string: quoted, with quotes, backslashes and control
@@ -197,11 +209,13 @@
 
 ;; The value of the member named `name`, or `or` when `j` is not an
 ;; object or has none.
+(claim (member json-value name: text or: ?a) : [json-value ?a])
 (define (member j name or: default)
   (match j
     (object members) (member-in members name: name default: default)
     _ default))
 
+(claim (member-in (list json-member) name: text default: ?a) : [json-value ?a])
 (define (member-in members name default)
   (match members
     [] default

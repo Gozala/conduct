@@ -292,3 +292,39 @@ fn members_of_a_record_are_attributes() {
     assert_eq!(cb.type_of("l").unwrap(), "{end: {x: natural, y: natural}, start: {x: natural, y: natural}}");
     assert_eq!(cb.type_of("length").unwrap(), "((\\ {end: {x: integer}, start: {x: integer}}) : integer)");
 }
+
+const TREE: &str = "
+(type (leaf ?v) : {(t.tree/leaf ?v)})
+(type (node ?c) : {(t.tree/node ?c)})
+(type (tree ?a) : [(leaf ?a) (node (list (tree ?a)))])
+(claim (total (tree natural)) : natural)
+(define (total t) (match t (leaf n) n (node cs) (sum cs at: 0)))
+(claim (sum (list (tree natural)) at: natural) : natural)
+(define (sum cs at) (match cs [] at [c rest ...] (sum rest at: (+ at (total c)))))
+(define x (total (node [(leaf 1) (node [(leaf 2) (leaf 3)])])))";
+
+#[test]
+fn a_type_may_be_made_of_itself() {
+    let cb = check(TREE);
+    assert_eq!(cb.type_of("total").unwrap(), "((\\ (rec ?a [(leaf natural) (node (list ?a))])) : natural)");
+    assert_eq!(run(TREE, "x"), Value::Int(6));
+    // Two types made of each other.
+    let cb = check(
+        "(type (pair ?p) : {(t.doc/pair ?p)})
+         (type (many ?m) : {(t.doc/many ?m)})
+         (type entry : {(t.doc/entry-value doc)})
+         (type doc : [(pair text) (many (list entry))])
+         (claim (depth doc) : natural)
+         (define (depth d) (match d (pair _) 0 (many es) (count es)))",
+    );
+    assert!(cb.type_of("depth").unwrap().contains("rec"));
+    // Not a type that grows each time it recurs.
+    let e = error(
+        "(type (leaf ?v) : {(t.tree/leaf ?v)})
+         (type (wrap ?a) : {(t.tree/wrap ?a)})
+         (type (nest ?a) : [(leaf ?a) (wrap (nest (list ?a)))])
+         (claim (f (nest natural)) : natural)
+         (define (f n) 1)",
+    );
+    assert!(e.contains("`nest` refers to itself with other types each time"), "{e}");
+}

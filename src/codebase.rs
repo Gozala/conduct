@@ -415,13 +415,19 @@ impl Codebase {
     /// Record type claims, after checking each agrees with what is
     /// already declared and every type they name is declared.
     fn claim(&mut self, claims: &[Claim], defs: &[Def]) -> Result<(), Error> {
+        // Attributes new in this source, whose values' types are read once
+        // every type the source declares is, so types may refer to each
+        // other in any order.
+        let mut fresh: Vec<(String, String, TypeExpr)> = Vec::new();
         for c in claims {
             let error = |message: String| Err(Error::Resolve { def: c.name.clone(), message });
             if self.names.contains_key(&c.name) || defs.iter().any(|d| d.name == c.name) {
                 return error(format!("`{}` names a definition, so it cannot also name a type", c.name));
             }
             match (&c.params, &c.ty) {
-                (None, TypeExpr::Attribute(global, value, _)) => self.claim_attribute(&c.name, global, value)?,
+                (None, TypeExpr::Attribute(global, value, _)) => {
+                    self.claim_attribute(&c.name, global, value, &mut fresh)?
+                }
                 (params, body) => {
                     if self.claims.attributes.contains_key(&c.name) {
                         return error(format!("`{}` is declared as an attribute", c.name));
@@ -448,13 +454,31 @@ impl Codebase {
                     if let TypeExpr::Record(members, _) = body {
                         for m in members {
                             if let syntax::Member::Inline(global, value) = m {
-                                self.claim_global(&c.name, global, value)?;
+                                self.claim_global(&c.name, global, value, &mut fresh)?;
                             }
                         }
                     }
                     self.claims.types.insert(c.name.clone(), TypeDef { params: vars, body: body.clone(), text });
                 }
             }
+        }
+        let new_globals: Vec<String> = fresh.iter().map(|(_, g, _)| g.clone()).collect();
+        for (_, global, value) in fresh {
+            // A variable an attribute does not tie to anything else asks
+            // nothing of its values.
+            let mut free = BTreeSet::new();
+            claims::vars(&value, &mut free);
+            if !free.is_empty() {
+                continue;
+            }
+            self.claims.attribute_exprs.insert(global.clone(), value);
+        }
+        for global in new_globals {
+            let Some(value) = self.claims.attribute_exprs.get(&global).cloned() else { continue };
+            let mut env = Env::new(Mode::Flexible(&self.solver, 1));
+            let ty =
+                self.claims.ty(&value, &mut env).map_err(|message| Error::Resolve { def: global.clone(), message })?;
+            self.claims.attribute_types.get_mut(&global).unwrap().1 = ty;
         }
         // Every type now refers to declared names, and a variant's ranks
         // can each be chosen.
@@ -482,7 +506,13 @@ impl Codebase {
         Ok(())
     }
 
-    fn claim_attribute(&mut self, name: &str, global: &str, value: &TypeExpr) -> Result<(), Error> {
+    fn claim_attribute(
+        &mut self,
+        name: &str,
+        global: &str,
+        value: &TypeExpr,
+        fresh: &mut Vec<(String, String, TypeExpr)>,
+    ) -> Result<(), Error> {
         let error = |message: String| Err(Error::Resolve { def: name.to_string(), message });
         if self.claims.types.contains_key(name) {
             return error(format!("`{name}` is declared as a type"));
@@ -492,14 +522,21 @@ impl Codebase {
         {
             return error(format!("`{name}` is already declared as the attribute `{before}`"));
         }
-        self.claim_global(name, global, value)?;
+        self.claim_global(name, global, value, fresh)?;
         self.claims.attributes.insert(name.to_string(), global.to_string());
         Ok(())
     }
 
     /// The type of a global name's values, which every claim of it must
-    /// agree on.
-    fn claim_global(&mut self, name: &str, global: &str, value: &TypeExpr) -> Result<(), Error> {
+    /// agree on. A new one is read with the rest of its source's types:
+    /// until then its values ask nothing.
+    fn claim_global(
+        &mut self,
+        name: &str,
+        global: &str,
+        value: &TypeExpr,
+        fresh: &mut Vec<(String, String, TypeExpr)>,
+    ) -> Result<(), Error> {
         let error = |message: String| Err(Error::Resolve { def: name.to_string(), message });
         let Some((domain, last)) = global.rsplit_once('/') else { unreachable!() };
         if domain.is_empty() || last.is_empty() {
@@ -512,22 +549,8 @@ impl Codebase {
             }
             return Ok(());
         }
-        // A variable an attribute does not tie to anything else asks
-        // nothing of its values.
-        let mut env = Env::new(Mode::Flexible(&self.solver, 1));
-        let ty = match value {
-            TypeExpr::Var(_) => Ty::Top,
-            _ => {
-                let mut free = BTreeSet::new();
-                claims::vars(value, &mut free);
-                if free.is_empty() {
-                    self.claims.ty(value, &mut env).map_err(|message| Error::Resolve { def: name.into(), message })?
-                } else {
-                    Ty::Top
-                }
-            }
-        };
-        self.claims.attribute_types.insert(global.to_string(), (written, ty));
+        self.claims.attribute_types.insert(global.to_string(), (written, Ty::Top));
+        fresh.push((name.to_string(), global.to_string(), value.clone()));
         Ok(())
     }
 
