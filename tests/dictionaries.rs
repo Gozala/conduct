@@ -57,7 +57,7 @@ fn get_reads_a_key_with_a_default() {
         "(define (lookup d) (get :k of: d or: 0))
          (define (by k d) (get k of: d or: \"\"))",
     );
-    assert_eq!(cb.type_of("lookup").unwrap(), "((\\ (dict ?a)) : [?a natural])");
+    assert_eq!(cb.type_of("lookup").unwrap(), "((\\ (dict ?a)) : [?a byte])");
     assert_eq!(cb.type_of("by").unwrap(), "((\\ keyword d: (dict ?a)) : [?a text])");
     assert_eq!(run("(define v (get :b of: {:a 1 :b 2} or: 0))", "v"), Value::Int(2));
     assert_eq!(run("(define v (get :c of: {:a 1 :b 2} or: 0))", "v"), Value::Int(0));
@@ -83,7 +83,7 @@ fn get_reads_an_attribute() {
          (define b (vertical {{x: 1, y: 2}}))"
     ));
     assert_eq!(cb.type_of("horizontal").unwrap(), "((\\ {x: ?a}) : ?a)");
-    assert_eq!(cb.type_of("vertical").unwrap(), "((\\ {y?: ?a}) : [?a natural])");
+    assert_eq!(cb.type_of("vertical").unwrap(), "((\\ {y?: ?a}) : [?a byte])");
     // The same as calling the attribute.
     let called = check(&format!("{src} (define (horizontal p) (x p))"));
     assert_eq!(cb.lookup("horizontal").unwrap().hash, called.lookup("horizontal").unwrap().hash);
@@ -91,5 +91,5 @@ fn get_reads_an_attribute() {
     assert_eq!(run(&format!("{src} (define b (get y of: {{x: 1, y: 2}} or: 0))"), "b"), Value::Int(2));
     // A local of the attribute's name is a key, not the attribute.
     let cb = check(&format!("{src} (define (f x d) (get x of: d or: 0))"));
-    assert_eq!(cb.type_of("f").unwrap(), "((\\ keyword d: (dict ?a)) : [?a natural])");
+    assert_eq!(cb.type_of("f").unwrap(), "((\\ keyword d: (dict ?a)) : [?a byte])");
 }

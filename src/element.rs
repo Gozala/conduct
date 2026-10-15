@@ -342,7 +342,7 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     (local $n i32) (local $i i32) (local $k i32) (local $children i64)
     (if (i64.eq (local.get $v) (i64.const 2)) (then (return (i32.const 0))))
     (local.set $k (call $kind (local.get $v)))
-    (if (i32.eq (local.get $k) (i32.const 2))
+    (if (call $is_list (local.get $v))
       (then
         (block $done (loop $next
           (br_if $done (i32.ge_u (local.get $i) (call $len (local.get $v))))
@@ -367,7 +367,7 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
     (local $na i32) (local $np i32) (local $pa i32) (local $pp i32) (local $pe i32) (local $at i32)
     (if (i64.eq (local.get $v) (i64.const 2)) (then (return)))
     (local.set $k (call $kind (local.get $v)))
-    (if (i32.eq (local.get $k) (i32.const 2))
+    (if (call $is_list (local.get $v))
       (then
         (local.set $n (call $len (local.get $v)))
         (block $done (loop $next

@@ -20,6 +20,9 @@
   ;;   6 view     4, then tag, attributes, children, events
   ;;   7 emit     2, then name, detail
   ;;   8 fetch    4, then method, url, body, handler
+  ;;   9 keyword  length in bytes, then its name's UTF-8 bytes
+  ;;  10 bytes    length, then that many bytes: a list whose items are all
+  ;;              naturals below 256, one to a byte (see "Bytes" below)
   ;;
   ;; Memory is reference counted, after Perceus: every block has an
   ;; 8-byte prefix, its reference count then its size class, just before
@@ -262,6 +265,16 @@
     (local.set $k (call $kind (local.get $v)))
     (local.set $n (call $len (local.get $v)))
     (local.set $p (call $ptr (local.get $v)))
+    ;; Bytes hash as the list of naturals they are.
+    (if (i32.eq (local.get $k) (i32.const 10))
+      (then
+        (local.set $h (call $fnv_word (local.get $h) (i64.or (i64.shl (i64.const 2) (i64.const 32)) (i64.extend_i32_u (local.get $n)))))
+        (block $done (loop $next
+          (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+          (local.set $h (call $fnv_word (local.get $h) (call $tag (i32.load8_u offset=8 (i32.add (local.get $p) (local.get $i))))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $next)))
+        (return (local.get $h))))
     ;; `{}` hashes alike as a record and as a dictionary, as it is equal.
     (if (i32.and (i32.eqz (local.get $n)) (i32.or (i32.eq (local.get $k) (i32.const 3)) (i32.eq (local.get $k) (i32.const 4))))
       (then (local.set $k (i32.const 3))))
@@ -538,7 +551,7 @@
     (if (i32.eq (local.get $k) (i32.const 9))
       (then (return (call $concat_owned (call $lit (i32.const 25) (i32.const 1))
         (call $str_new (call $str_data (local.get $v)) (call $len (local.get $v)))))))
-    (if (i32.eq (local.get $k) (i32.const 2))
+    (if (call $is_list (local.get $v))
       (then
         (local.set $out (call $lit (i32.const 9) (i32.const 1)))
         (local.set $n (call $len (local.get $v)))
@@ -564,6 +577,22 @@
     (local $k i32) (local $n i32) (local $i i32) (local $pa i32) (local $pb i32)
     (if (i64.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))
     (if (i32.eqz (i32.and (call $is_obj (local.get $a)) (call $is_obj (local.get $b)))) (then (return (i32.const 0))))
+    ;; Bytes are a list: equal to one of the same naturals however each
+    ;; is kept.
+    (if (i32.or (call $packed (local.get $a)) (call $packed (local.get $b)))
+      (then
+        (if (i32.eqz (i32.and (call $is_list (local.get $a)) (call $is_list (local.get $b)))) (then (return (i32.const 0))))
+        (local.set $n (call $len (local.get $a)))
+        (if (i32.ne (local.get $n) (call $len (local.get $b))) (then (return (i32.const 0))))
+        (if (i32.and (call $packed (local.get $a)) (call $packed (local.get $b)))
+          (then (return (call $bytes_eq (call $str_data (local.get $a)) (call $str_data (local.get $b)) (local.get $n)))))
+        (block $done (loop $next
+          (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+          (if (i32.eqz (call $eq (call $list_get (local.get $a) (local.get $i)) (call $list_get (local.get $b) (local.get $i))))
+            (then (return (i32.const 0))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $next)))
+        (return (i32.const 1))))
     (local.set $k (call $kind (local.get $a)))
     (if (i32.ne (local.get $k) (call $kind (local.get $b)))
       (then
@@ -620,7 +649,7 @@
     (local.set $k (call $kind (local.get $v)))
     (if (i32.eq (local.get $k) (i32.const 1)) (then (return (i32.const 3))))
     (if (i32.eq (local.get $k) (i32.const 9)) (then (return (i32.const 4))))
-    (if (i32.eq (local.get $k) (i32.const 2)) (then (return (i32.const 5))))
+    (if (i32.or (i32.eq (local.get $k) (i32.const 2)) (i32.eq (local.get $k) (i32.const 10))) (then (return (i32.const 5))))
     (if (i32.or (i32.eq (local.get $k) (i32.const 3)) (i32.eq (local.get $k) (i32.const 4))) (then (return (i32.const 6))))
     (i32.add (local.get $k) (i32.const 2)))
   (func $order_i64 (param $a i64) (param $b i64) (result i32)
@@ -641,6 +670,16 @@
     (local.set $kb (call $kind (local.get $b)))
     (local.set $na (call $len (local.get $a)))
     (local.set $nb (call $len (local.get $b)))
+    (if (i32.or (i32.eq (local.get $k) (i32.const 10)) (i32.eq (local.get $kb) (i32.const 10)))
+      (then
+        (local.set $n (select (local.get $na) (local.get $nb) (i32.lt_u (local.get $na) (local.get $nb))))
+        (block $done (loop $next
+          (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+          (local.set $c (call $cmp (call $list_get (local.get $a) (local.get $i)) (call $list_get (local.get $b) (local.get $i))))
+          (if (local.get $c) (then (return (local.get $c))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $next)))
+        (return (call $order_u32 (local.get $na) (local.get $nb)))))
     (if (i32.eq (local.get $r) (i32.const 6))
       (then
         ;; `{}` first; then records before dictionaries.
@@ -684,8 +723,13 @@
 
   ;; Lists
   (func $list_get (param $v i64) (param $i i32) (result i64)
-    ;; Borrowed: the element stays the list's.
-    (i64.load offset=8 (i32.add (call $ptr (local.get $v)) (i32.shl (local.get $i) (i32.const 3)))))
+    ;; Borrowed: the element stays the list's. A list of bytes answers
+    ;; the byte as a natural.
+    (local $p i32)
+    (local.set $p (call $ptr (local.get $v)))
+    (if (result i64) (i32.eq (i32.load (local.get $p)) (i32.const 10))
+      (then (call $tag (i32.load8_u offset=8 (i32.add (local.get $p) (local.get $i)))))
+      (else (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 3)))))))
   (func $list_nth (param $v i64) (param $i i64) (result i64)
     ;; The item at the Int `i`, owned.
     (call $dup (call $list_get (local.get $v) (i32.wrap_i64 (i64.shr_s (local.get $i) (i64.const 1))))))
@@ -708,6 +752,12 @@
       (else (local.get $default)))))
   (func $slice (param $v i64) (param $from i32) (param $n i32) (result i64)
     (local $p i32)
+    (if (call $packed (local.get $v))
+      (then
+        (local.set $p (call $bytes_new (local.get $n)))
+        (memory.copy (i32.add (local.get $p) (i32.const 8))
+          (i32.add (i32.add (call $ptr (local.get $v)) (i32.const 8)) (local.get $from)) (local.get $n))
+        (return (i64.extend_i32_u (local.get $p)))))
     (local.set $p (call $list_new (local.get $n)))
     (memory.copy (i32.add (local.get $p) (i32.const 8))
       (i32.add (i32.add (call $ptr (local.get $v)) (i32.const 8)) (i32.shl (local.get $from) (i32.const 3)))
@@ -719,9 +769,32 @@
       (then (call $slice (local.get $v) (i32.const 1) (i32.sub (call $len (local.get $v)) (i32.const 1))))
       (else (call $dup (local.get $v)))))
   (func $concat (param $a i64) (param $b i64) (result i64)
-    (local $p i32) (local $la i32) (local $lb i32)
+    (local $p i32) (local $la i32) (local $lb i32) (local $i i32)
     (local.set $la (call $len (local.get $a)))
     (local.set $lb (call $len (local.get $b)))
+    ;; Bytes and bytes are bytes; bytes and anything else, values.
+    (if (i32.and (call $packed (local.get $a)) (call $packed (local.get $b)))
+      (then
+        (local.set $p (call $bytes_new (i32.add (local.get $la) (local.get $lb))))
+        (memory.copy (i32.add (local.get $p) (i32.const 8)) (i32.add (call $ptr (local.get $a)) (i32.const 8)) (local.get $la))
+        (memory.copy (i32.add (i32.add (local.get $p) (i32.const 8)) (local.get $la))
+          (i32.add (call $ptr (local.get $b)) (i32.const 8)) (local.get $lb))
+        (return (i64.extend_i32_u (local.get $p)))))
+    (if (i32.or (call $packed (local.get $a)) (call $packed (local.get $b)))
+      (then
+        (local.set $p (call $list_new (i32.add (local.get $la) (local.get $lb))))
+        (block $done (loop $next
+          (br_if $done (i32.ge_u (local.get $i) (local.get $la)))
+          (call $list_set (local.get $p) (local.get $i) (call $dup (call $list_get (local.get $a) (local.get $i))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $next)))
+        (local.set $i (i32.const 0))
+        (block $done (loop $next
+          (br_if $done (i32.ge_u (local.get $i) (local.get $lb)))
+          (call $list_set (local.get $p) (i32.add (local.get $la) (local.get $i)) (call $dup (call $list_get (local.get $b) (local.get $i))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $next)))
+        (return (i64.extend_i32_u (local.get $p)))))
     (local.set $p (call $list_new (i32.add (local.get $la) (local.get $lb))))
     (memory.copy (i32.add (local.get $p) (i32.const 8)) (i32.add (call $ptr (local.get $a)) (i32.const 8)) (i32.shl (local.get $la) (i32.const 3)))
     (memory.copy (i32.add (i32.add (local.get $p) (i32.const 8)) (i32.shl (local.get $la) (i32.const 3)))
@@ -731,6 +804,18 @@
   (func $conj (param $a i64) (param $x i64) (result i64)
     (local $p i32) (local $n i32)
     (local.set $n (call $len (local.get $a)))
+    ;; A byte joining bytes, or an empty list, makes bytes.
+    (if (i32.and (call $is_byte (local.get $x)) (i32.or (call $packed (local.get $a)) (i32.eqz (local.get $n))))
+      (then
+        (local.set $p (call $bytes_new (i32.add (local.get $n) (i32.const 1))))
+        (memory.copy (i32.add (local.get $p) (i32.const 8)) (i32.add (call $ptr (local.get $a)) (i32.const 8)) (local.get $n))
+        (i32.store8 offset=8 (i32.add (local.get $p) (local.get $n)) (call $byte_of (local.get $x)))
+        (return (i64.extend_i32_u (local.get $p)))))
+    (if (call $packed (local.get $a))
+      (then
+        (local.set $p (call $list_copy (local.get $a) (i32.add (local.get $n) (i32.const 1))))
+        (call $list_set (local.get $p) (local.get $n) (call $dup (local.get $x)))
+        (return (i64.extend_i32_u (local.get $p)))))
     (local.set $p (call $list_new (i32.add (local.get $n) (i32.const 1))))
     (memory.copy (i32.add (local.get $p) (i32.const 8)) (i32.add (call $ptr (local.get $a)) (i32.const 8)) (i32.shl (local.get $n) (i32.const 3)))
     (call $dup_values (i32.add (local.get $p) (i32.const 8)) (local.get $n))
@@ -751,6 +836,20 @@
   (func $filter (param $f i64) (param $xs i64) (result i64)
     (local $p i32) (local $n i32) (local $i i32) (local $k i32) (local $x i64)
     (local.set $n (call $len (local.get $xs)))
+    (if (call $packed (local.get $xs))
+      (then
+        (local.set $p (call $bytes_new (local.get $n)))
+        (block $done (loop $next
+          (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+          (local.set $x (call $list_get (local.get $xs) (local.get $i)))
+          (if (i64.eq (call $apply1 (local.get $f) (local.get $x)) (i64.const 0x12))
+            (then
+              (i32.store8 offset=8 (i32.add (local.get $p) (local.get $k)) (call $byte_of (local.get $x)))
+              (local.set $k (i32.add (local.get $k) (i32.const 1)))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $next)))
+        (i32.store offset=4 (local.get $p) (local.get $k))
+        (return (i64.extend_i32_u (local.get $p)))))
     (local.set $p (call $list_new (local.get $n)))
     (block $done
       (loop $next
@@ -765,7 +864,110 @@
     (i32.store offset=4 (local.get $p) (local.get $k))
     (i64.extend_i32_u (local.get $p)))
 
-;; Reuse, after Perceus. A value whose count is one is held by its
+;; Bytes, after Roc's `List U8`: a list of naturals below 256 is a
+  ;; list like any other, and is kept one to a byte (kind 10) while it is
+  ;; one. Every list built-in reads both kinds alike through `$list_get`;
+  ;; one that adds a value that is not a byte to bytes answers a list of
+  ;; values, and `$conj` of a byte onto an empty list starts bytes, so a
+  ;; list built a byte at a time is bytes from its first byte.
+  (func $packed (param $v i64) (result i32) (i32.eq (call $kind (local.get $v)) (i32.const 10)))
+  (func $is_list (param $v i64) (result i32)
+    (local $k i32)
+    (local.set $k (call $kind (local.get $v)))
+    (i32.or (i32.eq (local.get $k) (i32.const 2)) (i32.eq (local.get $k) (i32.const 10))))
+  (func $is_byte (param $x i64) (result i32)
+    ;; A tagged natural below 256 is odd and below 512.
+    (i32.and (i64.eq (i64.and (local.get $x) (i64.const 1)) (i64.const 1)) (i64.lt_u (local.get $x) (i64.const 512))))
+  (func $byte_of (param $x i64) (result i32) (i32.wrap_i64 (i64.shr_u (local.get $x) (i64.const 1))))
+  (func $bytes_new (param $n i32) (result i32) (call $obj (i32.const 10) (local.get $n) (local.get $n)))
+  (func $unpack_into (param $a i64) (result i64)
+    ;; Bytes as a list of values, consuming them.
+    (local $p i32)
+    (local.set $p (call $list_copy (local.get $a) (call $len (local.get $a))))
+    (call $drop (local.get $a))
+    (i64.extend_i32_u (local.get $p)))
+  (func $text_bytes (param $t i64) (result i64)
+    ;; `(utf8 t)`: the bytes of `t`.
+    (local $p i32)
+    (local.set $p (call $bytes_new (call $len (local.get $t))))
+    (memory.copy (i32.add (local.get $p) (i32.const 8)) (call $str_data (local.get $t)) (call $len (local.get $t)))
+    (i64.extend_i32_u (local.get $p)))
+  (func $utf8_valid (param $p i32) (param $n i32) (result i32)
+    ;; Whether the `n` bytes at `p` are UTF-8: no stray continuation byte,
+    ;; no overlong form, no surrogate, nothing past U+10FFFF.
+    (local $i i32) (local $b i32) (local $w i32) (local $cp i32) (local $j i32) (local $c i32)
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $b (i32.load8_u (i32.add (local.get $p) (local.get $i))))
+      (if (i32.lt_u (local.get $b) (i32.const 0x80))
+        (then (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $next)))
+      (if (i32.lt_u (local.get $b) (i32.const 0xc2)) (then (return (i32.const 0))))
+      (if (i32.gt_u (local.get $b) (i32.const 0xf4)) (then (return (i32.const 0))))
+      (if (i32.ge_u (local.get $b) (i32.const 0xf0))
+        (then (local.set $w (i32.const 4)) (local.set $cp (i32.and (local.get $b) (i32.const 0x07))))
+        (else (if (i32.ge_u (local.get $b) (i32.const 0xe0))
+          (then (local.set $w (i32.const 3)) (local.set $cp (i32.and (local.get $b) (i32.const 0x0f))))
+          (else (local.set $w (i32.const 2)) (local.set $cp (i32.and (local.get $b) (i32.const 0x1f)))))))
+      (if (i32.gt_u (i32.add (local.get $i) (local.get $w)) (local.get $n)) (then (return (i32.const 0))))
+      (local.set $j (i32.const 1))
+      (block $cont (loop $more
+        (br_if $cont (i32.ge_u (local.get $j) (local.get $w)))
+        (local.set $c (i32.load8_u (i32.add (local.get $p) (i32.add (local.get $i) (local.get $j)))))
+        (if (i32.ne (i32.and (local.get $c) (i32.const 0xc0)) (i32.const 0x80)) (then (return (i32.const 0))))
+        (local.set $cp (i32.or (i32.shl (local.get $cp) (i32.const 6)) (i32.and (local.get $c) (i32.const 0x3f))))
+        (local.set $j (i32.add (local.get $j) (i32.const 1)))
+        (br $more)))
+      ;; Overlong three- and four-byte forms, surrogates, and beyond.
+      (if (i32.and (i32.eq (local.get $w) (i32.const 3)) (i32.lt_u (local.get $cp) (i32.const 0x800))) (then (return (i32.const 0))))
+      (if (i32.and (i32.eq (local.get $w) (i32.const 4)) (i32.lt_u (local.get $cp) (i32.const 0x10000))) (then (return (i32.const 0))))
+      (if (i32.and (i32.ge_u (local.get $cp) (i32.const 0xd800)) (i32.le_u (local.get $cp) (i32.const 0xdfff))) (then (return (i32.const 0))))
+      (if (i32.gt_u (local.get $cp) (i32.const 0x10ffff)) (then (return (i32.const 0))))
+      (local.set $i (i32.add (local.get $i) (local.get $w)))
+      (br $next)))
+    (i32.const 1))
+  (func $bytes_text (param $a i64) (param $d i64) (result i64)
+    ;; `(from-utf8 a or: d)`: the text the bytes of `a` are, or `d` when
+    ;; they are not UTF-8. A list of values that are all bytes reads too.
+    (local $p i32) (local $n i32) (local $i i32) (local $x i64) (local $out i64)
+    (local.set $n (call $len (local.get $a)))
+    (if (call $packed (local.get $a))
+      (then
+        (local.set $p (i32.add (call $ptr (local.get $a)) (i32.const 8)))
+        (if (call $utf8_valid (local.get $p) (local.get $n))
+          (then (return (call $str_new (local.get $p) (local.get $n)))))
+        (return (call $dup (local.get $d)))))
+    (local.set $out (call $str_new (i32.const 0) (local.get $n)))
+    (local.set $p (call $str_data (local.get $out)))
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $x (call $list_get (local.get $a) (local.get $i)))
+      (if (i32.eqz (call $is_byte (local.get $x)))
+        (then (call $drop (local.get $out)) (return (call $dup (local.get $d)))))
+      (i32.store8 (i32.add (local.get $p) (local.get $i)) (call $byte_of (local.get $x)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    (if (call $utf8_valid (local.get $p) (local.get $n)) (then (return (local.get $out))))
+    (call $drop (local.get $out))
+    (call $dup (local.get $d)))
+  (func $byte_or (param $x i64) (param $d i64) (result i64)
+    ;; `(byte x or: d)`: `x` where it is a byte, else `d`.
+    (if (result i64) (call $is_byte (local.get $x)) (then (local.get $x)) (else (call $dup (local.get $d)))))
+  (func $any_slice (param $v i64) (param $a i64) (param $b i64) (result i64)
+    ;; `(slice v from: a to: b)` of text or a list, clamped as text's is.
+    (local $n i32) (local $from i32) (local $to i32)
+    (if (i32.eq (call $kind (local.get $v)) (i32.const 1))
+      (then (return (call $text_slice (local.get $v) (local.get $a) (local.get $b)))))
+    (local.set $n (call $len (local.get $v)))
+    (local.set $from (call $index (local.get $a)))
+    (local.set $to (call $index (local.get $b)))
+    (if (i32.gt_u (local.get $from) (local.get $n)) (then (local.set $from (local.get $n))))
+    (if (i32.gt_u (local.get $to) (local.get $n)) (then (local.set $to (local.get $n))))
+    (if (i32.lt_u (local.get $to) (local.get $from)) (then (local.set $to (local.get $from))))
+    (if (i32.and (i32.eqz (local.get $from)) (i32.eq (local.get $to) (local.get $n)))
+      (then (return (call $dup (local.get $v)))))
+    (call $slice (local.get $v) (local.get $from) (i32.sub (local.get $to) (local.get $from))))
+
+  ;; Reuse, after Perceus. A value whose count is one is held by its
   ;; last user alone, so an update that consumes it may change it in
   ;; place: the result is the same value a copy would be, and nothing
   ;; else can tell. Each of these consumes its first collection argument
@@ -803,7 +1005,23 @@
     ;; block has room, and otherwise moves to a block twice its length, so
     ;; a list built by repeated `conj` is built in amortized constant time.
     (local $p i32) (local $n i32) (local $q i32) (local $out i64)
-    (if (call $unique (local.get $a))
+    (if (i32.and (call $unique (local.get $a)) (i32.and (call $packed (local.get $a)) (call $is_byte (local.get $x))))
+      (then
+        ;; Bytes grow a byte at a time the same way.
+        (local.set $p (call $ptr (local.get $a)))
+        (local.set $n (call $len (local.get $a)))
+        (if (i32.ge_u (local.get $n) (i32.sub (call $class_size (i32.load (i32.sub (local.get $p) (i32.const 4)))) (i32.const 8)))
+          (then
+            (local.set $q (call $bytes_new (i32.add (i32.shl (local.get $n) (i32.const 1)) (i32.const 1))))
+            (memory.copy (i32.add (local.get $q) (i32.const 8)) (i32.add (local.get $p) (i32.const 8)) (local.get $n))
+            (call $free (local.get $p))
+            (local.set $p (local.get $q))))
+        (i32.store8 offset=8 (i32.add (local.get $p) (local.get $n)) (call $byte_of (local.get $x)))
+        (i32.store offset=4 (local.get $p) (i32.add (local.get $n) (i32.const 1)))
+        (return (i64.extend_i32_u (local.get $p)))))
+    (if (i32.and (call $unique (local.get $a))
+          (i32.and (i32.eqz (call $packed (local.get $a)))
+            (i32.eqz (i32.and (call $is_byte (local.get $x)) (i32.eqz (call $len (local.get $a)))))))
       (then
         (local.set $p (call $ptr (local.get $a)))
         (local.set $n (call $len (local.get $a)))
@@ -854,6 +1072,17 @@
     (local $k i32) (local $p i32)
     (local.set $k (call $index (local.get $i)))
     (if (i32.ge_u (local.get $k) (call $len (local.get $a))) (then (return (local.get $a))))
+    (if (call $packed (local.get $a))
+      (then
+        (if (i32.eqz (call $is_byte (local.get $x)))
+          (then (return (call $set_at (call $unpack_into (local.get $a)) (local.get $i) (local.get $x)))))
+        (if (call $unique (local.get $a))
+          (then (local.set $p (call $ptr (local.get $a))))
+          (else
+            (local.set $p (call $ptr (call $slice (local.get $a) (i32.const 0) (call $len (local.get $a)))))
+            (call $drop (local.get $a))))
+        (i32.store8 offset=8 (i32.add (local.get $p) (local.get $k)) (call $byte_of (local.get $x)))
+        (return (i64.extend_i32_u (local.get $p)))))
     (if (call $unique (local.get $a))
       (then (local.set $p (call $ptr (local.get $a))))
       (else
@@ -869,6 +1098,17 @@
     (local.set $n (call $len (local.get $a)))
     (local.set $k (call $index (local.get $i)))
     (if (i32.gt_u (local.get $k) (local.get $n)) (then (local.set $k (local.get $n))))
+    (if (call $packed (local.get $a))
+      (then
+        (if (i32.eqz (call $is_byte (local.get $x)))
+          (then (return (call $insert_at (call $unpack_into (local.get $a)) (local.get $i) (local.get $x)))))
+        (local.set $p (call $bytes_new (i32.add (local.get $n) (i32.const 1))))
+        (memory.copy (i32.add (local.get $p) (i32.const 8)) (i32.add (call $ptr (local.get $a)) (i32.const 8)) (local.get $k))
+        (i32.store8 offset=8 (i32.add (local.get $p) (local.get $k)) (call $byte_of (local.get $x)))
+        (memory.copy (i32.add (i32.add (local.get $p) (i32.const 9)) (local.get $k))
+          (i32.add (i32.add (call $ptr (local.get $a)) (i32.const 8)) (local.get $k)) (i32.sub (local.get $n) (local.get $k)))
+        (call $drop (local.get $a))
+        (return (i64.extend_i32_u (local.get $p)))))
     (if (i32.and (call $unique (local.get $a)) (i32.lt_u (local.get $n) (call $capacity (call $ptr (local.get $a)))))
       (then (local.set $p (call $ptr (local.get $a))))
       (else
@@ -898,6 +1138,17 @@
     (local.set $n (call $len (local.get $a)))
     (local.set $k (call $index (local.get $i)))
     (if (i32.ge_u (local.get $k) (local.get $n)) (then (return (local.get $a))))
+    (if (call $packed (local.get $a))
+      (then
+        (if (call $unique (local.get $a))
+          (then (local.set $p (call $ptr (local.get $a))))
+          (else
+            (local.set $p (call $ptr (call $slice (local.get $a) (i32.const 0) (local.get $n))))
+            (call $drop (local.get $a))))
+        (memory.copy (i32.add (i32.add (local.get $p) (i32.const 8)) (local.get $k))
+          (i32.add (i32.add (local.get $p) (i32.const 9)) (local.get $k)) (i32.sub (i32.sub (local.get $n) (local.get $k)) (i32.const 1)))
+        (i32.store offset=4 (local.get $p) (i32.sub (local.get $n) (i32.const 1)))
+        (return (i64.extend_i32_u (local.get $p)))))
     (if (call $unique (local.get $a))
       (then (local.set $p (call $ptr (local.get $a))))
       (else
@@ -914,7 +1165,7 @@
     ;; `(map f xs)`, consuming `xs`: a unique list holds the results in
     ;; place of its elements.
     (local $p i32) (local $n i32) (local $i i32) (local $out i64)
-    (if (call $unique (local.get $xs))
+    (if (i32.and (call $unique (local.get $xs)) (i32.eqz (call $packed (local.get $xs))))
       (then
         (local.set $p (call $ptr (local.get $xs)))
         (local.set $n (call $len (local.get $xs)))
@@ -933,7 +1184,7 @@
     ;; `(filter f xs)`, consuming `xs`: a unique list keeps what passes,
     ;; compacted in place.
     (local $p i32) (local $n i32) (local $i i32) (local $k i32) (local $x i64) (local $out i64)
-    (if (call $unique (local.get $xs))
+    (if (i32.and (call $unique (local.get $xs)) (i32.eqz (call $packed (local.get $xs))))
       (then
         (local.set $p (call $ptr (local.get $xs)))
         (local.set $n (call $len (local.get $xs)))
@@ -1601,7 +1852,7 @@
     ;; A keyword is its name, as JSON has no keywords.
     ;; It is laid out as a string, so it quotes as one.
     (if (i32.eq (local.get $k) (i32.const 9)) (then (return (call $json_quote (local.get $v)))))
-    (if (i32.eq (local.get $k) (i32.const 2))
+    (if (call $is_list (local.get $v))
       (then
         (local.set $out (call $lit (i32.const 9) (i32.const 1)))
         (local.set $n (call $len (local.get $v)))
@@ -1635,7 +1886,7 @@
       (then (call $dict_get (local.get $j) (local.get $key)))
       (else (i64.const 0x02))))
   (func $json_items (param $j i64) (result i64)
-    (if (result i64) (i32.eq (call $kind (local.get $j)) (i32.const 2))
+    (if (result i64) (call $is_list (local.get $j))
       (then (call $dup (local.get $j)))
       (else (i64.extend_i32_u (call $list_new (i32.const 0))))))
   (func $json_str (param $j i64) (result i64)
@@ -1653,7 +1904,7 @@
       (then (return (call $lit (i32.const 42) (i32.const 7)))))
     (local.set $k (call $kind (local.get $j)))
     (if (i32.eq (local.get $k) (i32.const 1)) (then (return (call $lit (i32.const 30) (i32.const 6)))))
-    (if (i32.eq (local.get $k) (i32.const 2)) (then (return (call $lit (i32.const 49) (i32.const 5)))))
+    (if (call $is_list (local.get $j)) (then (return (call $lit (i32.const 49) (i32.const 5)))))
     (if (i32.eq (local.get $k) (i32.const 4)) (then (return (call $lit (i32.const 54) (i32.const 6)))))
     (call $lit (i32.const 19) (i32.const 4)))
   (func $json_bool (param $j i64) (result i64)

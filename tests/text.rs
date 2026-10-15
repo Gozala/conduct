@@ -114,7 +114,8 @@ fn what_may_be_missing_answers_its_default() {
     );
     assert_eq!(cb.type_of("head").unwrap(), "((\\ text) : [natural :end])");
     assert_eq!(cb.type_of("find").unwrap(), "((\\ text) : [natural :none])");
-    assert_eq!(cb.type_of("piece").unwrap(), "((\\ text) : text)");
+    // `slice` cuts text or a list, and answers what it cut.
+    assert_eq!(cb.type_of("piece").unwrap(), "((\\ (& ?a [text (list any)])) : ?a)");
 }
 
 #[test]

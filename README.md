@@ -207,6 +207,10 @@ The design the language is heading for is in
 (slice t from: a to: b)                                     ; the bytes from `a` up to `b`
 (occurs? small in: t at: i) (index-of small in: t from: i or: d)
 (join pieces with: ", ")                                    ; one text of a list of texts
+(utf8 "hé")                                                  ; text's bytes: (list byte), [104 195 169]
+(from-utf8 bytes or: :invalid)                              ; the text bytes are, or the default
+(byte n or: 0)                                              ; an integer as a byte, or the default
+(slice xs from: 1 to: 3)                                    ; a list too: bytes slice to bytes
 (item xs at: 2 or: d) (set-at xs 2 x)                       ; a list's item by index, or the default
 (insert-at xs 2 x) (remove-at xs 2)                         ; updated in place when unique
 ```
@@ -365,7 +369,23 @@ shows the bound it needs and the union it answers:
 (count-up -5)                   ; integer
 ```
 
+A `byte` is a view of `natural` in turn, the naturals below 256, and a
+literal below 256 is one, so `[0xff 0xd8]` is a `(list byte)`. Sums
+and products of bytes are naturals, quotients and remainders stay
+bytes.
+
 Both hold 62 bits until wider numbers land.
+
+### Bytes
+
+Bytes are a list, as Roc's are `List U8`: `(list byte)`, read and built
+with the list built-ins and matched with list patterns. Underneath, a
+list whose items are all bytes is kept one to a byte, and stays so while
+only bytes join it: `conj` of a byte onto an empty list starts bytes,
+and a unique list of bytes grows in place a byte at a time. Adding
+anything else makes a list of values with the same items, so the
+representation is never something code can see: `(= (utf8 "ab") [97
+98])`, and they hash and order alike.
 
 ### No nil
 

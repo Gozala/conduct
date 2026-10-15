@@ -287,6 +287,33 @@ it. Newest first.
   `murmur.x64.hash126`, which does not exist, so the default
   configuration cannot hash a key without a hasher passed in.
 
+## Bytes are a list of bytes, kept one to a byte
+
+- **Roc's way:** bytes are `(list byte)`, not an opaque type with its
+  own encoder and decoder language as Elm's `Bytes` is. Every list
+  built-in and list pattern works on them, so a binary format is read
+  the way a list is, `[0xff 0xd8 rest ...]`.
+- **`byte` is a view of `natural`,** as `natural` is of `integer`, and
+  a literal below 256 is a byte. That is the precise type under
+  subtyping, and what lets `[0xff 0xd8]` be bytes without a conversion;
+  the cost is that small literals print as `byte`. `+` and `*` answer
+  their arguments' type joined with `natural`, since a sum of bytes need
+  not be one; `quot` and `rem` keep it.
+- **One to a byte, invisibly.** A list of bytes is a heap object of its
+  own kind (10), laid out as text is. Every list built-in reads either
+  kind through `$list_get`; one that adds something that is not a byte
+  copies into a list of values; `=`, `hash` and `compare` treat the two
+  as the list they are. Nothing in the language can tell them apart, so
+  this is an optimization the runtime may change.
+- **Where bytes start:** `utf8`, and `conj` of a byte onto an empty
+  list, so a list built a byte at a time is bytes from its first byte.
+  A literal list is a list of values, even of bytes; packing literals is
+  left for when it matters.
+- **`slice` takes a list too,** typed `(& ?a [text (list any)])` to
+  `?a`, so slicing bytes answers bytes.
+- **`from-utf8` takes a default,** as the other conversions do, rather
+  than Roc's `Result` with the offset of the problem.
+
 ## conduct.codec, after elm-codec
 
 - **One description, both ways.** A codec is `{codec-encode

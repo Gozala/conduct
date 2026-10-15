@@ -210,6 +210,7 @@ impl Claims {
                 "text" => Ty::str(),
                 "integer" => Ty::int(),
                 "natural" => Ty::nat(),
+                "byte" => Ty::byte(),
                 "boolean" => Ty::bool(),
                 "json" => Ty::Prim(Prim::Json),
                 "keyword" => Ty::Prim(Prim::Keyword),

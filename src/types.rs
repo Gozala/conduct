@@ -22,6 +22,9 @@ pub enum Prim {
     /// A whole number that is not negative, as Dialog's `natural:`: a
     /// view of the integers, so every natural is an integer.
     Nat,
+    /// A natural below 256: a view of the naturals, so a list of bytes is
+    /// a list of naturals, as Roc's `List U8` is a list.
+    Byte,
     Bool,
     Str,
     /// A parsed JSON value, read with the `json-` built-ins.
@@ -38,6 +41,7 @@ impl Prim {
         match self {
             Prim::Int => "integer",
             Prim::Nat => "natural",
+            Prim::Byte => "byte",
             Prim::Bool => "boolean",
             Prim::Str => "text",
             Prim::Json => "json",
@@ -118,6 +122,10 @@ impl Ty {
     }
     pub fn nat() -> Ty {
         Ty::Prim(Prim::Nat)
+    }
+
+    pub fn byte() -> Ty {
+        Ty::Prim(Prim::Byte)
     }
     pub fn bool() -> Ty {
         Ty::Prim(Prim::Bool)
@@ -339,7 +347,8 @@ impl Solver {
             (_, Ty::Inter(rs)) => rs.iter().try_for_each(|r| self.go(lhs, r, cache)),
             (Ty::Prim(a), Ty::Prim(b)) if a == b => Ok(()),
             // Every natural is an integer.
-            (Ty::Prim(Prim::Nat), Ty::Prim(Prim::Int)) => Ok(()),
+            (Ty::Prim(Prim::Nat | Prim::Byte), Ty::Prim(Prim::Int)) => Ok(()),
+            (Ty::Prim(Prim::Byte), Ty::Prim(Prim::Nat)) => Ok(()),
             // `{}` is an empty dictionary, and a record that has none of
             // the attributes it may have.
             (Ty::Prim(Prim::Empty), Ty::Dict(_)) => Ok(()),
@@ -771,7 +780,9 @@ fn fits(l: &Ty, r: &Ty) -> bool {
         (_, Ty::Union(rs)) => rs.iter().any(|r| fits(l, r)),
         (Ty::Inter(ls), _) => ls.iter().any(|l| fits(l, r)),
         (_, Ty::Inter(rs)) => rs.iter().all(|r| fits(l, r)),
-        (Ty::Prim(a), Ty::Prim(b)) => a == b || (*a == Prim::Nat && *b == Prim::Int),
+        (Ty::Prim(a), Ty::Prim(b)) => {
+            a == b || matches!((a, b), (Prim::Nat | Prim::Byte, Prim::Int) | (Prim::Byte, Prim::Nat))
+        }
         (Ty::Prim(Prim::Empty), Ty::Dict(_) | Ty::Record(_)) => true,
         (Ty::Tags(tags), Ty::Prim(Prim::Keyword)) => tags.values().all(Option::is_none),
         (Ty::Tags(a), Ty::Tags(b)) => a.keys().all(|k| b.contains_key(k)),
@@ -1342,9 +1353,12 @@ fn normalize(ty: Type) -> Type {
             if out.iter().any(|t| matches!(t, Type::Dict(_) | Type::Record(_))) {
                 out.retain(|t| *t != Type::Prim(Prim::Empty));
             }
-            // Nor a natural to an integer.
+            // Nor a natural to an integer, nor a byte to either.
             if out.contains(&Type::Prim(Prim::Int)) {
-                out.retain(|t| *t != Type::Prim(Prim::Nat));
+                out.retain(|t| *t != Type::Prim(Prim::Nat) && *t != Type::Prim(Prim::Byte));
+            }
+            if out.contains(&Type::Prim(Prim::Nat)) {
+                out.retain(|t| *t != Type::Prim(Prim::Byte));
             }
             merge_tags(&mut out, true);
             records_beside_records(&mut out);
@@ -1371,7 +1385,11 @@ fn normalize(ty: Type) -> Type {
             if out.contains(&Type::Bot) {
                 return Type::Bot;
             }
-            // A natural that is an integer as well is a natural.
+            // A natural that is an integer as well is a natural, and a
+            // byte that is either is a byte.
+            if out.contains(&Type::Prim(Prim::Byte)) {
+                out.retain(|t| *t != Type::Prim(Prim::Int) && *t != Type::Prim(Prim::Nat));
+            }
             if out.contains(&Type::Prim(Prim::Nat)) {
                 out.retain(|t| *t != Type::Prim(Prim::Int));
             }

@@ -52,6 +52,8 @@ pub const TRUE: i64 = 0x12;
 
 pub const KIND_STR: u32 = 1;
 pub const KIND_LIST: u32 = 2;
+/// A list of bytes, one to a byte: see `runtime.wat`.
+pub const KIND_BYTES: u32 = 10;
 pub const KIND_RECORD: u32 = 3;
 pub const KIND_DICT: u32 = 4;
 pub const KIND_CLOSURE: u32 = 5;
@@ -1137,8 +1139,11 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::Compare => format!("(call $compare {} {})", a[0], a[1]),
         Op::ByteCount => format!("(call $byte_count {})", a[0]),
         Op::ByteAt => format!("(call $byte_at {} {} {})", a[0], a[1], a[2]),
+        Op::Utf8 => format!("(call $text_bytes {})", a[0]),
+        Op::FromUtf8 => format!("(call $bytes_text {} {})", a[0], a[1]),
+        Op::Byte => format!("(call $byte_or {} {})", a[0], a[1]),
         Op::CodePointAt => format!("(call $code_point_at {} {} {})", a[0], a[1], a[2]),
-        Op::Slice => format!("(call $text_slice {} {} {})", a[0], a[1], a[2]),
+        Op::Slice => format!("(call $any_slice {} {} {})", a[0], a[1], a[2]),
         Op::Occurs => bool(format!("(call $occurs {} {} {})", a[0], a[1], a[2])),
         Op::IndexOf => format!("(call $index_of {} {} {} {})", a[0], a[1], a[2], a[3]),
         Op::FromCodePoint => format!("(call $from_code_point {})", a[0]),
@@ -1445,6 +1450,7 @@ pub fn decode(memory: &[u8], v: i64) -> Value {
         KIND_STR => Value::Str(String::from_utf8(memory[p + 8..p + 8 + len].to_vec()).unwrap()),
         KIND_KEYWORD => Value::Keyword(String::from_utf8(memory[p + 8..p + 8 + len].to_vec()).unwrap()),
         KIND_LIST => Value::List((0..len).map(|i| decode(memory, i64_at(p + 8 + 8 * i))).collect()),
+        KIND_BYTES => Value::List(memory[p + 8..p + 8 + len].iter().map(|b| Value::Int(*b as i64)).collect()),
         KIND_RECORD => {
             Value::Record((0..len).map(|i| (i64_at(p + 8 + 16 * i), decode(memory, i64_at(p + 16 + 16 * i)))).collect())
         }

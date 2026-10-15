@@ -5,6 +5,16 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
+## Small literals are bytes
+
+- **Chosen:** a literal below 256 has type `byte`, the narrowest view
+  that holds it, so `(define x 5)` shows `byte`. Precise, and needed for
+  `[0xff 0xd8]` to be bytes, but it reads oddly where nothing is binary.
+- **Revisit** if it bothers you in practice: the alternative is literals
+  as `natural` and a conversion, `(byte 255 or: 0)`, wherever bytes are
+  written by hand. Dialog has no byte type that I know of; if its
+  numbers carry a precision (`natural:8`?), the name should follow it.
+
 ## conduct.codec's names are elm-codec's
 
 - **Chosen:** `codec/text`, `codec/list`, `codec/map` rather than

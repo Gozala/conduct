@@ -44,8 +44,8 @@ fn a_record_type_constructs() {
          (define bob (person name: \"Bob\" age: 40 phone: \"555\"))
          (define same {{name: \"Ada\", age: 36}})"
     ));
-    assert_eq!(cb.type_of("ada").unwrap(), "{age: natural, name: text}");
-    assert_eq!(cb.type_of("bob").unwrap(), "{age: natural, name: text, phone: text}");
+    assert_eq!(cb.type_of("ada").unwrap(), "{age: byte, name: text}");
+    assert_eq!(cb.type_of("bob").unwrap(), "{age: byte, name: text, phone: text}");
     // A constructor builds the record its attributes make.
     assert_eq!(cb.lookup("ada").unwrap().hash, cb.lookup("same").unwrap().hash);
     assert!(error(&format!("{PERSON} (define x (person \"Ada\"))")).contains("`person` needs `age:`"));
@@ -172,9 +172,9 @@ fn signatures_are_checked_and_shown() {
     assert_eq!(cb.type_of("twice").unwrap(), "((\\ ((\\ ?a) : ?a) x: ?a) : ?a)");
     assert_eq!(cb.type_of("id").unwrap(), "((\\ ?a) : ?a)");
     let e = error("(claim (id ?a) : ?a) (define (id x) (+ x 1))");
-    assert!(e.contains("natural is not ?a, any type the caller chooses"), "{e}");
+    assert!(e.contains("byte is not ?a, any type the caller chooses"), "{e}");
     let e = error("(claim (f integer) : text) (define (f x) (+ x 1))");
-    assert!(e.contains("natural is not a text"), "{e}");
+    assert!(e.contains("byte is not a text"), "{e}");
     let e = error("(claim (f integer extra: integer) : integer) (define (f x y) x)");
     assert!(e.contains("the claim labels the parameters `extra:`, the definition `y:`"), "{e}");
     let e = error("(claim (f other: integer) : integer) (define (f x) x)");
@@ -217,7 +217,7 @@ fn constructors_are_values() {
          (define pairs (map [\"Ada\"] each: (fn [n] (pair n age: 1))))
          (define make pair)"
     ));
-    assert_eq!(cb.type_of("oks").unwrap(), "(list (ok natural))");
+    assert_eq!(cb.type_of("oks").unwrap(), "(list (ok byte))");
     assert_eq!(cb.type_of("make").unwrap(), "((\\ (& ?a text) age: (& ?b integer)) : {age: ?b, name: ?a})");
     // With optional attributes, a constructor takes different labels at
     // different calls, so it is not a value yet.
@@ -253,7 +253,7 @@ fn a_type_declares_and_a_claim_signs() {
          (define origin (point 0 y: 0))
          (define (shift p) (point (+ (x p) 1) y: (y p)))",
     );
-    assert_eq!(cb.type_of("origin").unwrap(), "{x: natural, y: natural}");
+    assert_eq!(cb.type_of("origin").unwrap(), "{x: byte, y: byte}");
     assert_eq!(
         cb.type_of("shift").unwrap(),
         "((\\ {x: (& ?a integer), y: (& ?b integer)}) : {x: [?a natural], y: ?b})"
@@ -289,7 +289,7 @@ fn members_of_a_record_are_attributes() {
          (define l (line (point 0 y: 0) end: (point 1 y: 1)))
          (define (length l) (- (x (end l)) (x (start l))))"
     ));
-    assert_eq!(cb.type_of("l").unwrap(), "{end: {x: natural, y: natural}, start: {x: natural, y: natural}}");
+    assert_eq!(cb.type_of("l").unwrap(), "{end: {x: byte, y: byte}, start: {x: byte, y: byte}}");
     assert_eq!(cb.type_of("length").unwrap(), "((\\ {end: {x: integer}, start: {x: integer}}) : integer)");
 }
 

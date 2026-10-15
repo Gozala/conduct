@@ -85,7 +85,7 @@ fn a_built_in_is_a_candidate_too() {
     assert_eq!(cb.type_of("n").unwrap(), "natural");
     // A definition named exactly as written comes before the built-in.
     add(&mut cb, "(define (trim s) 1) (define t (trim \"a\"))");
-    assert_eq!(cb.type_of("t").unwrap(), "natural");
+    assert_eq!(cb.type_of("t").unwrap(), "byte");
 }
 
 #[test]

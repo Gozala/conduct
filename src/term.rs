@@ -124,6 +124,13 @@ pub enum Op {
     FromCodePoint,
     /// `(join pieces with: sep)`: the texts of a list, `sep` between them.
     Join,
+    /// `(utf8 t)`: the bytes of text, a list of bytes.
+    Utf8,
+    /// `(from-utf8 bytes or: d)`: the text bytes encode as UTF-8, or `d`.
+    FromUtf8,
+    /// `(byte x or: d)`: an integer as a byte, or the default where it is
+    /// not one.
+    Byte,
     /// `(compare a b)`: -1, 0 or 1, by a total order over every value
     /// that agrees with `=`.
     Compare,
@@ -201,6 +208,9 @@ impl Op {
         Op::IndexOf,
         Op::FromCodePoint,
         Op::Join,
+        Op::Utf8,
+        Op::FromUtf8,
+        Op::Byte,
     ];
 
     pub fn name(self) -> &'static str {
@@ -262,6 +272,9 @@ impl Op {
             Op::IndexOf => "index-of",
             Op::FromCodePoint => "from-code-point",
             Op::Join => "join",
+            Op::Utf8 => "utf8",
+            Op::FromUtf8 => "from-utf8",
+            Op::Byte => "byte",
             Op::HasField => "has-field?",
             Op::WithEnv => "with-env",
             Op::Nth => "nth",
@@ -292,7 +305,8 @@ impl Op {
             | Op::CountOnes
             | Op::Hash
             | Op::ByteCount
-            | Op::FromCodePoint => 1,
+            | Op::FromCodePoint
+            | Op::Utf8 => 1,
             Op::Assoc
             | Op::Get
             | Op::SetAt

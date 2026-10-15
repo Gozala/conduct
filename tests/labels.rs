@@ -43,7 +43,7 @@ fn function_values_carry_their_labels() {
          (define (apply2 g) (g 10 with: 4))
          (define d (apply2 sum))",
     );
-    assert_eq!(cb.type_of("apply2").unwrap(), "((\\ ((\\ natural with: natural) : ?a)) : ?a)");
+    assert_eq!(cb.type_of("apply2").unwrap(), "((\\ ((\\ byte with: byte) : ?a)) : ?a)");
     let e = error("(define (f x y) x) (define (g h) (h 1 z: 2)) (define w (g f))");
     assert!(e.contains("a function labeled `y:` is called with `z:`"), "{e}");
     let e = error("(define (g h) (h x: 1))");
@@ -60,8 +60,8 @@ fn records_are_keyed_by_declared_attributes() {
          (define (older p) (assoc p age: (+ (age p) 1) name: (name p)))
          (define (nick p) (name p \"anonymous\"))",
     );
-    assert_eq!(cb.type_of("ada").unwrap(), "{age: natural, name: text}");
-    assert_eq!(cb.lookup("ada").unwrap().type_string(), "{io.gozala.person/age: natural, io.gozala.person/name: text}");
+    assert_eq!(cb.type_of("ada").unwrap(), "{age: byte, name: text}");
+    assert_eq!(cb.lookup("ada").unwrap().type_string(), "{io.gozala.person/age: byte, io.gozala.person/name: text}");
     // The local name and the global one are the same key.
     assert_eq!(cb.lookup("ada").unwrap().hash, cb.lookup("same").unwrap().hash);
     assert_eq!(cb.type_of("nick").unwrap(), "((\\ {name?: ?a}) : [?a text])");
@@ -112,5 +112,5 @@ fn retired_forms_say_what_to_write() {
 #[test]
 fn do_runs_in_order() {
     let cb = check("(define (f x) (do (+ x 1) (concat [x] [2])))");
-    assert_eq!(cb.type_of("f").unwrap(), "((\\ (& ?a integer)) : (list [?a natural]))");
+    assert_eq!(cb.type_of("f").unwrap(), "((\\ (& ?a integer)) : (list [?a byte]))");
 }

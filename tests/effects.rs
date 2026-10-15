@@ -32,7 +32,7 @@ fn error(src: &str) -> String {
 
 #[test]
 fn a_definition_marked_bang_makes_a_task() {
-    assert_eq!(ty("(define x 1)", "x"), "natural");
+    assert_eq!(ty("(define x 1)", "x"), "byte");
     assert_eq!(ty("(define (greet! name) (log! (str \"hi \" name)))", "greet"), "((\\ any) : (task {} with: {log}))");
     // Capabilities add up, through `let`, `do`, and other tasks.
     let src = "(define (stamp! msg) (let [t (now!)] (log! (str t \": \" msg))))
@@ -231,7 +231,7 @@ fn host_functions_take_optional_attributes() {
                (define (c! t) (rename! (if (= t \"\") {id: \"x\"} (assoc {id: \"x\"} title: t))))";
     cb.add_source(src).unwrap_or_else(|e| panic!("{e}"));
     let e = cb.add_source("(define (d! i) (rename! {id: i, title: 5}))").unwrap_err().to_string();
-    assert!(e.contains("natural is not a text"), "{e}");
+    assert!(e.contains("byte is not a text"), "{e}");
     let e = cb.add_source("(define (e! t) (rename! {title: t}))").unwrap_err().to_string();
     assert!(e.contains("has no attribute `t/id`"), "{e}");
 }

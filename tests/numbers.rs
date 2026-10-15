@@ -53,7 +53,7 @@ fn a_number_that_is_not_negative_is_a_natural() {
          (define (index n) n)
          (define at (index 3))",
     );
-    assert_eq!(cb.type_of("one").unwrap(), "natural");
+    assert_eq!(cb.type_of("one").unwrap(), "byte");
     assert_eq!(cb.type_of("minus").unwrap(), "integer");
     // Arithmetic is on integers, which every natural is.
     assert_eq!(cb.type_of("sum").unwrap(), "natural");
@@ -70,7 +70,7 @@ fn a_number_that_is_not_negative_is_a_natural() {
 #[test]
 fn hexadecimal_and_binary() {
     let cb = types("(define mask 0x1f) (define bits 0b1010) (define low -0x10)");
-    assert_eq!(cb.type_of("mask").unwrap(), "natural");
+    assert_eq!(cb.type_of("mask").unwrap(), "byte");
     assert_eq!(run("(define mask 0x1f)", "mask"), Value::Int(31));
     assert_eq!(run("(define bits 0b1010)", "bits"), Value::Int(10));
     assert_eq!(run("(define low -0x10)", "low"), Value::Int(-16));
@@ -115,7 +115,7 @@ fn equal_values_hash_alike() {
 #[test]
 fn lists_updated_by_index() {
     let cb = types("(define (swap xs) (set-at xs 0 (item xs at: 1 or: 0)))");
-    assert_eq!(cb.type_of("swap").unwrap(), "((\\ (list ?a)) : (list [?a natural]))");
+    assert_eq!(cb.type_of("swap").unwrap(), "((\\ (list ?a)) : (list [?a byte]))");
     assert_eq!(run("(define x [(item [1 2] at: 1 or: 0) (item [1 2] at: 2 or: 0)])", "x"), ints(&[2, 0]));
     let src = "(define xs [(set-at [1 2 3] 1 20) (set-at [1 2 3] 3 0)
                            (insert-at [1 2 3] 0 0) (insert-at [1 2 3] 2 25) (insert-at [1 2 3] 9 4)
@@ -189,13 +189,13 @@ fn arithmetic_keeps_naturals_natural() {
     // Naturals in, a natural out; an integer anywhere, an integer out.
     assert_eq!(ty("sum"), "natural");
     assert_eq!(ty("product"), "natural");
-    assert_eq!(ty("quotient"), "natural");
+    assert_eq!(ty("quotient"), "byte");
     assert_eq!(ty("negative"), "integer");
     // A difference of naturals may be negative.
     assert_eq!(ty("difference"), "integer");
     // A remainder has the sign of the dividend, whatever divides it.
-    assert_eq!(ty("remainder"), "natural");
-    assert_eq!(ty("by-negative"), "natural");
+    assert_eq!(ty("remainder"), "byte");
+    assert_eq!(ty("by-negative"), "byte");
     // A function of a number answers what it was given.
     assert_eq!(ty("count-up"), "((\\ (& ?a integer)) : [?a natural])");
     assert_eq!(ty("up"), "natural");

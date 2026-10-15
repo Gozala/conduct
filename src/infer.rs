@@ -39,6 +39,7 @@ impl Infer<'_> {
         Ok(match term {
             // A number that is not negative is a natural, which flows
             // wherever an integer does.
+            Term::Int(n) if (0..256).contains(n) => Ty::byte(),
             Term::Int(n) if *n >= 0 => Ty::nat(),
             Term::Int(_) => Ty::int(),
             Term::Str(_) => Ty::str(),
@@ -369,11 +370,18 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
     let var = || s.fresh_ty(level);
     let int2 = || vec![Ty::int(), Ty::int()];
     match op {
-        // A sum, product or quotient of naturals is a natural, and of
-        // integers an integer: each argument flows into one variable
-        // bounded by integer, which is the result. A difference may be
-        // negative, and a remainder has the sign of the dividend.
-        Op::Add | Op::Mul | Op::Quot => {
+        // A sum or product of naturals is a natural, and of integers an
+        // integer: each argument flows into one variable bounded by
+        // integer, and the result is that or a natural, since a sum of
+        // bytes need not be a byte. A quotient is no larger than what it
+        // divides. A difference may be negative, and a remainder has the
+        // sign of the dividend.
+        Op::Add | Op::Mul => {
+            let a = var();
+            let bounded = Ty::Inter(Rc::new(vec![a.clone(), Ty::int()]));
+            (vec![bounded.clone(), bounded], Ty::Union(Rc::new(vec![a, Ty::nat()])))
+        }
+        Op::Quot => {
             let a = var();
             let bounded = Ty::Inter(Rc::new(vec![a.clone(), Ty::int()]));
             (vec![bounded.clone(), bounded], a)
@@ -399,11 +407,29 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         Op::Compare => (vec![Ty::Top, Ty::Top], Ty::int()),
         Op::ByteCount => (vec![Ty::str()], Ty::nat()),
         // What may be missing answers its default, of any type.
-        Op::ByteAt | Op::CodePointAt => {
+        Op::ByteAt => {
+            let d = var();
+            (vec![Ty::str(), Ty::nat(), d.clone()], Ty::Union(Rc::new(vec![Ty::byte(), d])))
+        }
+        Op::CodePointAt => {
             let d = var();
             (vec![Ty::str(), Ty::nat(), d.clone()], Ty::Union(Rc::new(vec![Ty::nat(), d])))
         }
-        Op::Slice => (vec![Ty::str(), Ty::nat(), Ty::nat()], Ty::str()),
+        // Text or a list, and what comes back is the same.
+        Op::Slice => {
+            let a = var();
+            let either = Ty::Union(Rc::new(vec![Ty::str(), Ty::list(Ty::Top)]));
+            (vec![Ty::Inter(Rc::new(vec![a.clone(), either])), Ty::nat(), Ty::nat()], a)
+        }
+        Op::Utf8 => (vec![Ty::str()], Ty::list(Ty::byte())),
+        Op::FromUtf8 => {
+            let d = var();
+            (vec![Ty::list(Ty::byte()), d.clone()], Ty::Union(Rc::new(vec![Ty::str(), d])))
+        }
+        Op::Byte => {
+            let d = var();
+            (vec![Ty::int(), d.clone()], Ty::Union(Rc::new(vec![Ty::byte(), d])))
+        }
         Op::Occurs => (vec![Ty::str(), Ty::str(), Ty::nat()], Ty::bool()),
         Op::IndexOf => {
             let d = var();
