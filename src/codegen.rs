@@ -1121,7 +1121,7 @@ impl<'a> Builder<'a> {
         for (addr, bytes) in &self.data {
             let _ = writeln!(m, "  (data (i32.const {addr}) \"{}\")", escape(bytes));
         }
-        m.push_str(RUNTIME);
+        m.push_str(RUNTIME_HERE);
         let _ = writeln!(
             m,
             "  (func $rec_take (param $r i64) (param $id i64) (result i64)\n    (local $v i64)\n    (local.set $v (call $rec_get (local.get $r) (local.get $id)))\n    (call $drop (local.get $r))\n    (local.get $v))"
@@ -1148,8 +1148,74 @@ impl<'a> Builder<'a> {
             let _ = writeln!(m, "  {e}");
         }
         m.push_str(")\n");
-        Ok(m)
+        let runtime = shake(RUNTIME, &m);
+        Ok(m.replacen(RUNTIME_HERE, &runtime, 1))
     }
+}
+
+/// Where the runtime goes in a module being assembled.
+const RUNTIME_HERE: &str = "  ;; runtime\n";
+
+/// The runtime's functions that `module` reaches, in their order, with
+/// the rest of the runtime (its globals and comments) as it is. Every
+/// module carried the whole runtime before; most need a fraction of it.
+fn shake(runtime: &str, module: &str) -> String {
+    // The runtime's top-level items: each function with the comment
+    // lines before it, and whatever else stands between them.
+    let mut items: Vec<(Option<&str>, String)> = Vec::new();
+    let mut pending = String::new();
+    let mut current: Option<(&str, String)> = None;
+    for line in runtime.split_inclusive('\n') {
+        let name = line
+            .strip_prefix("  (func $")
+            .map(|rest| &rest[..rest.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(rest.len())]);
+        let top = line.starts_with("  (") || line.starts_with("  ;;") || line.trim().is_empty();
+        match name {
+            Some(name) => {
+                if let Some((n, text)) = current.take() {
+                    items.push((Some(n), text));
+                }
+                current = Some((name, std::mem::take(&mut pending) + line));
+            }
+            None if top && !line.starts_with("    ") => {
+                if let Some((n, text)) = current.take() {
+                    items.push((Some(n), text));
+                }
+                pending.push_str(line);
+                if line.starts_with("  (") {
+                    items.push((None, std::mem::take(&mut pending)));
+                }
+            }
+            None => match &mut current {
+                Some((_, text)) => text.push_str(line),
+                None => pending.push_str(line),
+            },
+        }
+    }
+    if let Some((n, text)) = current.take() {
+        items.push((Some(n), text));
+    }
+    items.push((None, pending));
+    let named: HashMap<&str, &str> = items.iter().filter_map(|(n, t)| n.map(|n| (n, t.as_str()))).collect();
+    // What a text names: every `$word`, which over-counts locals that
+    // share a function's name, and so keeps a little more than needed.
+    fn names(text: &str) -> impl Iterator<Item = &str> {
+        text.match_indices('$').map(move |(i, _)| {
+            let rest = &text[i + 1..];
+            &rest[..rest.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(rest.len())]
+        })
+    }
+    let mut kept: BTreeSet<&str> = BTreeSet::new();
+    let mut todo: Vec<&str> =
+        names(module).chain(items.iter().filter(|(n, _)| n.is_none()).flat_map(|(_, t)| names(t))).collect();
+    while let Some(n) = todo.pop() {
+        if let Some(text) = named.get(n)
+            && kept.insert(n)
+        {
+            todo.extend(names(text));
+        }
+    }
+    items.iter().filter(|(n, _)| n.is_none_or(|n| kept.contains(n))).map(|(_, t)| t.as_str()).collect()
 }
 
 /// The argument a built-in consumes, if any: the collection an update

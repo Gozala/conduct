@@ -777,6 +777,9 @@ is an object. A built-in borrows a local that is still held after it
 returns, so passing one costs no count at all. A counting loop runs at
 about a nanosecond an iteration.
 
+A module carries only the runtime functions it reaches, found by
+following calls from the code it compiled.
+
 ### Memory
 
 Values are reference counted, after [Perceus]: no garbage collector, and

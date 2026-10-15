@@ -287,6 +287,17 @@ it. Newest first.
   `murmur.x64.hash126`, which does not exist, so the default
   configuration cannot hash a key without a hasher passed in.
 
+## A module carries the runtime it reaches
+
+- **Found:** every component carried the whole runtime, so each new
+  primitive (text, bytes, `compare`, JSON) grew every element, whether
+  it used them or not; todo-item went from 29 KB to 37 KB.
+- **Chosen:** when a module is assembled, keep the runtime functions
+  its code reaches, following every `$name` from the generated code
+  through the runtime. Names are matched as words, so a local that
+  shares a function's name keeps that function: it over-keeps, never
+  drops what is called. todo-item is 26.7 KB.
+
 ## What runs most is compiled in place
 
 - **Measured first:** a counting loop cost 51 ns an iteration, nine

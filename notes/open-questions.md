@@ -92,15 +92,14 @@ stands.
   back with its prefix when code is printed, so that what the text says
   never depends on what else is in the codebase.
 
-## Components have grown since the benchmark
+## A module carries only the runtime it reaches
 
-- **Found:** with the fast paths below, todo-item is 37 KB where the
-  benchmark measured 29 KB. About 6 KB is the runtime the text, bytes,
-  order and JSON primitives added, which every module carries whole;
-  about 2 KB is the inlined reference-count tests.
-- **Planned:** keep only the runtime functions a module reaches, which
-  would win back more than the growth. The benchmark's size claims
-  ("half of Rust's") should be rechecked after that.
+- **Done:** every module used to carry the whole runtime, which the
+  text, bytes, order and JSON primitives had grown to the point that
+  todo-item was 37 KB where the benchmark measured 29 KB. Now a module
+  keeps the runtime functions it reaches: todo-item is 26.7 KB,
+  todo-input 23.6 KB, todo-footer 23.0 KB, todo-app 54.3 KB, the
+  routes 28 KB. The benchmark's other numbers were not rerun.
 
 ## Integer arithmetic and reference counts are inline
 
@@ -110,7 +109,7 @@ stands.
   `drop` of a local tests for an object before calling. A counting loop
   went from 51 ns to about 1 ns an iteration, and summing a list of two
   million from 0.48 s to 0.20 s (`tests/speed.rs`, ignored by default).
-- **Cost:** 6% larger components.
+- **Cost:** 6% larger components, before the runtime was shaken.
 
 ## Unclaimed combinator code can exhaust the type checker
 
