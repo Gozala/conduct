@@ -5,24 +5,28 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
-## The bytes format of conduct.codec
+## conduct.codec over formats
 
-- **Chosen:** elm-serialize's idea (compact, positional), not its
-  encoding (it writes every number as a float64, for JavaScript).
-  LEB128 and zigzag as protobuf does.
-- **Open:** no version byte (elm-serialize prepends one), and no way to
-  evolve a variant but appending rows. If codec bytes go into Dialog,
-  this wants a decision first.
+- **Chosen:** serde's split, an intermediate `data` value rather than
+  serde's visitor calls; formats JSON and deterministic CBOR.
+- **Open:** a variant is `{tag, args}` fields in CBOR too, which is
+  elm-codec's JSON shape carried over. serde's default, `{"Circle": 2}`
+  and plain `"Empty"`, is smaller; changing it is a choice of the
+  format, which a codec does not know. Say if you want CBOR to differ.
+- **Open:** CIDs (tag 42) are not read or written; DAG-CBOR needs them
+  for links.
+- **Next:** derive a record codec from the declarations of its
+  attributes, with the macros that read them.
 
 ## Small literals are bytes
 
 - **Chosen:** a literal below 256 has type `byte`, the narrowest view
-  that holds it, so `(define x 5)` shows `byte`. Precise, and needed for
-  `[0xff 0xd8]` to be bytes, but it reads oddly where nothing is binary.
-- **Revisit** if it bothers you in practice: the alternative is literals
-  as `natural` and a conversion, `(byte 255 or: 0)`, wherever bytes are
-  written by hand. Dialog has no byte type that I know of; if its
-  numbers carry a precision (`natural:8`?), the name should follow it.
+  that holds it, and each use widens it as it needs: `(- x 10)` is an
+  integer, `(* x 1000)` a natural. So `(define x 5)` shows `byte`, which
+  is its precise type, not a loss.
+- **The real cost:** `+` and `*` must allow that 255 + 1 is not a byte,
+  so their types are their arguments' joined with `natural`, and
+  `(define (inc n) (+ n 1))` shows `((\ (& ?a integer)) : [?a natural])`.
 
 ## conduct.codec's names are elm-codec's
 
@@ -33,9 +37,6 @@ stands.
   library should take suffixed names instead.
 - **Variants:** elm-codec's `{"tag", "args"}` shape, for interop, rather
   than `{"circle": 2}` (serde's default). Open if Dialog wants another.
-- **Next:** the same codecs over bytes, once bytes land, as you asked;
-  elm-serialize's one codec for both formats is the model to compare
-  against.
 
 ## A claim's hash names its types, not what they are
 

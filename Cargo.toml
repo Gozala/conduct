@@ -20,6 +20,8 @@ wit-component = "0.261"
 wit-parser = "0.261"
 
 [dev-dependencies]
+# The CBOR the codec tests check conduct.codec's against.
+ciborium = "0.2.2"
 # The polyfill runs the components the tests build, natively over
 # Wasmtime's core engine, as it runs them in a browser over the
 # `WebAssembly` API.

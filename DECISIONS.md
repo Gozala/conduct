@@ -400,9 +400,8 @@ it. Newest first.
 
 ## conduct.codec, after elm-codec
 
-- **One description, both ways.** A codec is `{codec-encode
-  codec-decode}` over conduct.json values, as elm-codec's is over
-  `Json.Value`. The port keeps its names, `text`, `list`, `map`,
+- **One description, both ways.** A codec is `{codec-to
+  codec-from}`, as elm-codec's is a pair over `Json.Value`. The port keeps its names, `text`, `list`, `map`,
   `and-then`, `one-of`, which the naming rules allow now: inside the
   library its own come first (the built-in `map` is `conduct/map`
   there), and users write `codec/map`.
@@ -421,17 +420,27 @@ it. Newest first.
 - **Variants are elm-codec's JSON,** `{"tag": .., "args": [..]}`, so an
   Elm app and conduct read each other's values. A keyword is a variant
   with no arguments.
-- **Bytes from the same codec** (after elm-serialize, which does this
-  for Elm): a codec is four functions, JSON both ways and bytes both
-  ways, and every combinator builds all four, so one description serves
-  both. The bytes say nothing of the shape: LEB128 naturals, zigzag
-  integers, lengths before text, lists and bytes, record fields in
-  order with a byte before an optional one, and a variant's position
-  among its rows before what it carries. Compact, and as brittle as
-  that implies: reordering rows or fields changes what old bytes mean.
-  Writing appends to a list of bytes the caller passes in, which grows
-  in place, and reading takes an offset and answers the next, so neither
-  copies what it has already done.
+- **Formats after serde, not elm-serialize.** A first version wrote
+  bytes elm-serialize's way, positionally, with a second pair of
+  functions in every codec; what was wanted was serde's: one description
+  and any format. A codec is now two functions to and from `data`, a
+  small model (null, Boolean, integer, decimal, text, bytes, list,
+  fields), and JSON and CBOR are functions over `data` that know nothing
+  of codecs. Unlike serde, the model is built in between rather than
+  driven by visitor calls: a block a node, and no traits needed.
+- **CBOR is deterministic,** RFC 8949 4.2.1: shortest integers and
+  lengths, definite lengths, and keys in the bytewise order of their
+  encodings, which for text keys is DAG-CBOR's order (length, then
+  bytes). So equal data is equal bytes, and its hash identifies it.
+  Reading is lenient about order and integer forms; it refuses
+  indefinite lengths, floats, and tags but 4. A decimal is tag 4,
+  `[exponent mantissa]`, or its text past 18 digits until wider numbers
+  land. Checked against the `ciborium` crate, both ways, on generated
+  data.
+- **A variant is fields `tag` and `args` in every format,** as elm-codec
+  writes it, since a codec has no say in how a format writes things.
+- **Bytes in JSON** are a list of naturals, and the bytes codec reads
+  that back too.
 - **Errors are Json.Decode's,** where and why: `in-member`, `in-item`,
   `none-of`, `failure` with a keyword reason, and `not-json` for text.
   `error-text` writes them as Elm's `errorToString` does.

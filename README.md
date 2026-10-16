@@ -741,23 +741,27 @@ Its values are the type `json-value`, which is made of itself.
 (encode-text {x: 1, y: 2} with: point)          ; "{\"x\":1,\"y\":2}"
 (decode-text "{\"x\": 1}" with: point)          ; (error (in-member {failed-name: "y", ..}))
 (encode-text (circle 2) with: shape)           ; "{\"tag\":\"Circle\",\"args\":[2]}"
-(error-text e)                                 ; "the value at `json.y` fails with :missing-member: .."
+(error-text e)                                 ; "the value at `value.y` fails with :missing-member: .."
 ```
 
 A codec that refers to itself is written with `codec/recursive`, and
 what it decodes has the type its attributes make: `point` decodes to
 `{label?: text, x: integer, y: integer}`.
 
-The same codec writes and reads bytes, after
-[elm-serialize](https://github.com/MartinSStewart/elm-serialize):
-compact, LEB128 numbers, lengths before text and lists, fields in
-order, a variant's position before what it carries.
+As serde does in Rust, a codec says what a value is in a small data
+model (null, Booleans, integers, decimals, text, bytes, lists and named
+fields), and a format writes that model. JSON is one format and CBOR
+another, so the same codec writes both:
 
 ```
-(encode-bytes {x: 1, y: 2} with: point)             ; [2 4 0]: zigzag 1, zigzag 2, no label
-(decode-bytes [2 4 1 2 104 105] with: point)        ; (ok {x: 1, y: 2, label: "hi"})
-(encode-bytes (circle 2) with: shape)               ; [0 2]
+(encode-cbor {x: 1, y: 2} with: point)              ; [0xa2 0x61 0x78 0x01 0x61 0x79 0x02]
+(decode-cbor bytes with: point)                     ; (ok {x: 1, y: 2})
+(to-data {x: 1, y: 2} with: point)                  ; (data-fields [{field-name: "x", ..} ..])
 ```
+
+CBOR is written deterministically (RFC 8949's core rules, which DAG-CBOR
+also follows): shortest forms and keys in order, so equal values are
+equal bytes. Another format is `to-x` and `from-x` over `data`.
 
 ### Compiled code
 
