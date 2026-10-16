@@ -459,11 +459,40 @@ impl<'a> Builder<'a> {
 
     /// A WAT expression for the value of a definition, owned by whoever
     /// evaluates it.
+    ///
+    /// A definition that is not a function costs nothing to use: a
+    /// literal is written in place, and anything else is computed the
+    /// first time it is needed and kept, static, in a global. Code is
+    /// pure, so when it is computed cannot be told.
     pub fn value_of(&mut self, hash: Hash) -> Result<String> {
-        Ok(match self.require(hash)? {
-            Some(addr) => format!("(i64.const {addr})"),
-            None => format!("(call {})", Self::def_name(&hash)),
+        if let Some(addr) = self.require(hash)? {
+            return Ok(format!("(i64.const {addr})"));
+        }
+        Ok(match &self.cb.defs[&hash].term {
+            Term::Int(n) => format!("(i64.const {})", int(*n)),
+            Term::Bool(b) => format!("(i64.const {})", if *b { TRUE } else { FALSE }),
+            Term::Nil => format!("(i64.const {NIL})"),
+            Term::Str(t) => format!("(i64.const {})", self.static_str(t)),
+            Term::Keyword(k) => format!("(i64.const {})", self.static_keyword(k)),
+            // No value is 0, so 0 is "not yet computed".
+            _ => {
+                let global = Self::kept_name(&hash);
+                format!(
+                    "(if (result i64) (i64.eqz (global.get {global})) (then (call {})) (else (global.get {global})))",
+                    Self::keep_name(&hash)
+                )
+            }
         })
+    }
+
+    /// The global that keeps a definition's value once computed.
+    fn kept_name(hash: &Hash) -> String {
+        format!("$g_{}", &Self::def_name(hash)[3..])
+    }
+
+    /// The function that computes a definition's value and keeps it.
+    fn keep_name(hash: &Hash) -> String {
+        format!("$k_{}", &Self::def_name(hash)[3..])
     }
 
     /// A WAT expression applying a definition to argument expressions.
@@ -562,7 +591,13 @@ impl<'a> Builder<'a> {
                 }
                 other => {
                     let (body, frame) = self.function_body(other, Vec::new(), &cycle)?;
-                    format!("  (func {name} (result i64){}\n    {body})", locals(&frame))
+                    let (global, keep) = (Self::kept_name(&hash), Self::keep_name(&hash));
+                    format!(
+                        "  (func {name} (result i64){}\n    {body})\n  (global {global} (mut i64) (i64.const 0))\n  \
+                         (func {keep} (result i64) (local $v i64)\n    (local.set $v (call {name}))\n    \
+                         (call $make_static (local.get $v))\n    (global.set {global} (local.get $v))\n    (local.get $v))",
+                        locals(&frame)
+                    )
                 }
             };
             self.funcs.push(text);

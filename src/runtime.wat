@@ -171,6 +171,35 @@
       (then (call $drop_values (i32.add (local.get $p) (i32.const 8)) (local.get $n))))
     (call $free (local.get $p)))
 
+  ;; Make `v` and everything it holds static, never counted or freed: a
+  ;; definition's value, kept once computed. Static blocks are not live.
+  (func $make_static (param $v i64)
+    (local $p i32) (local $k i32) (local $n i32) (local $i i32) (local $at i32) (local $step i32)
+    (if (i32.eqz (call $is_obj (local.get $v))) (then (return)))
+    (local.set $p (call $ptr (local.get $v)))
+    (if (i32.lt_s (i32.load (i32.sub (local.get $p) (i32.const 8))) (i32.const 0)) (then (return)))
+    (i32.store (i32.sub (local.get $p) (i32.const 8)) (i32.const -1))
+    (global.set $live (i32.sub (global.get $live) (i32.const 1)))
+    (local.set $k (i32.load (local.get $p)))
+    (local.set $n (i32.load offset=4 (local.get $p)))
+    ;; Where the values it holds start, how many there are, and the step
+    ;; between them: as `$drop` reads them.
+    (local.set $at (i32.add (local.get $p) (i32.const 8)))
+    (local.set $step (i32.const 8))
+    (if (i32.eq (local.get $k) (i32.const 3))
+      (then (local.set $at (i32.add (local.get $p) (i32.const 16))) (local.set $step (i32.const 16))))
+    (if (i32.eq (local.get $k) (i32.const 4)) (then (local.set $n (i32.shl (local.get $n) (i32.const 1)))))
+    (if (i32.eq (local.get $k) (i32.const 5)) (then (local.set $at (i32.add (local.get $p) (i32.const 16)))))
+    (if (i32.or (i32.or (i32.eq (local.get $k) (i32.const 1)) (i32.eq (local.get $k) (i32.const 9)))
+                (i32.eq (local.get $k) (i32.const 10)))
+      (then (return)))
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (call $make_static (i64.load (i32.add (local.get $at) (i32.mul (local.get $i) (local.get $step)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next))))
+
   ;; Values and raw blocks whose release waits for a canonical ABI
   ;; `post-return`, because the host reads them after the export
   ;; returns. A raw block is pushed with bit 2 set.

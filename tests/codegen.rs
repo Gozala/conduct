@@ -420,3 +420,20 @@ fn a_built_in_borrows_only_what_outlives_it() {
                (define (k n) (h (str \"x\" n) n: n))";
     assert_eq!(run(src, "k", &[int(5)]), Value::Int(7));
 }
+
+#[test]
+fn a_constant_is_computed_once_and_kept() {
+    // Kept constants are static: they are no live blocks, and using one
+    // many times, in place or after other work, gives the same value.
+    let src = "(define base [1 2 3])
+               (define doubled (map base each: (fn [x] (* x 2))))
+               (define greeting \"hi\")
+               (define (f n) (if (= n 0) (count doubled) (+ (item doubled at: 1 or: 0) (f (- n 1)))))
+               (define (g n) (conj doubled n))
+               (define (h n) [greeting (count (g n)) (count doubled) (item (g n) at: 3 or: 0)])";
+    assert_eq!(run(src, "f", &[int(3)]), Value::Int(15));
+    assert_eq!(
+        run(src, "h", &[int(9)]),
+        Value::List(vec![Value::Str("hi".into()), Value::Int(4), Value::Int(3), Value::Int(9)])
+    );
+}

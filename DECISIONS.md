@@ -287,6 +287,21 @@ it. Newest first.
   `murmur.x64.hash126`, which does not exist, so the default
   configuration cannot hash a key without a hasher passed in.
 
+## A constant costs nothing to use
+
+- **Found:** a definition that is not a function compiled to a function
+  of no arguments, called, and so computed again, at every use: a parser
+  built of combinators was built anew wherever it was named.
+- **Chosen:** a literal constant is written in place where it is used.
+  Any other is computed the first time it is needed, made static (its
+  blocks and everything they hold are marked never counted or freed),
+  and kept in a global that later uses read. Code is pure, so when a
+  constant is computed cannot be told; laziness is how it is done, not
+  something code may rely on.
+- **Not chosen:** computing constants while compiling, into the data
+  segment. It would also save the first use, but needs an evaluator in
+  the compiler, which the procedural macros will bring; revisit then.
+
 ## A name never hides a built-in
 
 - **Found:** conduct.codec defines a codec `byte`, so inside it

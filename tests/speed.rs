@@ -47,3 +47,19 @@ fn summing_a_list() {
     assert_eq!(out, 2_000_000 * 2_000_001 / 2);
     println!("building and summing 2M items: {secs:.2} s");
 }
+
+#[test]
+#[ignore]
+fn a_computed_constant_is_computed_once() {
+    // `table` costs a million steps to compute; using it a thousand
+    // times costs no more than using it once.
+    let (out, secs) = time(
+        "(define (fill xs n) (if (= n 0) xs (fill (conj xs n) n: (- n 1))))
+         (define table (fill [] n: 1000000))
+         (define (use-it n acc) (if (= n 0) acc (use-it (- n 1) acc: (+ acc (count table)))))
+         (define out (use-it 1000 acc: 0))",
+        "out",
+    );
+    assert_eq!(out, 1_000_000_000);
+    println!("a constant used a thousand times: {secs:.2} s");
+}
