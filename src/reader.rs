@@ -173,6 +173,19 @@ impl Reader<'_> {
                 self.error(format!("unexpected `{}`", b as char), start)
             }
             b'"' => self.string(),
+            // `` `x `` quotes a form for a macro function to answer, `~x`
+            // puts a value in it, and `~@xs` the forms of a list.
+            b'`' | b'~' => {
+                let name = match (b, self.src.get(self.pos + 1)) {
+                    (b'`', _) => "quasiquote",
+                    (_, Some(b'@')) => "unquote-splicing",
+                    _ => "unquote",
+                };
+                self.pos += if name == "unquote-splicing" { 2 } else { 1 };
+                let quoted = self.form()?;
+                let span = Span { start, end: self.pos };
+                Ok(Sexp::List(vec![Sexp::Symbol(name.into(), Span { start, end: start + 1 }), quoted], span))
+            }
             _ => self.atom(),
         }
     }

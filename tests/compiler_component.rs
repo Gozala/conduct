@@ -82,6 +82,18 @@ async fn compiles_as_it_does_natively() {
         eprintln!("{name}: {} bytes in {elapsed:?}", compiled.len());
         assert_eq!(compiled, service::compile(source, world).unwrap(), "{name} compiles as it does natively");
     }
+    // A macro function runs inside the component as it does natively: the
+    // interpreter that runs it is compiled in.
+    let source = format!(
+        "{}
+         (macro twice-of (fn [call declared] (match call (form-list [_ x]) (ok `(* 2 ~x)) _ (error \"one form\"))))
+         (type answer : (t/answer natural))
+         (define doubled (twice-of 21))",
+        include_str!("../examples/todo-item.cdt")
+    );
+    let result = compiler.call(false, &source, "element-component").await;
+    let Val::Result(Ok(Some(list))) = &result else { panic!("with a macro function: {result:?}") };
+    assert_eq!(bytes(list), service::compile(&source, World::Element).unwrap());
 }
 
 #[tokio::test(flavor = "current_thread")]

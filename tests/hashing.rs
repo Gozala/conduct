@@ -65,6 +65,8 @@ fn cycles_hash_independently_of_names_and_order() {
 #[test]
 fn adding_known_code_is_not_checked_again() {
     let mut cb = Codebase::new();
+    // What every codebase starts with, `core.cdt`.
+    let core = cb.defs.len();
     let first = cb.add_source("(define (inc x) (+ x 1))").unwrap();
     assert!(first[0].new);
     let again = cb.add_source("(define (plus-one x) (+ x 1))").unwrap();
@@ -72,7 +74,7 @@ fn adding_known_code_is_not_checked_again() {
     assert_eq!(first[0].hash, again[0].hash);
     // Both names point at the one definition.
     assert_eq!(cb.names["inc"], cb.names["plus-one"]);
-    assert_eq!(cb.defs.len(), 1);
+    assert_eq!(cb.defs.len(), core + 1);
 }
 
 #[test]

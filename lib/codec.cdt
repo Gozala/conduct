@@ -400,10 +400,48 @@
     [] :absent
     [f rest ...] (if (= (field-name f) name) (present (field-value f)) (find-field rest name: name))))
 
-;; `(record-codec [attribute "name" codec] ..)`: a codec of records of
-;; the attributes named, each as the field `name`. A row ending in
-;; `:optional` is an attribute the record may lack.
-(macro (record-codec row ...) (./build-record (record-fields (./start-record {}) row ...)))
+;; `(record-codec x [attribute "name" codec] ..)`: a codec of records of
+;; the attributes named. A bare attribute is the field of its own name,
+;; with the codec of the type it is declared with; a row says the field's
+;; name and codec, and a row ending in `:optional` is an attribute the
+;; record may lack. As serde derives from a struct's declaration, this
+;; reads each attribute's.
+(macro record-codec
+  (fn [call declared]
+    (match call
+      (form-list [_ rows ...]) (record-rows rows declared: declared done: [])
+      _ (error "a record codec is `(record-codec attribute ..)`"))))
+
+(claim (record-rows (list form) declared: (list declaration) done: (list form)) : (result form error: text))
+(define (record-rows rows declared done)
+  (match rows
+    [] (ok `(record-codec-of ~@done))
+    [(form-symbol name) rest ...]
+    (match (declaration-of name in: declared)
+      (form-list [_ t])
+      (match (codec-for t)
+        (ok c) (record-rows rest declared: declared done: (conj done `[~(form-symbol name) ~(form-text name) ~c]))
+        (error why) (error (str "`" name "` " why ": write `[" name " \"" name "\" codec]`")))
+      _ (error (str "`" name "` is not a declared attribute")))
+    [row rest ...] (record-rows rest declared: declared done: (conj done row))))
+
+;; The codec of a declared type, as a form.
+(claim (codec-for form) : (result form error: text))
+(define (codec-for t)
+  (match t
+    (form-symbol "natural") (ok `./natural)
+    (form-symbol "integer") (ok `./integer)
+    (form-symbol "text") (ok `./text)
+    (form-symbol "boolean") (ok `./boolean)
+    (form-symbol "byte") (ok `./byte)
+    (form-list [(form-symbol "list") (form-symbol "byte")]) (ok `./bytes)
+    (form-list [(form-symbol "list") item])
+    (match (codec-for item)
+      (ok c) (ok `(./list ~c))
+      (error e) (error e))
+    _ (error "has a type with no codec to take")))
+
+(macro (record-codec-of row ...) (./build-record (record-fields (./start-record {}) row ...)))
 
 (macro (record-fields b) b)
 (macro (record-fields b [attr key c] rest ...)

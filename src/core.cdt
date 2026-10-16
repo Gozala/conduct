@@ -15,3 +15,33 @@
 
 (macro (cond :else result) result)
 (macro (cond test then rest ...) (if test then (cond rest ...)))
+
+;; Forms, as a macro function sees them: `(macro name f)` makes a macro of
+;; a function `f` from the form of a call and, labelled `declared:`, what
+;; the names in it are declared as, to `(ok form)`, the form it expands
+;; to, or `(error why)`. `` `(f ~x ~@xs) `` writes a form with values in it.
+(type (form-symbol ?n) : {(conduct.form/symbol ?n)})
+(type (form-keyword ?n) : {(conduct.form/keyword ?n)})
+(type (form-label ?n) : {(conduct.form/label ?n)})
+(type (form-text ?t) : {(conduct.form/text ?t)})
+(type (form-integer ?n) : {(conduct.form/integer ?n)})
+(type (form-list ?items) : {(conduct.form/list ?items)})
+(type (form-vector ?items) : {(conduct.form/vector ?items)})
+(type (form-map ?items) : {(conduct.form/map ?items)})
+(type form : [(form-symbol text) (form-keyword text) (form-label text) (form-text text) (form-integer integer)
+              (form-list (list form)) (form-vector (list form)) (form-map (list form))])
+
+;; A name of a call and what its `type` declares it as, the form after
+;; `:`: `(calc/a natural)` for `(type a : (calc/a natural))`.
+(type declared-name : (conduct.form/declared-name text))
+(type declared-type : (conduct.form/declared-type form))
+(type declaration : {declared-name declared-type})
+
+(domain conduct.form
+
+;; What `name` is declared as among `declared`, or `:undeclared`.
+(claim (declaration-of text in: (list declaration)) : [form :undeclared])
+(define (declaration-of name in)
+  (match in
+    [] :undeclared
+    [d rest ...] (if (= (declared-name d) name) (declared-type d) (declaration-of name in: rest)))))

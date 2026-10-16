@@ -5,6 +5,23 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
+## Macro functions
+
+- **Hygiene:** a macro function's output names things as written where
+  it is expanded, except `./name`, which its domain fixes. Pattern
+  macros pin their template's names; macro functions do not yet. Racket
+  answers this with syntax objects carrying scopes; worth doing before
+  libraries of macros multiply.
+- **What a macro sees:** the declarations of the names in its call. A
+  macro that needs the declaration of a name its call does not hold
+  (the fields of a record type a name is declared as, say) cannot see
+  it. Widening to "the declarations those mention" is easy if a case
+  needs it.
+- **Cost:** wasmi takes the compiler component from 3.9 MB to 5.1 MB,
+  a third more for the browser to fetch and compile. Ways back: build
+  wasmi with fewer features, or a second component, fetched only when a
+  source has a macro function.
+
 ## conduct.codec over formats
 
 - **Chosen:** serde's split, an intermediate `data` value rather than

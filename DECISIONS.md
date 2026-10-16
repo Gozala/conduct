@@ -287,6 +287,42 @@ it. Newest first.
   `murmur.x64.hash126`, which does not exist, so the default
   configuration cannot hash a key without a hasher passed in.
 
+## Macros that are functions, reading declarations (after Lux)
+
+- **Chosen:** `(macro name f)`, where `f` is a conduct function from the
+  call's form, and `declared:` the declarations of the names in it, to
+  `(result form error: text)`. Pattern macros stay, for what is only
+  syntax; this is for what needs computing or knowing types.
+- **Declarations, not inferred types.** A macro is given what each name
+  in its call is declared as, the form after `:` in its `type`. An
+  attribute's identity includes its type, so that is what route segments
+  and codecs need, and it is there before anything is checked. Inferred
+  types are not: expansion comes before checking, and in a cycle a type
+  would depend on the expansion that needs it. Lux processes a module in
+  order to get around that; conduct hashes each definition on its own.
+- **Only the names in the call.** The macro is given the declarations
+  of its call's symbols, not the whole codebase, so an expansion depends
+  on its call and on those declarations, and nothing else can change it.
+- **Run by compiling, not by a second evaluator.** The function is
+  compiled to WebAssembly as any definition is and run by `wasmi`, an
+  interpreter in Rust that builds for `wasm32-unknown-unknown`, so the
+  compiler component runs macros in a browser. An interpreter of terms
+  would have meant a second implementation of every built-in, kept the
+  same as the runtime's; this has one. A step budget (2^30 of wasmi's
+  fuel) stops a macro that never ends, and the type system keeps a
+  function from performing tasks, so a macro cannot reach the host.
+- **Phases, found rather than written.** Racket separates phases
+  explicitly. Here a source's macro functions are added first, with its
+  types and the definitions of the source they reach by name, then the
+  rest is expanded. A helper used by a macro function cannot itself use
+  that source's macro functions.
+- **Forms are values:** `form-symbol`, `form-keyword`, `form-label`,
+  `form-text`, `form-integer`, `form-list`, `form-vector`, `form-map`,
+  in `core.cdt`, written with `` `(f ~x ~@xs) ``. A symbol is given
+  without the marks a pattern macro's expansion left on it, so a
+  macro function's output is not hygienic; `./name` in its quasiquotes
+  names its own domain's definitions.
+
 ## A constant costs nothing to use
 
 - **Found:** a definition that is not a function compiled to a function

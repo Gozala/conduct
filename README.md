@@ -600,8 +600,36 @@ so a macro can write the attributes and parameters a call names:
 ```
 
 `and`, `or` and `cond` are macros in `core.cdt` now, not forms of the
-language. Procedural macros, written as functions over forms, are
-next.
+language.
+
+A macro can also be a function, `(macro name f)`, as in Racket and Lux:
+`f` takes the form of a call and answers `(ok form)`, the form the call
+expands to, or `(error why)`. Forms are conduct values of the type
+`form` (`form-symbol`, `form-list`, `form-text` and the rest), and
+`` ` `` writes one, with `~x` putting a value in it and `~@xs` the forms
+of a list:
+
+```
+(macro swap
+  (fn [call declared]
+    (match call
+      (form-list [_ f a b]) (ok `(~f ~b ~a))
+      _ (error "`swap` takes a function and two arguments"))))
+(swap - 1 10)                   ; (- 10 1)
+```
+
+As Lux's macros read the compiler's state, a macro function is given,
+as `declared:`, what each name in its call is declared as: the form
+after `:` in its `type`. That is what lets `(route "/c/" a)` take a
+natural segment for `a` because `a` is declared a natural, and
+`(record-codec x y)` take each attribute's codec from its type, as
+serde derives from a struct.
+
+A macro function is compiled as any definition is, with the definitions
+of its source it uses, before the rest of the source is expanded, and
+run by an interpreter (`wasmi`), so it runs in a browser too, with the
+runtime compiled code has. It is pure, so it cannot reach the host, and
+a step budget stops one that never ends.
 
 ### Hashing
 
@@ -703,7 +731,7 @@ A recursive parser is a function of the parse state, `(define (value s)
 ```
 (type a : (calc/a natural))
 (type b : (calc/b natural))
-(define calc (route "/calculator/" (a natural-segment) "/+/" (b natural-segment)))
+(define calc (route "/calculator/" a "/+/" b))  ; natural segments: a and b are naturals
 (match-path calc path: "/calculator/313/+/3")    ; (ok {a: 313, b: 3})
 (format-path calc params: {a: 313, b: 3})       ; "/calculator/313/+/3"
 (dispatch [(on calc handler: (fn [p] (+ (a p) (b p))))] path: "/calculator/2/+/40")   ; (ok 42)
@@ -736,7 +764,7 @@ Its values are the type `json-value`, which is made of itself.
   so the two read each other's JSON:
 
 ```
-(define point (record-codec [x "x" codec/integer] [y "y" codec/integer] [label "label" codec/text :optional]))
+(define point (record-codec x y [label "label" codec/text :optional]))   ; x and y by their types
 (define shape (variant-codec [circle "Circle" codec/natural] [:empty "Empty"]))
 (encode-text {x: 1, y: 2} with: point)          ; "{\"x\":1,\"y\":2}"
 (decode-text "{\"x\": 1}" with: point)          ; (error (in-member {failed-name: "y", ..}))

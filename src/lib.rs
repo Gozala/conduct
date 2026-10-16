@@ -28,6 +28,7 @@ pub mod route;
 pub mod service;
 pub mod syntax;
 pub mod term;
+pub mod transform;
 pub mod types;
 
 pub use codebase::{Codebase, Definition};

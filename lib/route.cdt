@@ -11,7 +11,7 @@
 ;;
 ;;   (type a : (calc/a natural))
 ;;   (type b : (calc/b natural))
-;;   (define calc (route "/calculator/" (a natural-segment) "/+/" (b natural-segment)))
+;;   (define calc (route "/calculator/" a "/+/" b))
 ;;   (match-path calc path: "/calculator/313/+/3")   ; (ok {a: 313, b: 3})
 ;;   (format-path calc params: {a: 313, b: 3})      ; "/calculator/313/+/3"
 ;;
@@ -29,12 +29,44 @@
 (type segment-parse : (conduct.route/segment-parse ?parser))
 (type segment-format : (conduct.route/segment-format ?formatter))
 
-;; `(route piece ..)`: each piece is literal text, matched exactly, or
-;; `(name segment)`, which captures the attribute `name` with `segment`.
-;; The macro walks the pieces once, building the parser's bindings, the
+;; `(route piece ..)`: each piece is literal text, matched exactly; the
+;; name of an attribute, captured with the segment of the type it is
+;; declared with, `natural-segment` for a natural and `text-segment` for
+;; text; or `(name segment)`, which captures `name` with `segment`. A
+;; macro function: it reads what each name is declared as, and writes
+;; `route-of` with a segment for every name.
+(macro route
+  (fn [call declared]
+    (match call
+      (form-list [_ pieces ...]) (route-pieces pieces declared: declared done: [])
+      _ (error "a route is `(route piece ..)`"))))
+
+(claim (route-pieces (list form) declared: (list declaration) done: (list form)) : (result form error: text))
+(define (route-pieces pieces declared done)
+  (match pieces
+    [] (ok `(route-of ~@done))
+    [p rest ...]
+    (match (route-piece p declared: declared)
+      (ok q) (route-pieces rest declared: declared done: (conj done q))
+      (error e) (error e))))
+
+;; A piece with a segment for a name.
+(claim (route-piece form declared: (list declaration)) : (result form error: text))
+(define (route-piece p declared)
+  (match p
+    (form-symbol name)
+    (match (declaration-of name in: declared)
+      (form-list [_ (form-symbol "natural")]) (ok `(~p ./natural-segment))
+      (form-list [_ (form-symbol "text")]) (ok `(~p ./text-segment))
+      :undeclared (error (str "`" name "` is not a declared attribute, and a route captures attributes"))
+      _ (error (str "`" name "` is neither a natural nor text: write `(" name " segment)` with a segment for it")))
+    _ (ok p)))
+
+;; `(route-of piece ..)`: each piece is literal text or `(name segment)`.
+;; It walks the pieces once, building the parser's bindings, the
 ;; formatter's pieces and the parameters' names side by side; `v` is the
 ;; parameters in the formatter, named once so every piece reads the same.
-(macro (route piece ...) (route-from v [] [] [] piece ...))
+(macro (route-of piece ...) (route-from v [] [] [] piece ...))
 
 (macro (route-from v [bind ...] [out ...] [field ...] (name segment) rest ...)
   (route-from v [bind ... name (segment-parse segment)]

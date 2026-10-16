@@ -52,8 +52,8 @@ fn is_error(v: &Value) -> bool {
 const ROUTES: &str = "
 (type a : (calc/a natural)) (type b : (calc/b natural))
 (type user : (blog/user text)) (type post : (blog/post natural))
-(define calc (route \"/calculator/\" (a natural-segment) \"/+/\" (b natural-segment)))
-(define posts (route \"/users/\" (user text-segment) \"/posts/\" (post natural-segment)))
+(define calc (route \"/calculator/\" a \"/+/\" b))
+(define posts (route \"/users/\" user \"/posts/\" (post natural-segment)))
 (define home (route \"/\"))";
 
 fn pair(name: &str, v: Value) -> (String, Value) {
@@ -149,4 +149,20 @@ fn text_segments_are_percent_encoded() {
          (define out (= (match-path posts path: (format-path posts params: p)) (ok p)))"
     ));
     assert_eq!(out, Value::Bool(true));
+}
+
+#[test]
+fn a_route_takes_the_segment_of_its_attributes_type() {
+    // `a` is declared a natural, so it is captured as one.
+    let src = format!("{ROUTES} (define out (match-path calc path: \"/calculator/1/+/x\"))");
+    assert!(is_error(&run(&src)));
+    let e = |src: &str| {
+        let mut cb = Codebase::new();
+        cb.add_source(library::PARSER).unwrap();
+        cb.add_source(library::ROUTE).unwrap();
+        cb.add_source(src).unwrap_err().to_string()
+    };
+    assert!(e("(define r (route \"/\" nobody))").contains("`nobody` is not a declared attribute"));
+    let msg = e("(type when : (t/when boolean)) (define r (route \"/\" when))");
+    assert!(msg.contains("`when` is neither a natural nor text"), "{msg}");
 }

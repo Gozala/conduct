@@ -16,6 +16,9 @@ path = "src/main.rs"
 anyhow = "1"
 blake3 = "1"
 wat = "1"
+# Runs procedural macros while compiling: an interpreter, so it runs
+# wherever the compiler does, a browser included.
+wasmi = { version = "2.0.0", default-features = false, features = ["std", "validate", "portable-dispatch"] }
 wit-component = "0.261"
 wit-parser = "0.261"
 

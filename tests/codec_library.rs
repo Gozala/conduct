@@ -570,3 +570,32 @@ fn cbor_agrees_with_a_reference_both_ways() {
         assert_eq!(bytes_of(&reread[i]), *b, "reading back {}", cases[i].0);
     }
 }
+
+#[test]
+fn a_record_codec_takes_its_attributes_codecs_from_their_declarations() {
+    let prelude = "
+        (type x : (geo/x integer))
+        (type y : (geo/y integer))
+        (type tags : (geo/tags (list text)))
+        (type label : (geo/label text))
+        (define point (record-codec x y tags [label \"name\" codec/text :optional]))";
+    let out = texts(&format!(
+        "{prelude}
+         (define out [(encode-text {{x: 1, y: -2, tags: [\"a\"]}} with: point)
+                      (encode-text {{x: 1, y: 2, tags: [], label: \"o\"}} with: point)])"
+    ));
+    assert_eq!(out, ["{\"x\":1,\"y\":-2,\"tags\":[\"a\"]}", "{\"x\":1,\"y\":2,\"tags\":[],\"name\":\"o\"}"]);
+    let cb = codebase(&format!("{prelude} (define (decoded t) (decode-text t with: point))"));
+    let t = cb.type_of("decoded").unwrap();
+    assert!(t.contains("(ok {label?: text, tags: (list text), x: integer, y: integer})"), "{t}");
+    let e = |src: &str| {
+        let mut cb = Codebase::new();
+        cb.add_source(library::PARSER).unwrap();
+        cb.add_source(library::JSON).unwrap();
+        cb.add_source(library::CODEC).unwrap();
+        cb.add_source(src).unwrap_err().to_string()
+    };
+    let msg = e("(type f : (t/f (dict text))) (define c (record-codec f))");
+    assert!(msg.contains("`f` has a type with no codec to take: write `[f \"f\" codec]`"), "{msg}");
+    assert!(e("(define c (record-codec nobody))").contains("`nobody` is not a declared attribute"));
+}
