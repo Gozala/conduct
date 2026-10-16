@@ -1,0 +1,58 @@
+<!doctype html>
+<!--
+   Copyright 2026 The Dialog DB Project
+
+   This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>conduct TodoMVC · Wasm Component Model Polyfill</title>
+    <link rel="stylesheet" href="style.css" />
+    <!--
+      The custom element classes, which Rust cannot write. A classic
+      script runs before the module, so the page's Rust finds
+      `demoElements` when it defines the first element.
+    -->
+    <script src="elements.js"></script>
+    <!-- The page's binary, which `build.sh` writes with wasm-bindgen. -->
+    <script type="module">
+      import init from "./conduct-demo-page.js";
+      init({ module_or_path: "./conduct-demo-page_bg.wasm" });
+    </script>
+  </head>
+  <body>
+    <main id="app">
+      <!--
+        The application. The page defines <todo-app> once it has compiled
+        the elements and the service worker controls the page. Until then,
+        and until the element's list has loaded, the element shows this
+        spinner.
+      -->
+      <todo-app>
+        <div class="loading" role="progressbar" aria-label="Loading">
+          <div class="spinner" aria-hidden="true"></div>
+        </div>
+      </todo-app>
+      <!--
+        The spinner only turns, by the Web Animations API. A turn of an HTML
+        element runs on the browser's compositor, so it stays smooth while
+        the page compiles on its main thread. A CSS animation would restart
+        when the element moves the spinner into a slot of its shadow root.
+      -->
+      <script>
+        document
+          .querySelector("todo-app .spinner")
+          .animate([{ transform: "rotate(0turn)" }, { transform: "rotate(1turn)" }], {
+            duration: 900,
+            iterations: Infinity,
+          });
+      </script>
+    </main>
+  </body>
+</html>
