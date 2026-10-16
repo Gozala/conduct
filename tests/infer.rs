@@ -118,7 +118,8 @@ fn record_update() {
 #[test]
 fn bindings_shadow_builtins() {
     assert_eq!(ty("(define (f filter) (count filter))", "f"), "((\\ (list any)) : natural)");
-    assert_eq!(ty("(define (count x) \"mine\") (define y (count [1]))", "y"), "text");
+    // A definition named as a built-in does not hide it: the use decides.
+    assert_eq!(ty("(define (count x as) \"mine\") (define y (count [1] as: 2))", "y"), "text");
     let mut cb = Codebase::new();
     let err = cb.add_source("(define f map)").unwrap_err().to_string();
     assert!(err.contains("not a value yet"), "{err}");

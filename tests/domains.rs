@@ -83,9 +83,14 @@ fn a_built_in_is_a_candidate_too() {
     assert!(e.contains("could be any of `io.gozala.list/count`, `conduct/count`"), "{e}");
     add(&mut cb, "(define n (conduct/count [1 2]))");
     assert_eq!(cb.type_of("n").unwrap(), "natural");
-    // A definition named exactly as written comes before the built-in.
-    add(&mut cb, "(define (trim s) 1) (define t (trim \"a\"))");
+    // A definition of the source named as a built-in is a candidate as a
+    // definition of the codebase is: the use decides when it can.
+    let e = error(&mut cb, "(define (trim s) 1) (define t (trim \"a\"))");
+    assert!(e.contains("`trim` could be any of `trim`, `conduct/trim`"), "{e}");
+    add(&mut cb, "(define (trim s by) 1) (define t (trim \"a\" by: 2))");
     assert_eq!(cb.type_of("t").unwrap(), "byte");
+    add(&mut cb, "(define u (trim \" a \"))");
+    assert_eq!(cb.type_of("u").unwrap(), "text");
 }
 
 #[test]

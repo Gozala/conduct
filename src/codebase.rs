@@ -193,7 +193,10 @@ impl Codebase {
     /// lists each whole name.
     fn resolve_name(&self, written: &str, defined: &dyn Fn(&str) -> bool) -> Result<Option<String>, Vec<String>> {
         if defined(written) {
-            return Ok(Some(written.to_string()));
+            return match builtin_named(written) {
+                Some(op) => Err(vec![written.to_string(), format!("{BUILTIN_DOMAIN}/{op}")]),
+                None => Ok(Some(written.to_string())),
+            };
         }
         let mut candidates: Vec<String> =
             self.names.keys().filter(|n| ends_with_segments(n, written)).cloned().collect();
@@ -659,7 +662,14 @@ impl Codebase {
                         // codebase holds.
                         let found = match settled {
                             Some(full) => Ok(Some(full)),
-                            None => in_batch(written, &index),
+                            // A definition of this source that a built-in's
+                            // name also names is as ambiguous as two
+                            // definitions would be: the use decides, or the
+                            // name must be written whole.
+                            None => match (in_batch(written, &index), builtin_named(written)) {
+                                (Ok(Some(full)), Some(op)) => Err(vec![full, format!("{BUILTIN_DOMAIN}/{op}")]),
+                                (other, _) => other,
+                            },
                         };
                         let name = match found {
                             Ok(Some(full)) => full,
@@ -707,13 +717,15 @@ impl Codebase {
                         (Ok(_), Some((name, _))) => Err(ResolveError::Unbound(name)),
                         (other, _) => other,
                     };
-                    let term = resolved_term.map_err(|e| match e {
-                        ResolveError::Unbound(name) if ambiguous.borrow().as_ref().is_some_and(|(n, _)| *n == name) => {
-                            let (_, candidates) = ambiguous.take().unwrap();
-                            Failure::Ambiguous { def: d.name.clone(), name, candidates }
+                    // Whatever went wrong after a name was ambiguous may be
+                    // the ambiguity's doing: read as a built-in, it is no
+                    // value, say. Settling it comes first.
+                    let term = resolved_term.map_err(|e| match (e, ambiguous.take()) {
+                        (_, Some((name, candidates))) => Failure::Ambiguous { def: d.name.clone(), name, candidates },
+                        (ResolveError::Unbound(name), None) => {
+                            Failure::Error(Error::Unbound { name, def: d.name.clone() })
                         }
-                        ResolveError::Unbound(name) => Failure::Error(Error::Unbound { name, def: d.name.clone() }),
-                        ResolveError::Invalid(message) => {
+                        (ResolveError::Invalid(message), None) => {
                             Failure::Error(Error::Resolve { def: d.name.clone(), message })
                         }
                     })?;
@@ -2041,6 +2053,13 @@ fn ends_with_segments(name: &str, written: &str) -> bool {
     let segments = |n: &str| n.split(['.', '/']).map(str::to_string).collect::<Vec<_>>();
     let (whole, part) = (segments(name), segments(written));
     part.len() <= whole.len() && whole[whole.len() - part.len()..] == part[..]
+}
+
+/// The built-in `written` names, if it names one: `byte` or
+/// `conduct/byte`.
+fn builtin_named(written: &str) -> Option<&str> {
+    let op = written.strip_prefix(&format!("{BUILTIN_DOMAIN}/")).unwrap_or(written);
+    Op::from_name(op).is_some().then_some(op)
 }
 
 /// The definition of the source being added that `written` names: the

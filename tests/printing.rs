@@ -150,7 +150,7 @@ fn recursive_types() {
         "(type next : (io.gozala.test/next any))
          (define (nest x) {next: (nest x)})
          (define (walk r) (walk (next r)))
-         (define (count r) (match r {next: m} (+ 1 (count m)) _ 0))
+         (define (depth r) (match r {next: m} (+ 1 (depth m)) _ 0))
          (define (self-apply f) (f f))",
     );
 }

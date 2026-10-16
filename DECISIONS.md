@@ -287,6 +287,23 @@ it. Newest first.
   `murmur.x64.hash126`, which does not exist, so the default
   configuration cannot hash a key without a hasher passed in.
 
+## A name never hides a built-in
+
+- **Found:** conduct.codec defines a codec `byte`, so inside it
+  `(byte n or: 0)` called the codec, and the error said nothing of why.
+  A definition of the source came before a built-in of the same name.
+- **Chosen:** a name that both a definition and a built-in answer to is
+  ambiguous, as two definitions are: each is tried, and the one the use
+  checks with is taken. `(byte n or: 0)` can only be the built-in, and
+  `(conj byte 2)` only the list. Where both check, it is an error that
+  asks for the whole name, `conduct/byte` or `./byte`. Outside a domain
+  a definition named as a built-in can still be written, but where both
+  readings check there is nothing to write for it but a new name.
+- **Why not resolve silently by use alone:** a reader cannot tell which
+  was meant. Asking where both fit keeps the cases a reader could get
+  wrong explicit. A choice, once made, is pinned by hash, so a later
+  definition cannot change what existing code calls.
+
 ## A scheme is compacted before it is stored
 
 - **Found:** with no claims, a library of parser combinators gave

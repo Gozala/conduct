@@ -159,7 +159,7 @@
 
 ;; The low eight bits of `n`.
 (claim (low-byte natural) : byte)
-(define (low-byte n) (conduct/byte (bit-and n 255) or: 0))
+(define (low-byte n) (byte (bit-and n 255) or: 0))
 
 ;; `n` after `into`, seven bits a byte from the lowest, each byte but the
 ;; last with its high bit set: LEB128.
