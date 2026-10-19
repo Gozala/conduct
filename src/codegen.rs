@@ -39,7 +39,7 @@
 
 use crate::codebase::Codebase;
 use crate::term::{Hash, Op, Pattern, Step, Term};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 /// The value no conduct code can write or name: the slot of an absent
@@ -65,7 +65,7 @@ pub const KIND_FETCH: u32 = 8;
 pub const KIND_KEYWORD: u32 = 9;
 
 const RUNTIME: &str = include_str!("runtime.wat");
-const RUNTIME_DATA: &[u8] = b"truefalse[] <value>null{}:,\"\\ustringnumberbooleanarrayobject";
+const RUNTIME_DATA: &[u8] = b"truefalse[] <value>null{}:,\"\\ustringnumberbooleanarrayobject<function>, : #";
 /// Addresses below this hold scratch space: the canonical ABI return
 /// area at 0 and the allocator's free-list heads at 64.
 const STATIC_START: u32 = 1024;
@@ -292,6 +292,9 @@ pub struct Builder<'a> {
     /// so the body is wrapped in the loop it branches to.
     current: Option<(Hash, usize)>,
     looped: bool,
+    /// The attributes records in this module are built and read with,
+    /// by field id: what `str` shows a record's fields as.
+    fields: BTreeMap<i64, String>,
 }
 
 impl<'a> Builder<'a> {
@@ -322,6 +325,7 @@ impl<'a> Builder<'a> {
             tail: false,
             current: None,
             looped: false,
+            fields: BTreeMap::new(),
         };
         b.rtdata = b.static_bytes(RUNTIME_DATA.to_vec());
         b
@@ -353,6 +357,13 @@ impl<'a> Builder<'a> {
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&object);
         self.static_bytes(bytes) + 8
+    }
+
+    /// The id of the field `name`, which `str` then shows by name.
+    fn field(&mut self, name: &str) -> i64 {
+        let id = field_id(name);
+        self.fields.entry(id).or_insert_with(|| name.to_string());
+        id
     }
 
     /// A string object in static data, as a value.
@@ -963,7 +974,7 @@ impl<'a> Builder<'a> {
                 for ((name, _), v) in fields.iter().zip(values) {
                     let t = frame.local();
                     let _ = write!(out, " (local.set {t} {v})");
-                    sorted.push((field_id(name), t));
+                    sorted.push((self.field(name), t));
                 }
                 sorted.sort_by_key(|f| f.0);
                 let p = frame.local32();
@@ -986,13 +997,13 @@ impl<'a> Builder<'a> {
             }
             Term::Field(name, record) => {
                 let r = self.expr(record, env, frame, cycle, live)?;
-                format!("(call $rec_take {r} (i64.const {}))", field_id(name))
+                format!("(call $rec_take {r} (i64.const {}))", self.field(name))
             }
             Term::Update(record, name, value) => {
                 let parts = self.sequence(&[&**record, &**value], env, frame, cycle, live)?;
                 // `$rec_set` consumes both, and updates in place when the
                 // record is unique.
-                format!("(call $rec_set {} (i64.const {}) {})", parts[0], field_id(name), parts[1])
+                format!("(call $rec_set {} (i64.const {}) {})", parts[0], self.field(name), parts[1])
             }
             Term::Dict(entries) => {
                 let items: Vec<&Term> = entries.iter().map(|(_, t)| t).collect();
@@ -1027,7 +1038,7 @@ impl<'a> Builder<'a> {
                 let (t, r) = (frame.local(), frame.local());
                 format!(
                     "(block (result i64) (local.set {t} {v}) (local.set {r} (call $rec_without (local.get {t}) (i64.const {}))) (call $drop (local.get {t})) (local.get {r}))",
-                    field_id(name)
+                    self.field(name)
                 )
             }
             Term::Prim(Op::HasField, args) => {
@@ -1038,7 +1049,7 @@ impl<'a> Builder<'a> {
                 let t = frame.local();
                 format!(
                     "(block (result i64) (local.set {t} {v}) (call $has_field (local.get {t}) (i64.const {})) (call $drop (local.get {t})))",
-                    field_id(name)
+                    self.field(name)
                 )
             }
             Term::Prim(op, args) => {
@@ -1134,6 +1145,30 @@ impl<'a> Builder<'a> {
     /// Compile everything queued and assemble the module text.
     pub fn finish(mut self) -> Result<String> {
         self.compile_queued()?;
+        // What `str` shows each field as: its local name where the
+        // codebase declares one, in the order it shows them in.
+        let mut shown: Vec<(String, i64)> = std::mem::take(&mut self.fields)
+            .into_iter()
+            .map(|(id, global)| (self.cb.local_attribute(&global).unwrap_or(global), id))
+            .collect();
+        shown.sort();
+        let mut names = String::from("  (func $field_name (param $id i64) (result i64)\n");
+        let mut ranks = String::from("  (func $field_rank (param $id i64) (result i32)\n");
+        for (rank, (name, id)) in shown.iter().enumerate() {
+            let addr = self.static_str(name);
+            let _ = writeln!(
+                names,
+                "    (if (i64.eq (local.get $id) (i64.const {id})) (then (return (i64.const {addr}))))"
+            );
+            let _ = writeln!(
+                ranks,
+                "    (if (i64.eq (local.get $id) (i64.const {id})) (then (return (i32.const {rank}))))"
+            );
+        }
+        names.push_str("    (i64.const 0))");
+        ranks.push_str("    (i32.const -1))");
+        self.funcs.push(names);
+        self.funcs.push(ranks);
         let mut m = String::from("(module\n");
         for n in 0..=self.max_arity {
             let params: String = " i64".repeat(n);

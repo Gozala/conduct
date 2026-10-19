@@ -405,7 +405,7 @@
 ;; with the codec of the type it is declared with; a row says the field's
 ;; name and codec, and a row ending in `:optional` is an attribute the
 ;; record may lack. As serde derives from a struct's declaration, this
-;; reads each attribute's.
+;; reads each attribute's; a variant's type takes its domain's `codec`.
 (macro record-codec
   (fn [call declared]
     (match call
@@ -419,15 +419,19 @@
     [(form-symbol name) rest ...]
     (match (declaration-of name in: declared)
       (form-list [_ t])
-      (match (codec-for t)
+      (match (codec-for t declared: declared)
         (ok c) (record-rows rest declared: declared done: (conj done `[~(form-symbol name) ~(form-text name) ~c]))
         (error why) (error (str "`" name "` " why ": write `[" name " \"" name "\" codec]`")))
       _ (error (str "`" name "` is not a declared attribute")))
     [row rest ...] (record-rows rest declared: declared done: (conj done row))))
 
-;; The codec of a declared type, as a form.
-(claim (codec-for form) : (result form error: text))
-(define (codec-for t)
+;; The codec of a declared type, as a form. A variant's codec is the one
+;; its domain defines as `codec`, given the codecs of the variant's type
+;; arguments with their labels: `(thing natural)`, declared
+;; `{(demo.thing/thing ?a)}`, has `(demo.thing/codec ./natural)`, and
+;; `(pair natural with: text)` has `(demo.pair/codec ./natural with: ./text)`.
+(claim (codec-for form declared: (list declaration)) : (result form error: text))
+(define (codec-for t declared)
   (match t
     (form-symbol "natural") (ok `./natural)
     (form-symbol "integer") (ok `./integer)
@@ -436,10 +440,57 @@
     (form-symbol "byte") (ok `./byte)
     (form-list [(form-symbol "list") (form-symbol "byte")]) (ok `./bytes)
     (form-list [(form-symbol "list") item])
-    (match (codec-for item)
+    (match (codec-for item declared: declared)
       (ok c) (ok `(./list ~c))
       (error e) (error e))
+    (form-symbol name) (variant-codec-for name args: [] declared: declared)
+    (form-list [(form-symbol name) args ...]) (variant-codec-for name args: args declared: declared)
     _ (error "has a type with no codec to take")))
+
+;; The codec of the variant type `name`, from its domain.
+(claim (variant-codec-for text args: (list form) declared: (list declaration)) : (result form error: text))
+(define (variant-codec-for name args declared)
+  (match (variant-domain (declaration-of name in: declared) declared: declared)
+    (ok home)
+    (match (arg-codecs args declared: declared done: [])
+      (ok []) (ok (form-symbol (str home "/codec")))
+      (ok cs) (ok `(~(form-symbol (str home "/codec")) ~@cs))
+      (error e) (error e))
+    (error e) (error e)))
+
+;; The domain of a variant's attribute, from the declaration of a record
+;; of one attribute: written in it, `{(demo.thing/thing ?a)}`, or declared
+;; on its own, `{held}`.
+(claim (variant-domain [form :undeclared] declared: (list declaration)) : (result text error: text))
+(define (variant-domain d declared)
+  (match d
+    (form-map [(form-list [(form-symbol attribute) _ ...])]) (domain-of attribute)
+    (form-map [(form-symbol held)])
+    (match (declaration-of held in: declared)
+      (form-list [(form-symbol attribute) _ ...]) (domain-of attribute)
+      _ (error "has a type with no codec to take"))
+    (form-map [(form-list [(form-symbol held) _ ...])])
+    (match (declaration-of held in: declared)
+      (form-list [(form-symbol attribute) _ ...]) (domain-of attribute)
+      _ (error "has a type with no codec to take"))
+    _ (error "has a type with no codec to take")))
+
+(claim (domain-of text) : (result text error: text))
+(define (domain-of attribute)
+  (match (split attribute "/")
+    [home _] (if (= home ".") (error (str "has a variant of `" attribute "`, which has no domain to find a codec in"))
+               (ok home))
+    _ (error "has a type with no codec to take")))
+
+(claim (arg-codecs (list form) declared: (list declaration) done: (list form)) : (result (list form) error: text))
+(define (arg-codecs args declared done)
+  (match args
+    [] (ok done)
+    [(form-label l) rest ...] (arg-codecs rest declared: declared done: (conj done (form-label l)))
+    [a rest ...]
+    (match (codec-for a declared: declared)
+      (ok c) (arg-codecs rest declared: declared done: (conj done c))
+      (error e) (error e))))
 
 (macro (record-codec-of row ...) (./build-record (record-fields (./start-record {}) row ...)))
 

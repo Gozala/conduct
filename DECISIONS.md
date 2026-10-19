@@ -332,9 +332,19 @@ it. Newest first.
   types are not: expansion comes before checking, and in a cycle a type
   would depend on the expansion that needs it. Lux processes a module in
   order to get around that; conduct hashes each definition on its own.
-- **Only the names in the call.** The macro is given the declarations
-  of its call's symbols, not the whole codebase, so an expansion depends
-  on its call and on those declarations, and nothing else can change it.
+- **The names in the call, and what their declarations name.** The
+  macro is given the declarations of its call's symbols, and of the
+  symbols in those, until there are no more, not the whole codebase, so
+  an expansion depends on its call and on those declarations, and
+  nothing else can change it. The closure is what lets `record-codec`
+  see that an attribute's type is a variant, and the variant's domain.
+- **A variant's codec is its domain's `codec`.** `record-codec` writes
+  `(demo.box/codec c)` for an attribute of `(box t)`, with `c` the codec
+  of `t`, by convention, as a method's implementation is found by name.
+  It is a macro's convention, not a method: a codec is found by the type
+  a call must answer, which methods do not do. A domain without one is
+  an error at the use, "`demo.box/codec` is not defined", since a macro
+  sees declarations and not definitions.
 - **Run by compiling, not by a second evaluator.** The function is
   compiled to WebAssembly as any definition is and run by `wasmi`, an
   interpreter in Rust that builds for `wasm32-unknown-unknown`, so the
@@ -1214,6 +1224,13 @@ it. Newest first.
   matters.
 - **Keywords print with their colon in `str` and as their name in
   JSON.** A view attribute wanting the bare name has to match on it.
+- **`str` shows a value as it would be written.** Text at the top is
+  itself, so `(str "a" 1)` is `a1`; inside a value it is quoted. A
+  record's fields are written by local name, in alphabetical order, the
+  module carrying a table from field id to name for the attributes it
+  uses; a field it does not know is written `#id`. Its fields are not
+  hidden, so a password in a record shows; a type's own display would be
+  a method, which `str` does not use yet.
 
 ## Slice 4: requests
 

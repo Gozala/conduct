@@ -599,3 +599,61 @@ fn a_record_codec_takes_its_attributes_codecs_from_their_declarations() {
     assert!(msg.contains("`f` has a type with no codec to take: write `[f \"f\" codec]`"), "{msg}");
     assert!(e("(define c (record-codec nobody))").contains("`nobody` is not a declared attribute"));
 }
+
+#[test]
+fn a_record_codec_finds_a_variants_codec_in_its_domain() {
+    let prelude = "
+        (domain demo.money
+          (type cents : {(demo.money/cents natural)})
+          (define codec (codec/map codec/natural to: (fn [n] (cents n)) from: (fn [c] (match c (cents n) n)))))
+        (domain demo.box
+          (type (box ?a) : {(demo.box/box ?a)})
+          (define (codec inner) (codec/map inner to: (fn [v] (box v)) from: (fn [b] (match b (box v) v)))))
+        (domain demo.amount
+          (type (amount ?n in: ?unit) : {(demo.amount/amount ?n)})
+          (define (codec n in) (codec/map n to: (fn [v] (amount v)) from: (fn [a] (match a (amount v) v)))))
+        (type price : (shop/price cents))
+        (type weight : (shop/weight (amount natural in: text)))
+        (type sizes : (shop/sizes (box (list natural))))
+        (type prices : (shop/prices (list cents)))
+        (define item (record-codec price weight sizes prices))";
+    let out = texts(&format!(
+        "{prelude}
+         (define out [(encode-text {{price: (cents 250), weight: (amount 3), sizes: (box [1 2]), prices: [(cents 1)]}} with: item)])"
+    ));
+    assert_eq!(out, ["{\"price\":250,\"weight\":3,\"sizes\":[1,2],\"prices\":[1]}"]);
+    assert_eq!(
+        decoded(
+            prelude,
+            "item",
+            &[
+                "{\"price\":3,\"weight\":1,\"sizes\":[],\"prices\":[4,5]}",
+                "{\"price\":-3,\"weight\":1,\"sizes\":[],\"prices\":[]}"
+            ]
+        ),
+        [
+            "{\"price\":3,\"weight\":1,\"sizes\":[],\"prices\":[4,5]}",
+            "the value at `value.price` fails with :expecting-natural: -3"
+        ]
+    );
+    let cb = codebase(&format!("{prelude} (define (decoded t) (decode-text t with: item))"));
+    let t = cb.type_of("decoded").unwrap();
+    assert!(t.contains("(ok {price: (cents natural), prices: (list (cents natural)), sizes: (box (list natural)), weight: (amount natural)})"), "{t}");
+}
+
+#[test]
+fn a_variant_without_a_codec_in_its_domain() {
+    let e = |src: &str| {
+        let mut cb = Codebase::new();
+        cb.add_source(library::PARSER).unwrap();
+        cb.add_source(library::JSON).unwrap();
+        cb.add_source(library::CODEC).unwrap();
+        cb.add_source(src).unwrap_err().to_string()
+    };
+    let msg = e(
+        "(type cents : {(demo.money/cents natural)}) (type price : (shop/price cents)) (define c (record-codec price))",
+    );
+    assert!(msg.contains("`demo.money/codec` is not defined"), "{msg}");
+    let msg = e("(type cents : {(./cents natural)}) (type price : (shop/price cents)) (define c (record-codec price))");
+    assert!(msg.contains("`price` has a variant of `./cents`, which has no domain to find a codec in"), "{msg}");
+}

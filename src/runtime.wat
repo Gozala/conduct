@@ -567,15 +567,23 @@
     (call $str_new (i32.add (local.get $p) (local.get $from)) (i32.sub (local.get $to) (local.get $from))))
   (func $lit (param $offset i32) (param $len i32) (result i64)
     (call $str_new (i32.add (global.get $rtdata) (local.get $offset)) (local.get $len)))
+  ;; A value as text: text as it is, and anything else as conduct writes
+  ;; it, text inside it quoted, so that what is shown reads back.
   (func $to_str (param $v i64) (result i64)
-    (local $k i32) (local $i i32) (local $n i32) (local $out i64)
+    (call $show (local.get $v) (i32.const 0)))
+  (func $show (param $v i64) (param $inner i32) (result i64)
+    (local $k i32) (local $i i32) (local $n i32) (local $out i64) (local $p i32)
+    (local $rank i32) (local $last i32) (local $best i32) (local $at i32) (local $r i32) (local $id i64) (local $name i64)
     (if (i64.eq (i64.and (local.get $v) (i64.const 1)) (i64.const 1))
       (then (return (call $int_to_str (local.get $v)))))
     (if (i64.eq (local.get $v) (i64.const 0x02)) (then (return (call $lit (i32.const 0) (i32.const 0)))))
     (if (i64.eq (local.get $v) (i64.const 0x12)) (then (return (call $lit (i32.const 0) (i32.const 4)))))
     (if (i64.eq (local.get $v) (i64.const 0x0a)) (then (return (call $lit (i32.const 4) (i32.const 5)))))
     (local.set $k (call $kind (local.get $v)))
-    (if (i32.eq (local.get $k) (i32.const 1)) (then (return (call $dup (local.get $v)))))
+    (if (i32.eq (local.get $k) (i32.const 1))
+      (then (return (if (result i64) (local.get $inner)
+        (then (call $json_quote (local.get $v)))
+        (else (call $dup (local.get $v)))))))
     ;; A keyword prints with its colon.
     (if (i32.eq (local.get $k) (i32.const 9))
       (then (return (call $concat_owned (call $lit (i32.const 25) (i32.const 1))
@@ -588,10 +596,65 @@
           (loop $next
             (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
             (if (local.get $i) (then (local.set $out (call $concat_owned (local.get $out) (call $lit (i32.const 11) (i32.const 1))))))
-            (local.set $out (call $concat_owned (local.get $out) (call $to_str (call $list_get (local.get $v) (local.get $i)))))
+            (local.set $out (call $concat_owned (local.get $out) (call $show (call $list_get (local.get $v) (local.get $i)) (i32.const 1))))
             (local.set $i (i32.add (local.get $i) (i32.const 1)))
             (br $next)))
         (return (call $concat_owned (local.get $out) (call $lit (i32.const 10) (i32.const 1))))))
+    ;; A record's fields by name, in the order of their names: those the
+    ;; module knows the names of first, then the others by id.
+    (if (i32.eq (local.get $k) (i32.const 3))
+      (then
+        (local.set $p (call $ptr (local.get $v)))
+        (local.set $n (call $len (local.get $v)))
+        (local.set $out (call $lit (i32.const 23) (i32.const 1)))
+        (local.set $last (i32.const -1))
+        (block $done
+          (loop $field
+            (local.set $best (i32.const -1))
+            (local.set $at (i32.const -1))
+            (local.set $i (i32.const 0))
+            (block $found
+              (loop $next
+                (br_if $found (i32.ge_u (local.get $i) (local.get $n)))
+                (local.set $r (call $field_rank (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 4))))))
+                (if (i32.lt_s (local.get $r) (i32.const 0)) (then (local.set $r (i32.add (i32.const 0x40000000) (local.get $i)))))
+                (if (i32.and (i32.gt_s (local.get $r) (local.get $last))
+                      (i32.or (i32.lt_s (local.get $best) (i32.const 0)) (i32.lt_s (local.get $r) (local.get $best))))
+                  (then (local.set $best (local.get $r)) (local.set $at (local.get $i))))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $next)))
+            (br_if $done (i32.lt_s (local.get $at) (i32.const 0)))
+            (if (i32.ge_s (local.get $last) (i32.const 0))
+              (then (local.set $out (call $concat_owned (local.get $out) (call $lit (i32.const 70) (i32.const 2))))))
+            (local.set $last (local.get $best))
+            (local.set $id (i64.load offset=8 (i32.add (local.get $p) (i32.shl (local.get $at) (i32.const 4)))))
+            (local.set $name (call $field_name (local.get $id)))
+            (local.set $out (call $concat_owned (local.get $out)
+              (if (result i64) (i64.eqz (local.get $name))
+                (then (call $concat_owned (call $lit (i32.const 74) (i32.const 1)) (call $int_to_str (i64.or (i64.shl (local.get $id) (i64.const 1)) (i64.const 1)))))
+                (else (call $dup (local.get $name))))))
+            (local.set $out (call $concat_owned (local.get $out) (call $lit (i32.const 72) (i32.const 2))))
+            (local.set $out (call $concat_owned (local.get $out)
+              (call $show (i64.load offset=16 (i32.add (local.get $p) (i32.shl (local.get $at) (i32.const 4)))) (i32.const 1))))
+            (br $field)))
+        (return (call $concat_owned (local.get $out) (call $lit (i32.const 24) (i32.const 1))))))
+    ;; A dictionary as it is written: `{:k v ..}`.
+    (if (i32.eq (local.get $k) (i32.const 4))
+      (then
+        (local.set $n (call $len (local.get $v)))
+        (local.set $out (call $lit (i32.const 23) (i32.const 1)))
+        (block $done
+          (loop $next
+            (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+            (if (local.get $i) (then (local.set $out (call $concat_owned (local.get $out) (call $lit (i32.const 11) (i32.const 1))))))
+            (local.set $out (call $concat_owned (local.get $out) (call $lit (i32.const 25) (i32.const 1))))
+            (local.set $out (call $concat_owned (local.get $out) (call $dup (call $dict_key (local.get $v) (local.get $i)))))
+            (local.set $out (call $concat_owned (local.get $out) (call $lit (i32.const 11) (i32.const 1))))
+            (local.set $out (call $concat_owned (local.get $out) (call $show (call $dict_val (local.get $v) (local.get $i)) (i32.const 1))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $next)))
+        (return (call $concat_owned (local.get $out) (call $lit (i32.const 24) (i32.const 1))))))
+    (if (i32.eq (local.get $k) (i32.const 5)) (then (return (call $lit (i32.const 60) (i32.const 10)))))
     (call $lit (i32.const 12) (i32.const 7)))
 
   ;; What identifies the code of the closure at `p`, wherever it is

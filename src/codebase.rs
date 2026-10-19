@@ -501,12 +501,22 @@ impl Codebase {
                 c
             }
         };
+        // What the names in the call are declared as, and what the names
+        // in those declarations are, and so on: a type's declaration names
+        // the types it is made of.
         let mut names = Vec::new();
         symbols(call, &mut names);
-        names.sort();
-        names.dedup();
-        let declared: Vec<(String, Sexp)> =
-            names.into_iter().filter_map(|n| self.declarations.get(&n).map(|d| (n, d.clone()))).collect();
+        let mut declared: BTreeMap<String, Sexp> = BTreeMap::new();
+        while let Some(n) = names.pop() {
+            if declared.contains_key(&n) {
+                continue;
+            }
+            if let Some(d) = self.declarations.get(&n) {
+                symbols(d, &mut names);
+                declared.insert(n, d.clone());
+            }
+        }
+        let declared: Vec<(String, Sexp)> = declared.into_iter().collect();
         transform::run(&compiled, call, &declared).map_err(error)
     }
 

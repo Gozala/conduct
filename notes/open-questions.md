@@ -17,9 +17,9 @@ stands.
   `conduct.map` included; display (hiding a password) is the case that
   most needs a type's own say.
 - **By the type a call must answer:** decoding wants it, so `codec` is
-  found from the type expected; not built. `record-codec` finding a
-  variant's codec in its domain, at expansion, would cover nested
-  codecs without it.
+  found from the type expected; not built. `record-codec` finds a
+  variant's codec in its domain, at expansion, which covers nested
+  codecs in records; a codec on its own still names its parts.
 - **Claims do not write requirements;** they are inferred and shown.
   Roc makes an annotated function write its `where` clause. Writing
   them would make a claim say everything a caller needs to know.
@@ -33,11 +33,10 @@ stands.
   macros pin their template's names; macro functions do not yet. Racket
   answers this with syntax objects carrying scopes; worth doing before
   libraries of macros multiply.
-- **What a macro sees:** the declarations of the names in its call. A
-  macro that needs the declaration of a name its call does not hold
-  (the fields of a record type a name is declared as, say) cannot see
-  it. Widening to "the declarations those mention" is easy if a case
-  needs it.
+- **What a macro sees:** the declarations of the names in its call and,
+  transitively, of the names in those. Not definitions: `record-codec`
+  cannot tell that a variant's domain has no `codec` and leaves that to
+  the checker's "not defined".
 - **Cost:** wasmi takes the compiler component from 3.9 MB to 5.1 MB,
   a third more for the browser to fetch and compile. Ways back: build
   wasmi with fewer features, or a second component, fetched only when a

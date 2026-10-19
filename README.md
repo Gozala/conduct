@@ -157,6 +157,7 @@ The design the language is heading for is in
 [1 2 3] (count xs) (first xs) (rest xs) (concat xs ys) (conj xs x)
 (map xs each: f) (filter xs where: f)
 (str "id: " 42)                         ; any values, as text
+(str {title: "milk", done: false})     ; {done: false, title: "milk"}
 (= a b)                                 ; structural, for every value
 
 :active                                 ; a keyword: its type is :active
@@ -465,7 +466,11 @@ about its argument is not part of its type. That would take Typed
 Racket's occurrence typing, inferred without annotations.
 
 Equality and `str` work on any value: `=` takes `(Any, Any)`. What a
-type does its own way is a method (below).
+type does its own way is a method (below). `str` writes text as it is
+and anything else as it is written: text inside a value quoted, a list
+`[1 2]`, a record `{done: false, title: "milk"}` with its attributes by
+their local names in alphabetical order, a dictionary `{:k "v"}`, a
+function `<function>`.
 
 `true` and `false` are patterns too, and the two cover a `Bool`.
 
@@ -683,7 +688,8 @@ of a list:
 
 As Lux's macros read the compiler's state, a macro function is given,
 as `declared:`, what each name in its call is declared as: the form
-after `:` in its `type`. That is what lets `(route "/c/" a)` take a
+after `:` in its `type`, and what the names in those forms are declared
+as, and so on. That is what lets `(route "/c/" a)` take a
 natural segment for `a` because `a` is declared a natural, and
 `(record-codec x y)` take each attribute's codec from its type, as
 serde derives from a struct.
@@ -834,6 +840,13 @@ Its values are the type `json-value`, which is made of itself.
 (encode-text (circle 2) with: shape)           ; "{\"tag\":\"Circle\",\"args\":[2]}"
 (error-text e)                                 ; "the value at `value.y` fails with :missing-member: .."
 ```
+
+An attribute whose type is a variant takes the codec its domain defines
+as `codec`, given the codecs of the variant's type arguments, with their
+labels: an attribute of `(box (list natural))`, where `box` is declared
+`{(demo.box/box ?a)}`, takes `(demo.box/codec (codec/list
+codec/natural))`. So a record of records needs no codecs composed by
+hand, only one `codec` beside each variant.
 
 A codec that refers to itself is written with `codec/recursive`, and
 what it decodes has the type its attributes make: `point` decodes to
