@@ -375,6 +375,14 @@ pub enum Term {
     /// A task that performs another in an environment: each capability
     /// it provides, with an implementation of each of its operations.
     Handle(Box<Term>, Vec<(String, Vec<(String, Term)>)>),
+    /// A method, by the whole name of its claim, before checking finds
+    /// which type's definition of it a call means. Checking replaces it,
+    /// so a stored definition never holds one.
+    Dispatch(String),
+    /// A place where checking records what it found, numbered: a method
+    /// called, or a definition that needs methods passed. Checking
+    /// replaces it, so a stored definition never holds one.
+    Site(u32, Box<Term>),
 }
 
 /// What a `match` clause tests its value against.
@@ -915,7 +923,9 @@ impl Term {
             | Term::Local(_)
             | Term::Ref(_)
             | Term::Keyword(_)
+            | Term::Dispatch(_)
             | Term::CycleRef(_) => {}
+            Term::Site(_, inner) => inner.walk(f),
             Term::Host(_, args) => args.iter().for_each(|a| a.walk(f)),
             Term::Match(scrutinee, clauses, default) => {
                 scrutinee.walk(f);
@@ -1102,6 +1112,12 @@ impl Term {
                     entries(out, ops, cycle_index);
                 }
             }
+            Term::Dispatch(name) => {
+                out.push(0x1d);
+                text(out, name);
+            }
+            // What checking records is no part of the code.
+            Term::Site(_, inner) => inner.encode(out, cycle_index),
             Term::Match(scrutinee, clauses, default) => {
                 out.push(0x18);
                 scrutinee.encode(out, cycle_index);

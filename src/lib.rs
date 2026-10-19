@@ -23,6 +23,7 @@ mod fetch;
 pub mod infer;
 pub mod library;
 pub mod macros;
+pub mod methods;
 pub mod reader;
 pub mod route;
 pub mod service;

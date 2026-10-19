@@ -10,11 +10,12 @@
 use crate::claims::{self, Claims, Env, Mode, TypeDef};
 use crate::infer::{Binding, Globals, Infer};
 use crate::macros::{self, Rule};
+use crate::methods::{self, Impl, Method, Receiver};
 use crate::reader::{self, Sexp, bare, pin_of};
 use crate::syntax::{self, Arg, Claim, Clause, Def, Expr, Item, Param, Pat, TypeExpr};
 use crate::term::{Hash, Op, Pattern, Sig, Term};
 use crate::transform;
-use crate::types::{Scheme, Solver, Ty, TypeError, coalesce};
+use crate::types::{Requirement, Scheme, Solver, Ty, TypeError, coalesce, coalesce_with};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
@@ -57,6 +58,9 @@ pub struct Codebase {
     /// after `:` in its `type`, by the name it was declared under. A macro
     /// function is given these for the names its call holds.
     pub declarations: BTreeMap<String, Sexp>,
+    /// Methods by the whole name of their claim: claims with no
+    /// definition, which each type defines for itself.
+    pub methods: BTreeMap<String, Method>,
     /// Macro functions compiled, by hash, so a source compiles each once.
     compiled: std::cell::RefCell<HashMap<Hash, std::rc::Rc<transform::Compiled>>>,
     /// The last mark an expansion gave its template's symbols.
@@ -114,7 +118,32 @@ impl Codebase {
     /// A definition's type as shown to a person: attributes by the local
     /// names this codebase claims them under.
     pub fn type_of(&self, name: &str) -> Option<String> {
-        self.lookup(name).map(|d| self.show(&d.scheme.body))
+        self.lookup(name).map(|d| self.show_scheme(&d.scheme))
+    }
+
+    /// A scheme as shown to a person: its type, and the methods it needs
+    /// for the types they are called on, `where ?a has ord/compare`.
+    pub fn show_scheme(&self, scheme: &Scheme) -> String {
+        let receivers: Vec<Ty> = scheme.requires.iter().map(|r| r.receiver.clone()).collect();
+        let (body, on) = coalesce_with(&scheme.body, &receivers);
+        let rename = |t: crate::types::Type| {
+            t.rename_keys(&|k| {
+                self.claims.shown(k).or_else(|| self.local_attribute(k)).unwrap_or_else(|| k.to_string())
+            })
+        };
+        let mut out = rename(body).to_string();
+        let mut seen = Vec::new();
+        for (r, t) in scheme.requires.iter().zip(on) {
+            let need = format!("{} has {}", rename(t), r.method);
+            if !seen.contains(&need) {
+                seen.push(need);
+            }
+        }
+        if !seen.is_empty() {
+            out.push_str(" where ");
+            out.push_str(&seen.join(", "));
+        }
+        out
     }
 
     /// A type as shown to a person, with attributes by local name.
@@ -167,7 +196,7 @@ impl Codebase {
         term.encode(&mut bytes, &|i| i);
         bytes.extend_from_slice(coalesce(&ty).to_string().as_bytes());
         let hash = Hash::of(&bytes);
-        let scheme = Scheme { level: 0, body: ty };
+        let scheme = Scheme::new(0, ty);
         self.defs.insert(hash, Definition { hash, term, cycle: vec![], scheme });
         self.names.insert(name.to_string(), hash);
         self.hosts.entry(capability.to_string()).or_default().insert(name.to_string(), hash);
@@ -193,10 +222,11 @@ impl Codebase {
             self.macros.clone(),
             self.transformers.clone(),
             self.declarations.clone(),
+            self.methods.clone(),
         );
         let out = flatten_domains(&forms).and_then(|forms| self.add_forms(&forms));
         if out.is_err() {
-            (self.claims, self.names, self.macros, self.transformers, self.declarations) = saved;
+            (self.claims, self.names, self.macros, self.transformers, self.declarations, self.methods) = saved;
         }
         out
     }
@@ -215,7 +245,7 @@ impl Codebase {
             };
         }
         let mut candidates: Vec<String> =
-            self.names.keys().filter(|n| ends_with_segments(n, written)).cloned().collect();
+            self.names.keys().chain(self.methods.keys()).filter(|n| ends_with_segments(n, written)).cloned().collect();
         let builtin = Op::from_name(written).is_some()
             || written.strip_prefix(&format!("{BUILTIN_DOMAIN}/")).is_some_and(|op| Op::from_name(op).is_some());
         match (candidates.len(), builtin) {
@@ -521,8 +551,15 @@ impl Codebase {
         // a type declares what a name is. Types come first: they declare
         // what definitions use, and nothing about them depends on order.
         let mut signatures: HashMap<String, Claim> = HashMap::new();
+        let mut method_claims: Vec<Claim> = Vec::new();
         for c in claims {
             let error = |message: String| Err(Error::Resolve { def: c.name.clone(), message });
+            // A claim with no definition, of a function of some type, is a
+            // method: each type defines it for itself.
+            if !defs.iter().any(|d| d.name == c.name) && is_method_claim(&c) && !self.names.contains_key(&c.name) {
+                method_claims.push(c);
+                continue;
+            }
             if !defs.iter().any(|d| d.name == c.name) {
                 let bang = if c.performs { "!" } else { "" };
                 return if self.names.contains_key(&c.name) {
@@ -560,12 +597,52 @@ impl Codebase {
                 });
             }
         }
-        let saved = self.claims.clone();
-        let out = self.claim(&types, &defs).and_then(|()| self.add_checked(defs, &signatures));
+        let saved = (self.claims.clone(), self.methods.clone());
+        let out = self
+            .claim(&types, &defs)
+            .and_then(|()| self.declare_methods(&method_claims))
+            .and_then(|()| self.add_checked(defs, &signatures));
         if out.is_err() {
-            self.claims = saved;
+            (self.claims, self.methods) = saved;
         }
         out
+    }
+
+    /// Declare each method a claim with no definition claims: the type
+    /// its definitions must fit, read once the source's types are.
+    fn declare_methods(&mut self, claims: &[Claim]) -> Result<(), Error> {
+        for c in claims {
+            let error = |message: String| Err(Error::Resolve { def: c.name.clone(), message });
+            if self.claims.claims(&c.name) {
+                return error(format!("`{}` is declared as a type or an attribute", c.name));
+            }
+            let text = c.text();
+            if let Some(before) = self.methods.get(&c.name) {
+                if before.text != text {
+                    return error(format!("the method `{}` is already claimed as `{}`", c.name, before.text));
+                }
+                continue;
+            }
+            let params = c.params.as_ref().expect("a method's claim has parameters");
+            let mut env = Env::new(Mode::Flexible(&self.solver, 1));
+            let read = (|| {
+                let ps = self.claims.params(params, &mut env)?;
+                let ret = self.claims.ty(&c.ty, &mut env)?;
+                claims::function(ps, ret)
+            })();
+            let ty = match read {
+                Ok(t) => t,
+                Err(message) => return error(message),
+            };
+            let Ty::Fn(ps, _, _, rest) = &ty else { unreachable!("a claim of parameters is of a function") };
+            let receiver = ps[0].clone();
+            let first = params[0].0.clone().unwrap_or_else(|| "value".to_string());
+            let labels = std::iter::once(first).chain(rest.iter().cloned()).collect();
+            let scheme =
+                Scheme { level: 0, body: ty.clone(), requires: vec![Requirement { method: c.name.clone(), receiver }] };
+            self.methods.insert(c.name.clone(), Method { scheme, labels, text });
+        }
+        Ok(())
     }
 
     /// Record type claims, after checking each agrees with what is
@@ -770,6 +847,23 @@ impl Codebase {
                         _ => None,
                     })
                     .collect();
+                // A method called may be any of this source's definitions
+                // of it: which one, checking finds.
+                for n in names.iter().map(|n| bare(n)) {
+                    if !matches!(in_batch(n, &index), Ok(None)) {
+                        continue;
+                    }
+                    for m in self.methods.keys().filter(|m| *m == n || ends_with_segments(m, n)) {
+                        let last = m.rsplit('/').next().unwrap_or(m);
+                        out.extend(
+                            batch
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, d)| d.name.rsplit('/').next() == Some(last))
+                                .map(|(i, _)| i),
+                        );
+                    }
+                }
                 out.sort();
                 out.dedup();
                 out
@@ -830,7 +924,9 @@ impl Codebase {
                                 ambiguous.replace(Some((written.to_string(), candidates)));
                                 return None;
                             }
-                            Ok(None) => match self.resolve_name(written, &|n| self.names.contains_key(n)) {
+                            Ok(None) => match self
+                                .resolve_name(written, &|n| self.names.contains_key(n) || self.methods.contains_key(n))
+                            {
                                 Ok(Some(full)) => full,
                                 Ok(None) => return None,
                                 Err(candidates) => {
@@ -840,6 +936,9 @@ impl Codebase {
                             },
                         };
                         let name = name.as_str();
+                        if let Some(m) = self.methods.get(name) {
+                            return Some(Target::Method(name.to_string(), m.labels.clone()));
+                        }
                         if let Some(i) = names_in_cycle.iter().position(|n| *n == name)
                             && recursive
                         {
@@ -851,13 +950,11 @@ impl Codebase {
                             return Some(Target::Cycle(i as u32, labels));
                         }
                         let h = resolved.get(name).or_else(|| self.names.get(name))?;
-                        let term = staged
-                            .iter()
-                            .find(|s| s.hash == *h)
-                            .map(|s| &s.term)
-                            .or_else(|| self.defs.get(h).map(|d| &d.term));
-                        let labels = match term {
-                            Some(Term::Fn(labels, _)) => Some(labels.clone()),
+                        let def = staged.iter().find(|s| s.hash == *h).or_else(|| self.defs.get(h));
+                        // A call passes its own parameters; the methods a
+                        // definition is passed, checking passes.
+                        let labels = match def {
+                            Some(d) if matches!(d.term, Term::Fn(..)) => Some(split_labels(d).0),
                             _ => None,
                         };
                         Some(Target::Hash(*h, labels))
@@ -885,66 +982,53 @@ impl Codebase {
                     terms.push(term);
                 }
 
-                let hashes: Vec<Hash>;
-                let cycle_order: Vec<usize>;
                 // A signature is part of what a definition is: callers see
                 // its type.
                 let claim_text = |i: usize| signatures.get(&members[i].name).map(|c| c.text()).unwrap_or_default();
-                if !recursive {
-                    let mut bytes = Vec::new();
-                    terms[0].encode(&mut bytes, &|i| i);
-                    bytes.extend_from_slice(claim_text(0).as_bytes());
-                    hashes = vec![Hash::of(&bytes)];
-                    cycle_order = vec![0];
-                } else {
-                    // Order the members by their encoding with every cycle
-                    // reference written alike, so the order does not depend
-                    // on names. Members that encode identically are ordered
-                    // by name, which is a known gap: Unison would treat them
-                    // as one definition.
-                    let mut keyed: Vec<(Vec<u8>, &str, usize)> = terms
+                let member_names: Vec<&str> = members.iter().map(|d| d.name.as_str()).collect();
+                // Code that calls methods, or definitions that ask for them,
+                // is what it is once checking finds which: it is hashed
+                // after it is checked, as it then is.
+                let scheme_of = |h: &Hash| {
+                    staged
                         .iter()
-                        .enumerate()
-                        .map(|(i, t)| {
-                            let mut bytes = Vec::new();
-                            t.encode(&mut bytes, &|_| 0);
-                            bytes.extend_from_slice(claim_text(i).as_bytes());
-                            (bytes, members[i].name.as_str(), i)
-                        })
-                        .collect();
-                    keyed.sort();
-                    cycle_order = keyed.iter().map(|k| k.2).collect();
-                    let canonical = |provisional: u32| -> u32 {
-                        cycle_order.iter().position(|&p| p == provisional as usize).unwrap() as u32
-                    };
-                    let mut whole = Vec::new();
-                    for &p in &cycle_order {
-                        terms[p].encode(&mut whole, &canonical);
-                        whole.extend_from_slice(claim_text(p).as_bytes());
-                    }
-                    let cycle_hash = Hash::of(&whole);
-                    let mut by_provisional = vec![Hash([0; 32]); members.len()];
-                    for (position, &p) in cycle_order.iter().enumerate() {
-                        let mut bytes = cycle_hash.0.to_vec();
-                        bytes.extend_from_slice(&(position as u32).to_le_bytes());
-                        by_provisional[p] = Hash::of(&bytes);
-                    }
-                    hashes = by_provisional;
-                    // Rewrite provisional cycle indices to canonical ones.
-                    for t in terms.iter_mut() {
-                        renumber_cycle(t, &canonical);
-                    }
+                        .find(|d| d.hash == *h)
+                        .map(|d| &d.scheme)
+                        .or_else(|| self.defs.get(h).map(|d| &d.scheme))
+                };
+                let asks = |h: &Hash| scheme_of(h).is_some_and(|s| !s.requires.is_empty());
+                let elaborate = terms.iter().any(|t| methods::has_sites(t, &asks));
+                if elaborate {
+                    let mut next = 0;
+                    terms = terms.into_iter().map(|t| methods::mark_sites(t, &mut next, &asks, recursive)).collect();
                 }
-                let cycle: Vec<Hash> =
-                    if recursive { cycle_order.iter().map(|&p| hashes[p]).collect() } else { vec![] };
-
-                let fresh = !self.defs.contains_key(&hashes[0]) && !staged.iter().any(|d| d.hash == hashes[0]);
-                let schemes = if fresh {
+                let (mut hashes, mut cycle_order) = hash_members(&mut terms, recursive, &claim_text, &member_names);
+                let is_new = |hashes: &[Hash]| {
+                    !self.defs.contains_key(&hashes[0]) && !staged.iter().any(|d| d.hash == hashes[0])
+                };
+                let schemes = if elaborate {
                     let order: &[usize] = if recursive { &cycle_order } else { &[] };
-                    Some(self.check(&members, &terms, order, &staged, signatures).map_err(Failure::Error)?)
+                    let (schemes, elaborated) = self
+                        .check(&members, &terms, order, &staged, signatures, Some(&resolved))
+                        .map_err(Failure::Error)?;
+                    let mut elaborated = elaborated.expect("checking with sites rewrites them");
+                    if recursive {
+                        let back = cycle_order.clone();
+                        for t in elaborated.iter_mut() {
+                            renumber_cycle(t, &|c| back[c as usize] as u32);
+                        }
+                    }
+                    (hashes, cycle_order) = hash_members(&mut elaborated, recursive, &claim_text, &member_names);
+                    terms = elaborated;
+                    is_new(&hashes).then_some(schemes)
+                } else if is_new(&hashes) {
+                    let order: &[usize] = if recursive { &cycle_order } else { &[] };
+                    Some(self.check(&members, &terms, order, &staged, signatures, None).map_err(Failure::Error)?.0)
                 } else {
                     None
                 };
+                let cycle: Vec<Hash> =
+                    if recursive { cycle_order.iter().map(|&p| hashes[p]).collect() } else { vec![] };
                 Ok(Attempt { terms, hashes, cycle, schemes })
             };
             let Attempt { terms, hashes, cycle, schemes } =
@@ -972,7 +1056,9 @@ impl Codebase {
         Ok(added)
     }
 
-    /// Type check one component and return each member's scheme.
+    /// Type check one component and return each member's scheme. With
+    /// the names this source has defined so far, its terms have sites,
+    /// and each member also comes back with what its sites found passed.
     fn check(
         &self,
         members: &[&Def],
@@ -980,12 +1066,14 @@ impl Codebase {
         cycle_order: &[usize],
         staged: &[Definition],
         signatures: &HashMap<String, Claim>,
-    ) -> Result<Vec<Scheme>, Error> {
+        defined: Option<&HashMap<String, Hash>>,
+    ) -> Result<(Vec<Scheme>, Option<Vec<Term>>), Error> {
         struct Layered<'a> {
             defs: &'a HashMap<Hash, Definition>,
             staged: &'a [Definition],
             attributes: &'a BTreeMap<String, (String, Ty)>,
             hosts: &'a BTreeMap<String, BTreeMap<String, Hash>>,
+            methods: &'a BTreeMap<String, Method>,
         }
         impl Globals for Layered<'_> {
             fn scheme(&self, hash: &Hash) -> Option<Scheme> {
@@ -1002,9 +1090,17 @@ impl Codebase {
                     .filter_map(|(name, h)| Some((name.clone(), self.scheme(h)?)))
                     .collect()
             }
+            fn method(&self, name: &str) -> Option<Scheme> {
+                self.methods.get(name).map(|m| m.scheme.clone())
+            }
         }
-        let globals =
-            Layered { defs: &self.defs, staged, attributes: &self.claims.attribute_types, hosts: &self.hosts };
+        let globals = Layered {
+            defs: &self.defs,
+            staged,
+            attributes: &self.claims.attribute_types,
+            hosts: &self.hosts,
+            methods: &self.methods,
+        };
         let s = &self.solver;
         // Cycle members are known to each other monomorphically while
         // their bodies are checked, by their canonical index.
@@ -1015,33 +1111,281 @@ impl Codebase {
         let cycle_types: Vec<Ty> = cycle_order.iter().map(|&p| member_vars[p].clone()).collect();
         // Outside any function, code must be pure: a top-level value is
         // computed once, and nothing may happen when it is.
-        let infer =
-            Infer { solver: s, globals: &globals, cycle: cycle_types, effects: std::cell::RefCell::new(vec![None]) };
-        let mut schemes = Vec::new();
+        let infer = Infer {
+            solver: s,
+            globals: &globals,
+            cycle: cycle_types,
+            effects: std::cell::RefCell::new(vec![None]),
+            sites: std::cell::RefCell::new(Vec::new()),
+        };
+        let type_error = |d: &Def, error: TypeError| Error::Type { def: d.name.clone(), error };
+        let fail = |d: &Def, message: String| Error::Type { def: d.name.clone(), error: TypeError(message) };
         for (i, (d, term)) in members.iter().zip(terms).enumerate() {
-            let t = infer
-                .term(term, &mut Vec::<Binding>::new(), 1)
-                .map_err(|error| Error::Type { def: d.name.clone(), error })?;
-            s.constrain(&t, &member_vars[i]).map_err(|error| Error::Type { def: d.name.clone(), error })?;
-            schemes.push(Scheme { level: 0, body: member_vars[i].clone() });
+            let t = infer.term(term, &mut Vec::<Binding>::new(), 1).map_err(|e| type_error(d, e))?;
+            s.constrain(&t, &member_vars[i]).map_err(|e| type_error(d, e))?;
         }
-        // A signature is checked against what was inferred, and is what
-        // callers then see.
-        for (i, (d, term)) in members.iter().zip(terms).enumerate() {
+        let Some(defined) = defined else {
+            // A signature is checked against what was inferred, and is
+            // what callers then see.
+            let mut schemes = Vec::new();
+            for (i, (d, term)) in members.iter().zip(terms).enumerate() {
+                let inferred = Scheme::new(0, member_vars[i].clone());
+                schemes.push(match signatures.get(&d.name) {
+                    Some(claim) => self.signature(claim, term, &inferred).map_err(|m| fail(d, m))?,
+                    None => Scheme::new(0, s.compact(&member_vars[i], 0)),
+                });
+            }
+            return Ok((schemes, None));
+        };
+        // A claim says what a definition's parameters are, and so what
+        // the methods it calls are called on.
+        for (i, d) in members.iter().enumerate() {
             if let Some(claim) = signatures.get(&d.name) {
-                let fail = |message: String| Error::Type { def: d.name.clone(), error: TypeError(message) };
-                let claimed = self.signature(claim, term, &schemes[i]).map_err(fail)?;
-                schemes[i] = Scheme { level: 0, body: claimed };
-            } else {
-                schemes[i] = Scheme { level: 0, body: s.compact(&schemes[i].body, 0) };
+                let mut env = Env::new(Mode::Flexible(s, 1));
+                let (claimed, _) = self.claimed_type(claim, &mut env).map_err(|m| fail(d, m))?;
+                s.constrain(&member_vars[i], &claimed)
+                    .map_err(|e| fail(d, format!("the definition does not fit its claim: {e}")))?;
             }
         }
-        Ok(schemes)
+        let sites = infer.sites.take();
+        let inputs = methods::inputs(&member_vars);
+        let lookup =
+            Lookup { members, terms, member_vars: &member_vars, cycle_order, staged, defined, inputs: &inputs };
+        let (found, needed) = self.find_methods(&sites, &lookup).map_err(|(i, m)| fail(members[i], m))?;
+        if !needed.is_empty()
+            && let Some((d, _)) = members.iter().zip(terms).find(|(_, t)| !matches!(t, Term::Fn(..)))
+        {
+            return Err(fail(
+                d,
+                format!(
+                    "`{}` is called on a value whose type is not known here, which only a function's caller can \
+                     say: make `{}` a function, or say the value's type",
+                    needed[0].method, d.name
+                ),
+            ));
+        }
+        let hidden: Vec<String> = needed.iter().enumerate().map(|(j, n)| format!("#{j} {}", n.method)).collect();
+        let cycle_labels: Vec<Vec<String>> = cycle_order.iter().map(|&p| fn_labels(&terms[p])).collect();
+        let definition_labels = |h: &Hash| -> (Vec<String>, Vec<String>) {
+            let def = self.defs.get(h).or_else(|| staged.iter().find(|d| d.hash == *h)).expect("a site's definition");
+            split_labels(def)
+        };
+        let elaborator = methods::Elaborator {
+            found: &found,
+            hidden: &hidden,
+            cycle_labels: &cycle_labels,
+            definition_labels: &definition_labels,
+        };
+        let elaborated: Vec<Term> = terms.iter().map(|t| elaborator.member(t)).collect();
+        let receivers: Vec<Ty> = needed.iter().map(|n| n.receiver.clone()).collect();
+        let mut schemes = Vec::new();
+        for (i, (d, term)) in members.iter().zip(terms).enumerate() {
+            let requires: Vec<Requirement> =
+                needed.iter().map(|n| Requirement { method: n.method.clone(), receiver: n.receiver.clone() }).collect();
+            schemes.push(match signatures.get(&d.name) {
+                Some(claim) => {
+                    let inferred = Scheme { level: 0, body: member_vars[i].clone(), requires };
+                    self.signature(claim, term, &inferred).map_err(|m| fail(d, m))?
+                }
+                None => {
+                    let (body, on) = s.compact_with(&member_vars[i], &receivers, 0);
+                    let requires = requires
+                        .into_iter()
+                        .zip(on)
+                        .map(|(r, receiver)| Requirement { method: r.method, receiver })
+                        .collect();
+                    Scheme { level: 0, body, requires }
+                }
+            });
+        }
+        Ok((schemes, Some(elaborated)))
     }
 
-    /// The type a signature claims for `term`, once checked against the
-    /// scheme inferred for it.
-    fn signature(&self, claim: &Claim, term: &Term, inferred: &Scheme) -> Result<Ty, String> {
+    /// What each site's calls of methods call: for each site, a
+    /// definition of each method it needs, or the method the definitions
+    /// being checked are passed for it; and what those are passed,
+    /// each with the type it is called on. On an error, the member it is
+    /// in.
+    fn find_methods(
+        &self,
+        sites: &[crate::infer::Site],
+        lookup: &Lookup,
+    ) -> Result<(SiteImpls, Vec<Needed>), (usize, String)> {
+        // Finding a method can tell more about the types other calls are
+        // on, which a second look then finds known.
+        let mut round = 0;
+        loop {
+            let mut needed = Vec::new();
+            let mut found = HashMap::new();
+            for site in sites {
+                if matches!(site.kind, crate::infer::SiteKind::Cycle(_)) {
+                    continue;
+                }
+                let mut impls = Vec::new();
+                for (method, on) in &site.needs {
+                    let member = lookup.member_of(site.id);
+                    impls.push(self.find_method(method, on, &mut needed, lookup, 0).map_err(|m| (member, m))?);
+                }
+                found.insert(site.id, impls);
+            }
+            let settled = needed.iter().all(|n| matches!(methods::receiver(&n.receiver), Receiver::Unknown(_)));
+            if settled || round == 3 {
+                return Ok((found, needed));
+            }
+            round += 1;
+        }
+    }
+
+    fn find_method(
+        &self,
+        method: &str,
+        on: &Ty,
+        needed: &mut Vec<Needed>,
+        lookup: &Lookup,
+        depth: usize,
+    ) -> Result<Impl, String> {
+        if depth > 32 {
+            return Err(format!(
+                "finding `{method}` needs it again for the types inside, without end: a definition of it for a type \
+                 that holds itself needs its claim, `(claim (name (type ?a) ..) : ..)`, to know that what it holds is \
+                 of that type"
+            ));
+        }
+        let last = method.rsplit('/').next().unwrap_or(method);
+        match methods::receiver(on) {
+            Receiver::Invalid(what) => Err(format!("`{method}` is called on {what}")),
+            Receiver::Unknown(sources) => {
+                // A variable a `let` made generic stands for many types,
+                // each use's own: no one method is passed for it.
+                if sources.iter().any(|t| t.level() > 1) {
+                    return Err(format!(
+                        "`{method}` is called inside a function a `let` binds, on a value of a type the `let` makes \
+                         generic: define the function at the top level, where its callers say the type"
+                    ));
+                }
+                // Only what callers give is theirs to say; anything else
+                // that is unknown is nothing at all.
+                let from_callers: Vec<Ty> =
+                    sources.into_iter().filter(|t| matches!(t, Ty::Var(v) if lookup.inputs.contains(&v.id))).collect();
+                if from_callers.is_empty() {
+                    return Ok(Impl::Nothing(self.methods[method].labels.clone()));
+                }
+                let key = methods::key(&from_callers);
+                // Values that all come from one variable: the method is
+                // needed for it, the type callers say.
+                let on = match from_callers.as_slice() {
+                    [one] => one,
+                    _ => on,
+                };
+                let at = match needed.iter().position(|n| n.method == method && n.key == key) {
+                    Some(j) => j,
+                    None => {
+                        needed.push(Needed { method: method.to_string(), receiver: on.clone(), key });
+                        needed.len() - 1
+                    }
+                };
+                Ok(Impl::Passed(at))
+            }
+            Receiver::Known(domains, shown) => {
+                for domain in &domains {
+                    let name = format!("{domain}/{last}");
+                    if let Some(target) = lookup.find(self, &name)? {
+                        return self.use_method(method, on, &name, target, needed, lookup, depth);
+                    }
+                }
+                Err(format!("{shown} has no `{last}`: `{method}` is defined for it as `{}/{last}`", domains[0]))
+            }
+        }
+    }
+
+    /// The definition `name` of `method`, for a call on `on`: checked to
+    /// fit the method's claim there, with the methods it needs in turn.
+    #[allow(clippy::too_many_arguments)]
+    fn use_method(
+        &self,
+        method: &str,
+        on: &Ty,
+        name: &str,
+        target: Found,
+        needed: &mut Vec<Needed>,
+        lookup: &Lookup,
+        depth: usize,
+    ) -> Result<Impl, String> {
+        let s = &self.solver;
+        let claim = &self.methods[method];
+        // The claim with its type variable the type called on.
+        let (want, receivers) = s.instantiate_with(&claim.scheme, 1);
+        s.constrain(on, &receivers[0]).map_err(|e| e.to_string())?;
+        s.constrain(&receivers[0], on).map_err(|e| e.to_string())?;
+        let labels = |labels: &[String]| -> Result<(), String> {
+            if labels.get(1..) == claim.labels.get(1..) {
+                return Ok(());
+            }
+            Err(format!(
+                "`{name}` takes `{}`, and the claim of `{method}` `{}`",
+                text(labels.get(1..).unwrap_or(&[])),
+                text(&claim.labels[1..])
+            ))
+        };
+        let fit = |e: TypeError| format!("`{name}` does not fit the claim of `{method}`: {e}");
+        match target {
+            Found::Member(canonical, ty, own) => {
+                labels(&own)?;
+                s.constrain(&ty, &want).map_err(fit)?;
+                Ok(Impl::Member(canonical))
+            }
+            Found::Stored(hash, scheme, own, hidden) => {
+                labels(&own)?;
+                let (ty, ons) = s.instantiate_with(&scheme, 1);
+                s.constrain(&ty, &want).map_err(fit)?;
+                let needs = scheme
+                    .requires
+                    .iter()
+                    .zip(ons)
+                    .map(|(r, on)| self.find_method(&r.method, &on, needed, lookup, depth + 1))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Impl::Found { target: hash, needs, labels: own, hidden })
+            }
+        }
+    }
+
+    /// The type a claim writes, read in `env`, and the variable for the
+    /// capabilities it leaves to inference, if it does.
+    fn claimed_type(&self, claim: &Claim, env: &mut Env) -> Result<(Ty, Option<Ty>), String> {
+        let s = &self.solver;
+        let params = match &claim.params {
+            Some(params) => Some(self.claims.params(params, env)?),
+            None => None,
+        };
+        let ret = self.claims.ty(&claim.ty, env)?;
+        // A claim may write the whole type, as it is shown: a task, or a
+        // function that answers one.
+        let task = |t: &TypeExpr| matches!(t, TypeExpr::App(head, _, _) if head == "task");
+        let whole = claim.params.is_none()
+            && claim.with.is_none()
+            && (task(&claim.ty) || matches!(&claim.ty, TypeExpr::Fn(_, w, r) if w.is_some() || task(r)));
+        let (ret, inferred) = if claim.performs && !whole {
+            match &claim.with {
+                Some(w) => (Ty::task(ret, self.claims.ty(w, env)?), None),
+                None => {
+                    let e = env.inferred(s, 1);
+                    (Ty::task(ret, e.clone()), Some(e))
+                }
+            }
+        } else {
+            (ret, None)
+        };
+        match params {
+            Some(params) => Ok((claims::function(params, ret)?, inferred)),
+            None => Ok((ret, inferred)),
+        }
+    }
+
+    /// The scheme a signature claims for `term`, once checked against the
+    /// scheme inferred for it: its type, and the methods inferred to be
+    /// needed, each on the claim's variable that is the type it is called
+    /// on.
+    fn signature(&self, claim: &Claim, term: &Term, inferred: &Scheme) -> Result<Scheme, String> {
         let s = &self.solver;
         if let Some(params) = &claim.params {
             let Term::Fn(labels, _) = term else {
@@ -1073,46 +1417,16 @@ impl Codebase {
                 "the claim is marked `!`, so the definition must be too".into()
             });
         }
-        // The claim's type, and the variable for capabilities it leaves
-        // to inference, if it does.
-        let read = |env: &mut Env| -> Result<(Ty, Option<Ty>), String> {
-            let params = match &claim.params {
-                Some(params) => Some(self.claims.params(params, env)?),
-                None => None,
-            };
-            let ret = self.claims.ty(&claim.ty, env)?;
-            // A claim may write the whole type, as it is shown: a task, or
-            // a function that answers one.
-            let task = |t: &TypeExpr| matches!(t, TypeExpr::App(head, _, _) if head == "task");
-            let whole = claim.params.is_none()
-                && claim.with.is_none()
-                && (task(&claim.ty) || matches!(&claim.ty, TypeExpr::Fn(_, w, r) if w.is_some() || task(r)));
-            let (ret, inferred) = if claim.performs && !whole {
-                match &claim.with {
-                    Some(w) => (Ty::task(ret, self.claims.ty(w, env)?), None),
-                    None => {
-                        let e = env.inferred(s, 1);
-                        (Ty::task(ret, e.clone()), Some(e))
-                    }
-                }
-            } else {
-                (ret, None)
-            };
-            match params {
-                Some(params) => Ok((claims::function(params, ret)?, inferred)),
-                None => Ok((ret, inferred)),
-            }
-        };
         // Checked with its variables as types the caller chooses...
         let mut rigid_env = Env::new(Mode::Rigid(s));
-        let (rigid, effect) = read(&mut rigid_env)?;
-        s.constrain(&s.instantiate(inferred, 1), &rigid)
-            .map_err(|e| format!("the definition does not fit its claim: {e}"))?;
+        let (rigid, effect) = self.claimed_type(claim, &mut rigid_env)?;
+        let (instance, ons) = s.instantiate_with(inferred, 1);
+        s.constrain(&instance, &rigid).map_err(|e| format!("the definition does not fit its claim: {e}"))?;
         // ...and shown to callers with them free. Capabilities it left
         // out are what the body was found to use: named ones, and those
         // of the functions it was given, which are its own variables.
         let mut open_env = Env::new(Mode::Flexible(s, 1));
-        let (open, open_effect) = read(&mut open_env)?;
+        let (open, open_effect) = self.claimed_type(claim, &mut open_env)?;
         if let (Some(found), Some(shown)) = (effect, open_effect) {
             for bound in lower_bounds(&found) {
                 let bound = match bound {
@@ -1122,8 +1436,116 @@ impl Codebase {
                 s.constrain(&bound, &shown).map_err(|e| e.to_string())?;
             }
         }
-        Ok(open)
+        // A method needed is on whichever of the claim's variables its
+        // values came from.
+        let mut requires = Vec::new();
+        for (r, on) in inferred.requires.iter().zip(ons) {
+            let receiver = match methods::rigid_names(&on).as_slice() {
+                [name] => open_env.vars[name].clone(),
+                [] => {
+                    return Err(format!(
+                        "`{}` is called on a value whose type the claim does not say: say it with a type variable, \
+                         `?a`",
+                        r.method
+                    ));
+                }
+                names => {
+                    return Err(format!(
+                        "`{}` is called on values of the claim's `?{}`, which may differ: one method is passed for \
+                         each",
+                        r.method,
+                        names.join("` and `?")
+                    ));
+                }
+            };
+            requires.push(Requirement { method: r.method.clone(), receiver });
+        }
+        Ok(Scheme { level: 0, body: open, requires })
     }
+}
+
+/// What each site was found to call, by its number.
+type SiteImpls = HashMap<u32, Vec<Impl>>;
+
+/// A method being passed: its claim's whole name, the type it is called
+/// on, and the variables that type's values come from, by which calls
+/// on the same values share one.
+struct Needed {
+    method: String,
+    receiver: Ty,
+    key: Vec<u32>,
+}
+
+/// A definition of a method, found by name.
+enum Found {
+    /// A member of the cycle being checked: its canonical index, its
+    /// type, and its parameters' labels.
+    Member(u32, Ty, Vec<String>),
+    /// A definition already checked: its hash, scheme, own parameters'
+    /// labels, and the labels it takes the methods it needs by.
+    Stored(Hash, Scheme, Vec<String>, Vec<String>),
+}
+
+/// Where a component's checking finds definitions of methods.
+struct Lookup<'a> {
+    members: &'a [&'a Def],
+    terms: &'a [Term],
+    member_vars: &'a [Ty],
+    cycle_order: &'a [usize],
+    staged: &'a [Definition],
+    /// The names this source has defined, in components checked before.
+    defined: &'a HashMap<String, Hash>,
+    /// The variables callers' values flow into: see [`methods::inputs`].
+    inputs: &'a std::collections::HashSet<u32>,
+}
+
+impl Lookup<'_> {
+    fn find(&self, cb: &Codebase, name: &str) -> Result<Option<Found>, String> {
+        if let Some(p) = self.members.iter().position(|d| d.name == name) {
+            // A member is one only of a cycle: one that calls itself.
+            let Some(canonical) = self.cycle_order.iter().position(|&q| q == p) else { return Ok(None) };
+            let labels = fn_labels(&self.terms[p]);
+            if labels.is_empty() {
+                return Err(format!("`{name}` is not a function"));
+            }
+            return Ok(Some(Found::Member(canonical as u32, self.member_vars[p].clone(), labels)));
+        }
+        let Some(hash) = self.defined.get(name).or_else(|| cb.names.get(name)) else { return Ok(None) };
+        let def = cb.defs.get(hash).or_else(|| self.staged.iter().find(|d| d.hash == *hash)).expect("a defined name");
+        if !matches!(def.term, Term::Fn(..)) {
+            return Err(format!("`{name}` is not a function"));
+        }
+        let (own, hidden) = split_labels(def);
+        Ok(Some(Found::Stored(*hash, def.scheme.clone(), own, hidden)))
+    }
+
+    /// The member a site is in.
+    fn member_of(&self, site: u32) -> usize {
+        self.terms
+            .iter()
+            .position(|t| {
+                let mut found = false;
+                t.walk(&mut |t| found |= matches!(t, Term::Site(id, _) if *id == site));
+                found
+            })
+            .unwrap_or(0)
+    }
+}
+
+/// A function's parameters' labels, or none.
+fn fn_labels(term: &Term) -> Vec<String> {
+    match term {
+        Term::Fn(labels, _) => labels.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// A stored function's own parameters' labels, and the labels it takes
+/// the methods it needs by, which come after them.
+fn split_labels(def: &Definition) -> (Vec<String>, Vec<String>) {
+    let labels = fn_labels(&def.term);
+    let own = labels.len() - def.scheme.requires.len().min(labels.len());
+    (labels[..own].to_vec(), labels[own..].to_vec())
 }
 
 /// What flows into a variable, through the variables that flow into it.
@@ -1157,6 +1579,8 @@ enum ResolveError {
 enum Target {
     Hash(Hash, Option<Vec<String>>),
     Cycle(u32, Option<Vec<String>>),
+    /// A method, by the whole name of its claim, and its labels.
+    Method(String, Vec<String>),
 }
 
 /// Everything resolution looks names up in.
@@ -1441,6 +1865,7 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
                 match target {
                     Some(Target::Hash(h, _)) => Term::Ref(h),
                     Some(Target::Cycle(i, _)) => Term::CycleRef(i),
+                    Some(Target::Method(m, _)) => Term::Dispatch(m),
                     None if Op::from_name(name).is_some() => {
                         return Err(ResolveError::Invalid(format!(
                             "the built-in `{name}` is not a value yet; call it, or wrap it in `fn`"
@@ -1620,6 +2045,7 @@ fn app(callee: &Expr, args: &[Arg], scope: &mut Vec<String>, names: &Names) -> R
                 let (callee, labels) = match target {
                     Target::Hash(h, labels) => (Term::Ref(h), labels),
                     Target::Cycle(i, labels) => (Term::CycleRef(i), labels),
+                    Target::Method(m, labels) => (Term::Dispatch(m), Some(labels)),
                 };
                 if let Some(labels) = labels {
                     let args = arrange(name, &labels, resolved)?;
@@ -1847,7 +2273,9 @@ fn free_names(expr: &Expr, scope: &mut Vec<String>, out: &mut Vec<String>) {
 fn renumber_cycle(term: &mut Term, canonical: &dyn Fn(u32) -> u32) {
     match term {
         Term::CycleRef(i) => *i = canonical(*i),
-        Term::Fn(_, b) | Term::Field(_, b) | Term::Task(b) | Term::Perform(b) => renumber_cycle(b, canonical),
+        Term::Fn(_, b) | Term::Field(_, b) | Term::Task(b) | Term::Perform(b) | Term::Site(_, b) => {
+            renumber_cycle(b, canonical)
+        }
         Term::Handle(t, caps) => {
             renumber_cycle(t, canonical);
             caps.iter_mut().flat_map(|(_, ops)| ops).for_each(|(_, i)| renumber_cycle(i, canonical));
@@ -1876,6 +2304,59 @@ fn renumber_cycle(term: &mut Term, canonical: &dyn Fn(u32) -> u32) {
         }
         _ => {}
     }
+}
+
+/// Hash a component's members, `terms` in member order with cycle
+/// references by member position, which come out by canonical index.
+/// Each member's hash, in member order, and the members in canonical
+/// order.
+fn hash_members(
+    terms: &mut [Term],
+    recursive: bool,
+    claim_text: &dyn Fn(usize) -> String,
+    names: &[&str],
+) -> (Vec<Hash>, Vec<usize>) {
+    if !recursive {
+        let mut bytes = Vec::new();
+        terms[0].encode(&mut bytes, &|i| i);
+        bytes.extend_from_slice(claim_text(0).as_bytes());
+        return (vec![Hash::of(&bytes)], vec![0]);
+    }
+    // Order the members by their encoding with every cycle reference
+    // written alike, so the order does not depend on names. Members that
+    // encode identically are ordered by name, which is a known gap:
+    // Unison would treat them as one definition.
+    let mut keyed: Vec<(Vec<u8>, &str, usize)> = terms
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut bytes = Vec::new();
+            t.encode(&mut bytes, &|_| 0);
+            bytes.extend_from_slice(claim_text(i).as_bytes());
+            (bytes, names[i], i)
+        })
+        .collect();
+    keyed.sort();
+    let cycle_order: Vec<usize> = keyed.iter().map(|k| k.2).collect();
+    let canonical =
+        |provisional: u32| -> u32 { cycle_order.iter().position(|&p| p == provisional as usize).unwrap() as u32 };
+    let mut whole = Vec::new();
+    for &p in &cycle_order {
+        terms[p].encode(&mut whole, &canonical);
+        whole.extend_from_slice(claim_text(p).as_bytes());
+    }
+    let cycle_hash = Hash::of(&whole);
+    let mut hashes = vec![Hash([0; 32]); terms.len()];
+    for (position, &p) in cycle_order.iter().enumerate() {
+        let mut bytes = cycle_hash.0.to_vec();
+        bytes.extend_from_slice(&(position as u32).to_le_bytes());
+        hashes[p] = Hash::of(&bytes);
+    }
+    // Rewrite provisional cycle indices to canonical ones.
+    for t in terms.iter_mut() {
+        renumber_cycle(t, &canonical);
+    }
+    (hashes, cycle_order)
 }
 
 /// Tarjan's algorithm. Components come out with each one after every
@@ -2293,6 +2774,15 @@ type Placed = (Sexp, Option<String>);
 /// What a macro function's definition is named: `route#macro` for the
 /// macro `route`.
 const MACRO_SUFFIX: &str = "#macro";
+
+/// Whether a claim, with no definition, claims a method: a function whose
+/// first parameter is of a type variable, the type each definition of
+/// it is for.
+fn is_method_claim(c: &Claim) -> bool {
+    !c.performs
+        && c.with.is_none()
+        && c.params.as_ref().is_some_and(|ps| matches!(ps.first(), Some((_, TypeExpr::Var(_)))))
+}
 
 /// `(macro name f)`: a macro that is a function, its name and `f`.
 fn macro_function(form: &Sexp) -> Option<(&str, &Sexp)> {

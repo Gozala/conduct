@@ -5,6 +5,27 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
+## Methods
+
+- **Unions:** a method called on a value that may be one of several
+  variants is an error, as in Roc, which has no dynamic dispatch. Conduct
+  already picks among variants at run time in functions by clauses, so
+  picking a method by tag would be consistent with conduct; it is the
+  harder of the two to take back.
+- **Built-ins:** `=`, `hash` and `str` stay structural. Letting a type
+  give its own equality means every generic use of `=` asks for it,
+  `conduct.map` included; display (hiding a password) is the case that
+  most needs a type's own say.
+- **By the type a call must answer:** decoding wants it, so `codec` is
+  found from the type expected; not built. `record-codec` finding a
+  variant's codec in its domain, at expansion, would cover nested
+  codecs without it.
+- **Claims do not write requirements;** they are inferred and shown.
+  Roc makes an annotated function write its `where` clause. Writing
+  them would make a claim say everything a caller needs to know.
+- **Homes:** a variant's methods are in its attribute's domain, which
+  may differ from the domain its `type` is written in.
+
 ## Macro functions
 
 - **Hygiene:** a macro function's output names things as written where

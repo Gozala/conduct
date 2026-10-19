@@ -169,6 +169,9 @@ pub fn event_type() -> Ty {
 /// their types against the contract. The model type is whatever `init`
 /// returns; `update` and `view` must accept it, and `update` must
 /// return it again.
+///
+/// The host calls them, and passes no methods: one that asks for them
+/// is an error.
 pub fn check(cb: &Codebase) -> Result<ElementDefs, ElementError> {
     let find = |name: &str| cb.names.get(name).copied();
     let defs = ElementDefs {
@@ -180,10 +183,16 @@ pub fn check(cb: &Codebase) -> Result<ElementDefs, ElementError> {
     };
     let s = &cb.solver;
     let level = 1;
+    if let Some(h) = cb.names.get("view") {
+        passes_no_methods(cb, "view", *h).map_err(|error| ElementError::Contract { name: "view", error })?;
+    }
     let ty_of = |h: Hash| s.instantiate(&cb.defs[&h].scheme, level);
     let fits = |name: &'static str, h: Option<Hash>, expected: Ty| -> Result<(), ElementError> {
         match h {
-            Some(h) => s.constrain(&ty_of(h), &expected).map_err(|error| ElementError::Contract { name, error }),
+            Some(h) => {
+                passes_no_methods(cb, name, h).map_err(|error| ElementError::Contract { name, error })?;
+                s.constrain(&ty_of(h), &expected).map_err(|error| ElementError::Contract { name, error })
+            }
             None => Ok(()),
         }
     };
@@ -763,4 +772,17 @@ fn encode(cb: &Codebase, debug: bool) -> Result<Vec<u8>, ElementError> {
         .module(&core)
         .and_then(|e| e.encode())
         .map_err(|e| ElementError::Encode(format!("{e:#}")))
+}
+
+/// What the host calls is passed its arguments, and no methods: a
+/// definition it calls must not ask for them.
+pub fn passes_no_methods(cb: &Codebase, name: &str, h: Hash) -> Result<(), TypeError> {
+    match cb.defs[&h].scheme.requires.first() {
+        None => Ok(()),
+        Some(r) => Err(TypeError(format!(
+            "`{name}` asks for `{}` for a type its callers say, and the host passes no methods: call it on values of \
+             a known type",
+            r.method
+        ))),
+    }
 }

@@ -18,6 +18,28 @@ pub trait Globals {
     /// The host functions that need a capability: each one's name and
     /// type.
     fn operations(&self, capability: &str) -> Vec<(String, Scheme)>;
+    /// A method's claim, by its whole name: the type every definition of
+    /// it fits, with the type it is called on as its one requirement.
+    fn method(&self, name: &str) -> Option<Scheme>;
+}
+
+/// A place in a definition where checking found what calls need: a
+/// method called, a definition that asks for methods, or a member of the
+/// definition's own cycle.
+pub struct Site {
+    pub id: u32,
+    pub kind: SiteKind,
+    /// Each method needed there, with the type it is called on.
+    pub needs: Vec<(String, Ty)>,
+    /// The level of the code the site is in: above the definition's own,
+    /// it is in a function a `let` made generic.
+    pub level: u32,
+}
+
+pub enum SiteKind {
+    Method,
+    Definition(Hash),
+    Cycle(u32),
 }
 
 pub struct Infer<'a> {
@@ -29,6 +51,8 @@ pub struct Infer<'a> {
     /// function's body or a top-level value, which are pure, and the
     /// capabilities of a task's body, which may perform.
     pub effects: std::cell::RefCell<Vec<Option<Ty>>>,
+    /// What each [`Term::Site`] was found to need, in the order met.
+    pub sites: std::cell::RefCell<Vec<Site>>,
 }
 
 type Result<T> = std::result::Result<T, TypeError>;
@@ -53,9 +77,38 @@ impl Infer<'_> {
             Term::Ref(h) => {
                 let scheme =
                     self.globals.scheme(h).ok_or_else(|| TypeError(format!("unknown definition {}", h.short())))?;
+                if !scheme.requires.is_empty() {
+                    return Err(TypeError(format!("{} asks for methods, met where none were looked for", h.short())));
+                }
                 s.instantiate(&scheme, level)
             }
             Term::CycleRef(i) => self.cycle[*i as usize].clone(),
+            Term::Site(id, inner) => {
+                let (ty, kind, needs) = match &**inner {
+                    Term::Dispatch(name) => {
+                        let scheme =
+                            self.globals.method(name).ok_or_else(|| TypeError(format!("`{name}` is not a method")))?;
+                        let (ty, receivers) = s.instantiate_with(&scheme, level);
+                        (ty, SiteKind::Method, vec![(name.clone(), receivers[0].clone())])
+                    }
+                    Term::Ref(h) => {
+                        let scheme = self
+                            .globals
+                            .scheme(h)
+                            .ok_or_else(|| TypeError(format!("unknown definition {}", h.short())))?;
+                        let (ty, receivers) = s.instantiate_with(&scheme, level);
+                        let needs = scheme.requires.iter().map(|r| r.method.clone()).zip(receivers).collect();
+                        (ty, SiteKind::Definition(*h), needs)
+                    }
+                    Term::CycleRef(i) => (self.cycle[*i as usize].clone(), SiteKind::Cycle(*i), Vec::new()),
+                    other => return self.term(other, env, level),
+                };
+                self.sites.borrow_mut().push(Site { id: *id, kind, needs, level });
+                ty
+            }
+            Term::Dispatch(name) => {
+                return Err(TypeError(format!("`{name}` is a method, met where none was looked for")));
+            }
             Term::Fn(labels, body) => {
                 let arity = labels.len();
                 let params: Vec<Ty> = (0..arity).map(|_| s.fresh_ty(level)).collect();
@@ -152,7 +205,7 @@ impl Infer<'_> {
             }
             Term::Let(value, body) => {
                 let t = self.term(value, env, level + 1)?;
-                env.push(Binding::Poly(Scheme { level, body: t }));
+                env.push(Binding::Poly(Scheme::new(level, t)));
                 let out = self.term(body, env, level);
                 env.pop();
                 out?

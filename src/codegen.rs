@@ -846,6 +846,7 @@ impl<'a> Builder<'a> {
                     }
                 }
             }
+            Term::Dispatch(_) | Term::Site(..) => unreachable!("checking replaces what it records"),
             // A task that performs another with an environment on top.
             Term::Handle(task, provided) => {
                 // An operation of no parameters is implemented by its
@@ -1406,7 +1407,9 @@ fn free_locals(term: &Term, binders: u32, out: &mut BTreeSet<u32>) {
         | Term::Nil
         | Term::Ref(_)
         | Term::CycleRef(_)
+        | Term::Dispatch(_)
         | Term::Keyword(_) => {}
+        Term::Site(_, inner) => free_locals(inner, binders, out),
     }
 }
 
@@ -1562,6 +1565,12 @@ fn escape(bytes: &[u8]) -> String {
 pub fn compile_exports(cb: &Codebase, exports: &[(&str, Hash)]) -> Result<String> {
     let mut b = Builder::new(cb);
     for (name, hash) in exports {
+        if let Some(r) = cb.defs[hash].scheme.requires.first() {
+            return Err(CodegenError(format!(
+                "`{name}` asks for `{}`, and what calls an export passes no methods",
+                r.method
+            )));
+        }
         b.require(*hash)?;
         let def_name = Builder::def_name(hash);
         match &cb.defs[hash].term {

@@ -190,6 +190,8 @@ pub struct RouteDefs {
 pub fn check(cb: &Codebase) -> Result<RouteDefs, RouteError> {
     let handle = *cb.names.get("handle").ok_or(RouteError::Missing("handle"))?;
     let s = &cb.solver;
+    crate::element::passes_no_methods(cb, "handle", handle)
+        .map_err(|error| RouteError::Contract { name: "handle", error })?;
     let ty = s.instantiate(&cb.defs[&handle].scheme, 1);
     let task = Ty::task(response_type(), Ty::caps([MODEL.to_string()]));
     let expected = Ty::func(vec![request_type()], task, &[]);

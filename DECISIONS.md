@@ -3,6 +3,38 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Methods, found by type when code is checked
+
+- **A claim with no definition is a method,** when its first parameter
+  is a type variable; each type defines it in its own domain. This is
+  Roc's static dispatch without a block on the type: conduct's records
+  are open and two of the same attributes are one type, so a method
+  hangs on what has one global name, a variant's attribute or a
+  built-in type.
+- **Passed, not copied:** a function that calls a method on a value of
+  a type its callers say takes the method as a parameter after its own
+  (dictionary passing). Roc compiles such a function once per type
+  instead. Copies would multiply what a hash names; passing keeps one
+  definition.
+- **Hashed after checking:** the definition a call finds depends on the
+  type, which only checking knows, and is part of what the caller is.
+  Such definitions are checked before they are hashed, every time they
+  are added; nothing else changed, and every existing hash is the same.
+- **What the requirement is on:** the variable the values come from,
+  when they come from one, so that `smaller` shows as `((\ ?a than: ?a)
+  : ?a) where ?a has ord/compare` rather than a variable of its own
+  beside each parameter. Calls on values from the same variables share
+  one method passed.
+- **Nothing is no type:** a call on what nothing reaches (the items of
+  an empty list) is passed a function that is never called, rather than
+  asking callers for a method for no type.
+- **A type that holds itself needs its claim:** without it, each level
+  of a tree asks for the method for the level below, without end. With
+  it, a tree's method calls itself. An error says so.
+- **Would reverse it:** if passing methods proves slow in a hot loop,
+  specializing a definition for a type is a cache keyed by hash and
+  type, not a change to what is hashed.
+
 ## Libraries carry their types
 
 - **Unclaimed combinators made types explode.** conduct.json's

@@ -464,8 +464,8 @@ What narrowing does not cover is a predicate you define:
 about its argument is not part of its type. That would take Typed
 Racket's occurrence typing, inferred without annotations.
 
-Equality and `str` work on any value, so there is no type class
-machinery: `=` takes `(Any, Any)`.
+Equality and `str` work on any value: `=` takes `(Any, Any)`. What a
+type does its own way is a method (below).
 
 `true` and `false` are patterns too, and the two cover a `Bool`.
 
@@ -502,6 +502,69 @@ Where no clause matches anything in a parameter, the argument must be
 one of the variants the clauses name there, and calls are checked for
 it. A function written with names alone is one clause, and compiles and
 hashes as before.
+
+### Methods
+
+A claim with no definition, of a function whose first parameter is a
+type variable, claims a method: each type defines it for itself, and a
+call finds the definition for the type it is called on, when it is
+checked. This is Roc's static dispatch, with methods named by their
+claim rather than by a block on the type.
+
+```clojure
+(domain ord
+  (claim (compare ?a vs: ?a) : integer))       ; the method `ord/compare`
+
+(domain demo.thing
+  (type (thing ?a) : {(./thing ?a)})
+  (define (content (thing of)) of)
+  (define (compare a vs: b)                    ; `thing`'s: in the domain of its attribute
+    (ord/compare (content a) vs: (content b))))
+
+(domain conduct.natural
+  (define (compare a vs: b) (conduct/compare a b)))
+
+(ord/compare (thing 1) vs: (thing 2))          ; demo.thing/compare: -1
+(define (smaller a than) (if (< (ord/compare a vs: than) 0) a than))
+;; smaller : ((\ ?a than: ?a) : ?a) where ?a has ord/compare
+(smaller (thing 5) than: (thing 3))            ; (thing 3)
+```
+
+- **Where a method is defined:** a variant's in the domain of its
+  attribute's global name (`demo.thing/thing` defines `demo.thing/compare`);
+  a built-in type's in `conduct.` and the type's name. A byte is a
+  natural and a natural an integer, so a byte's method is looked for in
+  `conduct.byte`, then `conduct.natural`, then `conduct.integer`. A record
+  of several attributes has none: two records with the same attributes
+  are the same type, so they could not differ in their methods.
+- **What is checked:** the definition found must fit the method's claim
+  for the type, and take its labels. A value that may be one of several
+  variants is an error: `match` first. So is one whose type is known in
+  some places it comes from and not in others.
+- **Where the type is not known:** a function that calls a method on
+  what its callers give, as `smaller` does, needs the method for the
+  type each caller gives: its type says so, `where ?a has ord/compare`,
+  and it takes the method as a parameter after its own, which each call
+  passes, found where the call knows the type (dictionary passing, as
+  Haskell compiles type classes). A definition of a method that calls
+  another on what it holds, as `thing`'s does, needs that one in turn,
+  and a call of it is passed both. A recursive function passes on what
+  it is passed. Nothing is copied per type.
+- **Nothing reaches some calls:** the items of an empty list are of no
+  type at all, and a call on them is never made, so it needs no method.
+- **What is hashed:** which definition each call finds is part of what
+  a definition is, so a definition that calls methods is hashed once it
+  is checked, as it then is; everything else is still hashed first and
+  checked once ever.
+- **A type that holds itself** needs its method's claim, `(claim
+  (compare (tree ?a) vs: (tree ?a)) : integer)`: without it, what a tree's
+  definition holds is whatever its callers give, a tree of trees of
+  trees without end.
+- **Not yet:** `=`, `hash` and `str` do not use methods; a method is
+  found by its first argument, never by the type a call must answer; a
+  method called inside a function a `let` binds, on a value of a type
+  the `let` makes generic, is an error; an element's or a route's
+  functions, which the host calls, may not ask for methods.
 
 ### Effects: tasks
 

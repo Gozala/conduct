@@ -279,6 +279,25 @@ impl Ty {
 pub struct Scheme {
     pub level: u32,
     pub body: Ty,
+    /// The methods a use must find for some of its types: what a call of
+    /// a method on a value of a type the definition does not know asks
+    /// of its callers.
+    pub requires: Vec<Requirement>,
+}
+
+impl Scheme {
+    /// A scheme that asks for no methods.
+    pub fn new(level: u32, body: Ty) -> Scheme {
+        Scheme { level, body, requires: Vec::new() }
+    }
+}
+
+/// A method a type must have where a scheme is used: the whole name of
+/// the method's claim, and the type it is called on.
+#[derive(Clone)]
+pub struct Requirement {
+    pub method: String,
+    pub receiver: Ty,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -836,6 +855,31 @@ impl Solver {
         self.freshen(&scheme.body, scheme.level, level, &mut map)
     }
 
+    /// A copy of the scheme's body and of the types its requirements are
+    /// on, with the same fresh variables.
+    pub fn instantiate_with(&self, scheme: &Scheme, level: u32) -> (Ty, Vec<Ty>) {
+        let mut map = HashMap::new();
+        let body = self.freshen(&scheme.body, scheme.level, level, &mut map);
+        let receivers =
+            scheme.requires.iter().map(|r| self.freshen(&r.receiver, scheme.level, level, &mut map)).collect();
+        (body, receivers)
+    }
+
+    /// [`Solver::compact`] for a body and the types its requirements are
+    /// on, compacted together so that they keep the variables they share.
+    /// A type a requirement is on is a variable that callers' values flow
+    /// into, and that the requirement then reads: it is kept as one.
+    pub fn compact_with(&self, body: &Ty, receivers: &[Ty], limit: u32) -> (Ty, Vec<Ty>) {
+        if receivers.is_empty() {
+            return (self.compact(body, limit), Vec::new());
+        }
+        let (wrapper, labels) = requirements_wrapper(body, receivers);
+        let Ty::Fn(params, ret, _, _) = self.compact(&wrapper, limit) else { unreachable!() };
+        let Ty::Record(fields) = &*ret else { unreachable!("a record stays one") };
+        let _ = labels;
+        (fields[BODY_FIELD].clone(), (*params).clone())
+    }
+
     fn freshen(&self, ty: &Ty, limit: u32, level: u32, map: &mut HashMap<u32, Var>) -> Ty {
         if ty.level() <= limit {
             return ty.clone();
@@ -1279,6 +1323,84 @@ fn tag_text(k: &str, payload: bool) -> String {
 fn tags_text(tags: &BTreeMap<String, Option<Ty>>) -> String {
     let all: Vec<String> = tags.iter().map(|(k, p)| tag_text(k, p.is_some())).collect();
     if all.len() == 1 { all.into_iter().next().unwrap() } else { format!("[{}]", all.join(" ")) }
+}
+
+/// The field of [`requirements_wrapper`] that holds the body.
+const BODY_FIELD: &str = "#body";
+
+/// A body with the types its requirements are on, as one type to compact
+/// or show: a function of them, as what flows into them, answering the
+/// body and them again, so that each occurs both ways and stays a
+/// variable.
+fn requirements_wrapper(body: &Ty, receivers: &[Ty]) -> (Ty, Vec<String>) {
+    let labels: Vec<String> = (1..receivers.len()).map(|i| format!("#{i}")).collect();
+    let mut fields: Vec<(String, Ty)> = vec![(BODY_FIELD.to_string(), body.clone())];
+    fields.extend(receivers.iter().enumerate().map(|(i, r)| (format!("#{i}"), r.clone())));
+    (Ty::func_eff(receivers.to_vec(), Ty::record(fields), Ty::pure(), labels.clone()), labels)
+}
+
+/// A scheme's body and the types its requirements are on, shown with the
+/// same names for their variables.
+pub fn coalesce_with(body: &Ty, receivers: &[Ty]) -> (Type, Vec<Type>) {
+    if receivers.is_empty() {
+        return (coalesce(body), Vec::new());
+    }
+    let (wrapper, _) = requirements_wrapper(body, receivers);
+    match merge_receivers(coalesce(&wrapper)) {
+        Type::Fn(params, ret, _, _) => match *ret {
+            Type::Record(mut fields) => (fields.remove(BODY_FIELD).unwrap_or(Type::Top), params),
+            other => (other, params),
+        },
+        other => (other, Vec::new()),
+    }
+}
+
+/// A requirement's variable shown as the variable it always appears
+/// with: a method called on a parameter is on a variable of its own,
+/// which values flow into as they flow into the parameter's other uses,
+/// so `(& ?a ?b)` says no more than `?b` there.
+fn merge_receivers(t: Type) -> Type {
+    let Type::Fn(mut params, mut ret, eff, labels) = t else { return t };
+    fn inters(t: &Type, v: u32, out: &mut Vec<BTreeSet<u32>>) {
+        if let Type::Inter(parts) = t
+            && parts.contains(&Type::Var(v))
+        {
+            out.push(
+                parts
+                    .iter()
+                    .filter_map(|p| if let Type::Var(w) = p { Some(*w) } else { None })
+                    .filter(|w| *w != v)
+                    .collect(),
+            );
+        }
+        let kids: Vec<&Type> = match t {
+            Type::Fn(ps, r, e, _) => ps.iter().chain([&**r, &**e]).collect(),
+            Type::Record(fs) => fs.values().collect(),
+            Type::List(t) | Type::Dict(t) | Type::Opt(t) | Type::Rec(_, t) => vec![&**t],
+            Type::Union(ts) | Type::Inter(ts) => ts.iter().collect(),
+            Type::Update(r, _, x) | Type::Task(r, x) => vec![&**r, &**x],
+            Type::Tags(tags) => tags.values().flatten().collect(),
+            _ => vec![],
+        };
+        for k in kids {
+            inters(k, v, out);
+        }
+    }
+    let mut changed = false;
+    for p in params.iter_mut() {
+        let Type::Var(v) = *p else { continue };
+        let mut found = Vec::new();
+        inters(&ret, v, &mut found);
+        let Some(first) = found.first() else { continue };
+        let common = found.iter().skip(1).fold(first.clone(), |acc, s| acc.intersection(s).copied().collect());
+        if let Some(w) = common.iter().next() {
+            ret = Box::new(substitute(*ret, v, &Type::Var(*w)));
+            *p = Type::Var(*w);
+            changed = true;
+        }
+    }
+    let t = Type::Fn(params, ret, eff, labels);
+    if changed { simplify(t) } else { t }
 }
 
 /// A type as shown to a person: variables' bounds turned into unions
