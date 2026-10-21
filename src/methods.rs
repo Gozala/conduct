@@ -177,6 +177,21 @@ fn gather(t: &Ty, seen: &mut HashSet<u32>, known: &mut Vec<Ty>, sources: &mut Ve
     }
 }
 
+/// Whether what flows into `t` must be of a built-in type, by what it
+/// flows into: a variable read as an integer is a number of some kind,
+/// whatever callers give.
+pub fn built_in_above(t: &Ty) -> bool {
+    fn above(t: &Ty, seen: &mut HashSet<u32>) -> bool {
+        match t {
+            Ty::Prim(_) => true,
+            Ty::Inter(ts) => ts.iter().any(|t| above(t, seen)),
+            Ty::Var(v) => seen.insert(v.id) && v.upper.borrow().iter().any(|u| above(u, seen)),
+            _ => false,
+        }
+    }
+    above(t, &mut HashSet::new())
+}
+
 /// The claim variables that flow into `t`, by name: what a requirement
 /// is on once a definition is checked against its claim.
 pub fn rigid_names(t: &Ty) -> Vec<String> {
@@ -484,7 +499,11 @@ fn show_body(shape: &Shape, parts: &[Term]) -> Term {
             let entries = fields.iter().zip(parts).map(|((global, local, optional), part)| {
                 let entry = join(vec![Term::Str(format!("{local}: ")), call(part, field(global, x()))], "");
                 if *optional {
-                    Term::If(Box::new(has(x(), global)), Box::new(Term::List(vec![entry])), Box::new(Term::List(vec![])))
+                    Term::If(
+                        Box::new(has(x(), global)),
+                        Box::new(Term::List(vec![entry])),
+                        Box::new(Term::List(vec![])),
+                    )
                 } else {
                     Term::List(vec![entry])
                 }
@@ -492,8 +511,9 @@ fn show_body(shape: &Shape, parts: &[Term]) -> Term {
             let all = entries.reduce(|a, b| Term::Prim(Op::Concat, vec![a, b])).unwrap_or(Term::List(vec![]));
             join(vec![Term::Str("{".into()), join_list(all, ", "), Term::Str("}".into())], "")
         }
-        Shape::Variants(variants) => {
-            variants.iter().zip(parts).rev().fold(Term::Prim(Op::Show, vec![x()]), |otherwise, ((global, local, whole), part)| {
+        Shape::Variants(variants) => variants.iter().zip(parts).rev().fold(
+            Term::Prim(Op::Show, vec![x()]),
+            |otherwise, ((global, local, whole), part)| {
                 let shown = if *whole {
                     call(part, x())
                 } else {
@@ -503,8 +523,8 @@ fn show_body(shape: &Shape, parts: &[Term]) -> Term {
                     )
                 };
                 Term::If(Box::new(has(x(), global)), Box::new(shown), Box::new(otherwise))
-            })
-        }
+            },
+        ),
     }
 }
 
@@ -537,12 +557,14 @@ fn same_body(shape: &Shape, parts: &[Term]) -> Term {
             })
             .reduce(and)
             .unwrap_or(Term::Bool(true)),
-        Shape::Variants(variants) => {
-            variants.iter().zip(parts).rev().fold(Term::Prim(Op::Eq, vec![a(), b()]), |otherwise, ((global, _, whole), part)| {
-                let both = if *whole { call(part, a(), b()) } else { call(part, field(global, a()), field(global, b())) };
+        Shape::Variants(variants) => variants.iter().zip(parts).rev().fold(
+            Term::Prim(Op::Eq, vec![a(), b()]),
+            |otherwise, ((global, _, whole), part)| {
+                let both =
+                    if *whole { call(part, a(), b()) } else { call(part, field(global, a()), field(global, b())) };
                 Term::If(Box::new(has(a(), global)), Box::new(and(has(b(), global), both)), Box::new(otherwise))
-            })
-        }
+            },
+        ),
     }
 }
 

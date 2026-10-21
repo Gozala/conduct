@@ -91,7 +91,10 @@ fn clauses_with_labels_and_variants() {
          (define r [(show (ok 1)) (show (error :no))])
          (define t (take [1 2 3] n: 2))",
     );
-    assert_eq!(cb.type_of("show").unwrap(), "((\\ [(error any) (ok any)]) : text)");
+    assert_eq!(
+        cb.type_of("show").unwrap(),
+        "((\\ [(error ?b) (ok ?a)]) : text) where ?a has conduct/show, ?b has conduct/show"
+    );
     assert_eq!(run(&cb, "r"), Value::List(vec![Value::Str("ok 1".into()), Value::Str("error :no".into())]));
     assert_eq!(run(&cb, "t"), ints(&[1, 2]));
 }

@@ -924,7 +924,10 @@ impl Codebase {
                         // A name settled by its type is that name; a built-in
                         // is no definition, so it resolves as built in.
                         let settled = chosen.get(written).cloned();
-                        if settled.as_deref().is_some_and(|f| Op::from_written(f).is_some_and(|op| op.whole_name() == f)) {
+                        if settled
+                            .as_deref()
+                            .is_some_and(|f| Op::from_written(f).is_some_and(|op| op.whole_name() == f))
+                        {
                             return None;
                         }
                         // A bare name of a method means the method, not one
@@ -1302,6 +1305,18 @@ impl Codebase {
                 // that is unknown is nothing at all.
                 let from_callers: Vec<Ty> =
                     sources.into_iter().filter(|t| matches!(t, Ty::Var(v) if lookup.inputs.contains(&v.id))).collect();
+                // A method with a default needs nothing from callers for
+                // a value that must be of a built-in type, and for one no
+                // caller says the type of, as a function value's
+                // parameter, goes the built-in's way.
+                if defaulted && (from_callers.is_empty() || from_callers.iter().all(methods::built_in_above)) {
+                    return Ok(Impl::Derived {
+                        method: method.to_string(),
+                        labels: self.methods[method].labels.clone(),
+                        shape: Shape::Plain,
+                        parts: vec![],
+                    });
+                }
                 if from_callers.is_empty() {
                     return Ok(Impl::Nothing(self.methods[method].labels.clone()));
                 }
@@ -1349,7 +1364,12 @@ impl Codebase {
         depth: usize,
     ) -> Result<Impl, String> {
         let labels = self.methods[method].labels.clone();
-        let made = |shape: Shape, parts: Vec<Impl>| Impl::Derived { method: method.to_string(), labels: labels.clone(), shape, parts };
+        let made = |shape: Shape, parts: Vec<Impl>| Impl::Derived {
+            method: method.to_string(),
+            labels: labels.clone(),
+            shape,
+            parts,
+        };
         let plain = || made(Shape::Plain, vec![]);
         if depth > 8 {
             return Ok(plain());
@@ -1363,7 +1383,9 @@ impl Codebase {
             ));
         }
         let union = |ts: Vec<Ty>| if ts.len() == 1 { ts.into_iter().next().unwrap() } else { Ty::Union(Rc::new(ts)) };
-        let local = |global: &str| self.claims.local(global).unwrap_or_else(|| global.rsplit('/').next().unwrap_or(global).to_string());
+        let local = |global: &str| {
+            self.claims.local(global).unwrap_or_else(|| global.rsplit('/').next().unwrap_or(global).to_string())
+        };
         let last = method.rsplit('/').next().unwrap_or(method);
         // What flows in, sorted: variants by key, records by their fields,
         // lists by their items, and anything else.

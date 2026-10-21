@@ -33,11 +33,14 @@ fn error(src: &str) -> String {
 #[test]
 fn a_definition_marked_bang_makes_a_task() {
     assert_eq!(ty("(define x 1)", "x"), "byte");
-    assert_eq!(ty("(define (greet! name) (log! (join [\"hi \" name])))", "greet"), "((\\ any) : (task {} with: {log}))");
+    assert_eq!(
+        ty("(define (greet! name) (log! (join [\"hi \" name])))", "greet"),
+        "((\\ text) : (task {} with: {log}))"
+    );
     // Capabilities add up, through `let`, `do`, and other tasks.
     let src = "(define (stamp! msg) (let [t (now!)] (log! (join [(show t) \": \" msg]))))
                (define (twice! msg) (stamp! msg) (stamp! msg))";
-    assert_eq!(ty(src, "twice"), "((\\ any) : (task {} with: {clock log}))");
+    assert_eq!(ty(src, "twice"), "((\\ text) : (task {} with: {clock log}))");
     // A task of no parameters is the task itself.
     assert_eq!(ty("(define (later!) (log! \"later\"))", "later"), "(task {} with: {log})");
     // A host function is a function answering a task, or a task.
@@ -52,7 +55,7 @@ fn calls_are_pure() {
     assert_eq!(ty("(define (all xs) (map xs each: log))", "all"), "((\\ (list text)) : (list (task {} with: {log})))");
     assert_eq!(
         ty("(define (logger prefix) (fn [m] (log (join [prefix m]))))", "logger"),
-        "((\\ any) : ((\\ any) : (task {} with: {log})))"
+        "((\\ text) : ((\\ text) : (task {} with: {log})))"
     );
     // A task held in a value is performed with `(t!)`.
     let src = "(define (run! t) (t!))
@@ -119,7 +122,7 @@ fn an_environment_provides_capabilities() {
     // Providing `clock` leaves `log`.
     assert_eq!(
         ty(&format!("{src} (define (fixed msg) (perform (stamp msg) with: {{clock: {{now: 7}}}}))"), "fixed"),
-        "((\\ any) : (task {} with: {log}))"
+        "((\\ text) : (task {} with: {log}))"
     );
     let e = error(&format!("{src} (define (f msg) (perform (stamp msg) with: {{clock: {{}}}}))"));
     assert!(e.contains("an environment that provides `clock` implements `now`"), "{e}");

@@ -68,7 +68,7 @@ fn a_name_is_any_trailing_run_of_its_segments() {
 fn a_name_in_two_domains_needs_more_of_its_name() {
     let mut cb = Codebase::new();
     add(&mut cb, "(domain io.gozala.list (define (size xs) (count xs)))");
-    add(&mut cb, "(domain io.gozala.text (define (size s) (join [s \"!\"])))");
+    add(&mut cb, "(domain io.gozala.text (define (size s) (join [(show s) \"!\"])))");
     let e = error(&mut cb, "(define n (size [1 2]))");
     assert!(e.contains("`size` could be any of `io.gozala.list/size`, `io.gozala.text/size`"), "{e}");
     add(&mut cb, "(define n (list/size [1 2]))");

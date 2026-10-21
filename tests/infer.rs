@@ -199,7 +199,10 @@ fn a_match_narrows_what_it_tested() {
                       {{status: :active}} (join [\"Since \" (show (since job))])
                       {{status: :suspended}} \"paused\"))"
     );
-    assert_eq!(ty(&src, "describe"), "((\\ {since: any, status: [:active :suspended]}) : text)");
+    assert_eq!(
+        ty(&src, "describe"),
+        "((\\ {since: ?a, status: [:active :suspended]}) : text) where ?a has conduct/show"
+    );
     let mut cb = Codebase::new();
     cb.add_source(&src).unwrap();
     let err = cb.add_source("(define x (describe {status: :done, since: 1}))").unwrap_err().to_string();

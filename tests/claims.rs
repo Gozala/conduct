@@ -63,7 +63,7 @@ fn a_record_type_matches() {
          (define (describe p) (match p (person who age: years) (join [who \" \" (show years)])))
          (define (call p) (match p (person phone: n) n _ \"none\"))"
     ));
-    assert_eq!(cb.type_of("describe").unwrap(), "((\\ {age: any, name: any}) : text)");
+    assert_eq!(cb.type_of("describe").unwrap(), "((\\ {age: ?a, name: text}) : text) where ?a has conduct/show");
     // Asking for `age` only if it is there, with any value, asks nothing.
     assert_eq!(cb.type_of("call").unwrap(), "((\\ {phone?: ?a}) : [?a text])");
     let src = format!(
@@ -84,7 +84,10 @@ fn constructors_of_variants() {
         cb.type_of("safe-div").unwrap(),
         "((\\ (& ?a integer) by: (& ?a integer)) : [(error :division-by-zero) (ok ?a)])"
     );
-    assert_eq!(cb.type_of("show").unwrap(), "((\\ [(error any) (ok any)]) : text)");
+    assert_eq!(
+        cb.type_of("show").unwrap(),
+        "((\\ [(error ?b) (ok ?a)]) : text) where ?a has conduct/show, ?b has conduct/show"
+    );
     let src = "(define (safe-div n by) (if (= by 0) (error :division-by-zero) (ok (quot n by))))
                (define (show r) (match r (ok v) (conduct/show v) (error why) (conduct/show why)))";
     assert_eq!(run(&format!("{src} (define a (show (safe-div 7 by: 2)))"), "a"), Value::Str("3".into()));
@@ -135,7 +138,7 @@ fn a_variant_ranks_overlapping_records() {
              (done description: d) (join [\"Done: \" d])))"
     );
     let cb = check(&src);
-    assert_eq!(cb.type_of("report").unwrap(), "((\\ {description: any}) : text)");
+    assert_eq!(cb.type_of("report").unwrap(), "((\\ {description: text}) : text)");
     let job = |fields: &str| run(&format!("{src} (define a (report {{{fields}}}))"), "a");
     assert_eq!(job("description: \"x\""), Value::Str("Idle: x".into()));
     assert_eq!(job("description: \"x\", started-at: 1"), Value::Str("Pending: x".into()));

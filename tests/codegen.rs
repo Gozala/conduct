@@ -346,9 +346,9 @@ fn variants_match_and_bind() {
 (define (find id) (if (= id "x") (error :not-found) (check id)))
 (define (show r)
   (match r
-    (ok {title: t, n: n}) (join [t " (" (show n) ")"])
+    (ok {title: t, n: n}) (join [t " (" (conduct/show n) ")"])
     (error :not-found) "missing"
-    (error e) (join ["bad " e])))
+    (error e) (join ["bad " (conduct/show e)])))
 (define (done x) (if x :ok (error "late")))
 (define (status r) (match r :ok "fine" (error why) why))
 (define a [(show (find "buy milk")) (show (find "x")) (show (find "")) (status (done true)) (status (done false))])
@@ -412,12 +412,12 @@ fn a_built_in_borrows_only_what_outlives_it() {
     // `u` is lent to `occurs?` while a later argument takes its last
     // reference, so it must be held until the call is done.
     let src = "(define (f u) (occurs? u in: (join [u u]) at: 0))
-               (define (g n) (f (join [\"ab\" (show n)])))";
+               (define (g n) (f (join [\"ab\" (inspect n)])))";
     assert_eq!(run(src, "g", &[int(7)]), Value::Bool(true));
     // A local still held after the call is lent, and a number is never
     // counted: both are fine to read again.
     let src = "(define (h t n) (if (occurs? t in: t at: 0) (+ n (byte-count t)) n))
-               (define (k n) (h (join [\"x\" (show n)]) n: n))";
+               (define (k n) (h (join [\"x\" (inspect n)]) n: n))";
     assert_eq!(run(src, "k", &[int(5)]), Value::Int(7));
 }
 
