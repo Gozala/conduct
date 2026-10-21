@@ -16,7 +16,7 @@
 
 use crate::term::{Hash, Op, Term};
 use crate::types::{Prim, Scheme, Ty};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// A method's claim: the type every definition of it must fit, with the
 /// type it is called on as its one requirement, and its parameters'
@@ -190,6 +190,48 @@ pub fn built_in_above(t: &Ty) -> bool {
         }
     }
     above(t, &mut HashSet::new())
+}
+
+/// What else the attribute a variable is read from is read as: `(a m)`
+/// read twice is two variables, each a field of a record `m` flows
+/// into, and what one is used as tells what the other may be.
+pub fn read_alongside(members: &[Ty], target: u32) -> Vec<Ty> {
+    fn walk(t: &Ty, target: u32, seen: &mut HashSet<u32>, out: &mut Vec<Ty>) {
+        match t {
+            Ty::Var(v) => {
+                if !seen.insert(v.id) {
+                    return;
+                }
+                let uppers = v.upper.borrow().clone();
+                let records: Vec<&BTreeMap<String, Ty>> =
+                    uppers.iter().filter_map(|u| if let Ty::Record(r) = u { Some(&**r) } else { None }).collect();
+                for r in &records {
+                    for (key, field) in r.iter() {
+                        if matches!(field, Ty::Var(f) if f.id == target) {
+                            out.extend(records.iter().filter_map(|r| r.get(key)).cloned());
+                        }
+                    }
+                }
+                uppers.iter().for_each(|u| walk(u, target, seen, out));
+            }
+            Ty::Record(fields) => fields.values().for_each(|t| walk(t, target, seen, out)),
+            Ty::List(t) | Ty::Dict(t) | Ty::Opt(t) => walk(t, target, seen, out),
+            Ty::Union(ts) | Ty::Inter(ts) => ts.iter().for_each(|t| walk(t, target, seen, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for m in members {
+        if let Ty::Var(v) = m {
+            for l in v.lower.borrow().iter() {
+                if let Ty::Fn(params, ..) = l {
+                    params.iter().for_each(|p| walk(p, target, &mut seen, &mut out));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The claim variables that flow into `t`, by name: what a requirement

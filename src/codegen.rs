@@ -536,8 +536,7 @@ impl<'a> Builder<'a> {
         for r in self.cb.defs[&hash].scheme.requires.clone() {
             if !crate::methods::DEFAULTED.contains(&r.method.as_str()) {
                 return Err(CodegenError(format!(
-                    "`{}` asks for `{}`, and what the host calls is passed no methods",
-                    hash.short(),
+                    "asks for `{}`, and what calls an export passes no methods",
                     r.method
                 )));
             }
@@ -1664,7 +1663,12 @@ pub fn compile_exports(cb: &Codebase, exports: &[(&str, Hash)]) -> Result<String
                 let arity = (labels.len() - cb.defs[hash].scheme.requires.len()) as u32;
                 let params: String = (0..arity).map(|i| format!(" (param $a{i} i64)")).collect();
                 let own: Vec<String> = (0..arity).map(|i| format!("(local.get $a{i})")).collect();
-                let args: String = b.host_args(*hash, &own).map_err(|e| CodegenError(format!("`{name}`: {}", e.0)))?.iter().map(|a| format!(" {a}")).collect();
+                let args: String = b
+                    .host_args(*hash, &own)
+                    .map_err(|e| CodegenError(format!("`{name}` {}", e.0)))?
+                    .iter()
+                    .map(|a| format!(" {a}"))
+                    .collect();
                 b.add_func(format!(
                     "  (func (export \"{name}\"){params} (result i64) (call {def_name} (i64.const {NIL}){args}))"
                 ));

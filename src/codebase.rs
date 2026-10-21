@@ -1309,7 +1309,12 @@ impl Codebase {
                 // a value that must be of a built-in type, and for one no
                 // caller says the type of, as a function value's
                 // parameter, goes the built-in's way.
-                if defaulted && (from_callers.is_empty() || from_callers.iter().all(methods::built_in_above)) {
+                let built_in = |t: &Ty| {
+                    methods::built_in_above(t)
+                        || matches!(t, Ty::Var(v)
+                            if methods::read_alongside(lookup.member_vars, v.id).iter().any(methods::built_in_above))
+                };
+                if defaulted && (from_callers.is_empty() || from_callers.iter().all(built_in)) {
                     return Ok(Impl::Derived {
                         method: method.to_string(),
                         labels: self.methods[method].labels.clone(),
