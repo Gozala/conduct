@@ -269,6 +269,9 @@ pub struct Builder<'a> {
     defs: HashMap<Hash, Option<u32>>,
     queue: Vec<Hash>,
     lambdas: usize,
+    /// The static closures of the built-in's way of each method with a
+    /// default, by method, made once each.
+    plain: HashMap<String, u32>,
     max_arity: usize,
     exports: Vec<String>,
     rtdata: u32,
@@ -313,6 +316,7 @@ impl<'a> Builder<'a> {
             defs: HashMap::new(),
             queue: vec![],
             lambdas: 0,
+            plain: HashMap::new(),
             max_arity: 4,
             exports: vec![],
             rtdata: 0,
@@ -522,6 +526,56 @@ impl<'a> Builder<'a> {
             Some(rest) => format!("(return_call {} {rest}", Self::def_name(&hash)),
             None => call,
         })
+    }
+
+    /// The arguments a call from the host passes a definition: its own,
+    /// then, for each method with a default it asks for, the built-in's
+    /// way, since the host says no types. An error for any other method.
+    pub fn host_args(&mut self, hash: Hash, args: &[String]) -> Result<Vec<String>> {
+        let mut out = args.to_vec();
+        for r in self.cb.defs[&hash].scheme.requires.clone() {
+            if !crate::methods::DEFAULTED.contains(&r.method.as_str()) {
+                return Err(CodegenError(format!(
+                    "`{}` asks for `{}`, and what the host calls is passed no methods",
+                    hash.short(),
+                    r.method
+                )));
+            }
+            out.push(format!("(i64.const {})", self.plain_method(&r.method)?));
+        }
+        Ok(out)
+    }
+
+    /// The static closure of the built-in's way of a method with a
+    /// default: `show` as the runtime writes a value, `same?` as `=`.
+    fn plain_method(&mut self, method: &str) -> Result<u32> {
+        if let Some(addr) = self.plain.get(method) {
+            return Ok(*addr);
+        }
+        let labels = self.cb.methods[method].labels.clone();
+        let body = if method.ends_with("/show") {
+            Term::Prim(Op::Show, vec![Term::Local(0)])
+        } else {
+            Term::Prim(Op::Eq, vec![Term::Local(1), Term::Local(0)])
+        };
+        let arity = labels.len() as u32;
+        let name = format!("$plain{}", self.plain.len());
+        let index = self.table.len() as u32;
+        self.table.push(name.clone());
+        let id = blake3::hash(method.as_bytes());
+        self.code_ids.push(id.as_bytes()[..8].try_into().unwrap());
+        self.max_arity = self.max_arity.max(arity as usize);
+        let env: Vec<Slot> = (0..arity).map(|i| Slot::Local(format!("$p{i}"))).collect();
+        let (code, frame) = self.function_body(&body, env, &[])?;
+        let params: String = (0..arity).map(|i| format!(" (param $p{i} i64)")).collect();
+        self.funcs.push(format!("  (func {name} (param $env i64){params} (result i64){}\n    {code})", locals(&frame)));
+        let mut bytes = KIND_CLOSURE.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&index.to_le_bytes());
+        bytes.extend_from_slice(&arity.to_le_bytes());
+        let addr = self.static_object(bytes);
+        self.plain.insert(method.to_string(), addr);
+        Ok(addr)
     }
 
     pub fn call(&mut self, hash: Hash, args: &[String]) -> Result<String> {
@@ -1601,19 +1655,16 @@ fn escape(bytes: &[u8]) -> String {
 pub fn compile_exports(cb: &Codebase, exports: &[(&str, Hash)]) -> Result<String> {
     let mut b = Builder::new(cb);
     for (name, hash) in exports {
-        if let Some(r) = cb.defs[hash].scheme.requires.first() {
-            return Err(CodegenError(format!(
-                "`{name}` asks for `{}`, and what calls an export passes no methods",
-                r.method
-            )));
-        }
         b.require(*hash)?;
         let def_name = Builder::def_name(hash);
         match &cb.defs[hash].term {
             Term::Fn(labels, _) => {
-                let arity = &(labels.len() as u32);
-                let params: String = (0..*arity).map(|i| format!(" (param $a{i} i64)")).collect();
-                let args: String = (0..*arity).map(|i| format!(" (local.get $a{i})")).collect();
+                // An export is passed its own parameters; the methods with
+                // a default it asks for go the built-in's way.
+                let arity = (labels.len() - cb.defs[hash].scheme.requires.len()) as u32;
+                let params: String = (0..arity).map(|i| format!(" (param $a{i} i64)")).collect();
+                let own: Vec<String> = (0..arity).map(|i| format!("(local.get $a{i})")).collect();
+                let args: String = b.host_args(*hash, &own).map_err(|e| CodegenError(format!("`{name}`: {}", e.0)))?.iter().map(|a| format!(" {a}")).collect();
                 b.add_func(format!(
                     "  (func (export \"{name}\"){params} (result i64) (call {def_name} (i64.const {NIL}){args}))"
                 ));

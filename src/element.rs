@@ -262,16 +262,23 @@ pub fn core_wat(cb: &Codebase) -> Result<String, ElementError> {
         None => format!("(i64.const {})", b.static_str("")),
     };
     let init = match defs.init {
-        Some(h) => b.call(h, &["(call $dup (local.get $attrs))".into()])?,
+        Some(h) => {
+            let args = b.host_args(h, &["(call $dup (local.get $attrs))".into()])?;
+            b.call(h, &args)?
+        }
         None => format!("(i64.const {})", b.static_empty_record()),
     };
     // `update` takes the model out of the table and gives the next one
     // back; the table keeps the attributes, so `update` gets a copy.
     let update = match defs.update {
-        Some(h) => b.call(h, &["(local.get $command)".into(), "(local.get $model)".into()])?,
+        Some(h) => {
+            let args = b.host_args(h, &["(local.get $command)".into(), "(local.get $model)".into()])?;
+            b.call(h, &args)?
+        }
         None => String::new(),
     };
-    let view = b.call(defs.view, &["(call $dup (i64.load (call $slot (local.get $id))))".into()])?;
+    let args = b.host_args(defs.view, &["(call $dup (i64.load (call $slot (local.get $id))))".into()])?;
+    let view = b.call(defs.view, &args)?;
     let key = b.static_str("key");
     let checked = b.static_str("checked");
     let value = b.static_str("value");
@@ -774,10 +781,14 @@ fn encode(cb: &Codebase, debug: bool) -> Result<Vec<u8>, ElementError> {
         .map_err(|e| ElementError::Encode(format!("{e:#}")))
 }
 
-/// What the host calls is passed its arguments, and no methods: a
-/// definition it calls must not ask for them.
+/// What the host calls is passed its arguments, and no methods but the
+/// built-in's way of those with a default: a definition it calls must
+/// not ask for any other.
 pub fn passes_no_methods(cb: &Codebase, name: &str, h: Hash) -> Result<(), TypeError> {
-    match cb.defs[&h].scheme.requires.first() {
+    // A method with a default goes the built-in's way, which the glue
+    // passes.
+    let asked = cb.defs[&h].scheme.requires.iter().find(|r| !crate::methods::DEFAULTED.contains(&r.method.as_str()));
+    match asked {
         None => Ok(()),
         Some(r) => Err(TypeError(format!(
             "`{name}` asks for `{}` for a type its callers say, and the host passes no methods: call it on values of \

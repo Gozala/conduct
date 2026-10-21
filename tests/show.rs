@@ -185,11 +185,14 @@ fn show_through_claims_optional_attributes_updates_and_recursive_types() {
          (type (leaf ?a) : {(demo.tree/leaf ?a)})
          (type (node ?a) : {(demo.tree/node ?a)})
          (type (tree ?a) : [(leaf ?a) (node (list (tree ?a)))])
+         (type (money ?a) : {(demo.money/money ?a)})
+         (domain demo.money (define (show (money n)) (join [(show n) \" USD\"])))
          (claim (label ?a) : text)
          (define (label x) (join [\"got \" (show x)]))
          (define (pick c) (if c {login: \"ada\", token: (secret \"x\")} {login: \"bob\"}))
          (define (rename u) (assoc u login: \"eve\"))
          (define out [(label 1)
+                      (label (money 2))
                       (show (pick true))
                       (show (pick false))
                       (show (rename (pick false)))
@@ -199,6 +202,7 @@ fn show_through_claims_optional_attributes_updates_and_recursive_types() {
         out,
         [
             "got 1",
+            "got 2 USD",
             "{login: ada, token: <secret>}",
             "{login: bob}",
             "{login: eve}",

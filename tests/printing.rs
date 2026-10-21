@@ -26,7 +26,9 @@ fn round_trip_but(base: fn() -> Codebase, src: &str, claimed: &[&str]) {
         let shown = cb.type_of(&name).unwrap();
         let performs = [format!("(define ({name}! "), format!("(define ({name}!)"), format!("(define {name}! ")];
         let bang = if performs.iter().any(|p| src.contains(p.as_str())) { "!" } else { "" };
-        let pasted = format!("{src}\n(claim {name}{bang} : {shown})");
+        // A claim does not write what a definition asks its callers for.
+        let written = shown.split(" where ").next().unwrap();
+        let pasted = format!("{src}\n(claim {name}{bang} : {written})");
         let mut again = base();
         if let Err(e) = again.add_source(&pasted) {
             panic!("`{name}` is shown as `{shown}`, which as a claim fails: {e}");

@@ -234,12 +234,31 @@ pub fn inputs(members: &[Ty]) -> HashSet<u32> {
             _ => {}
         }
     }
+    /// The variables a claim's parameter types hold: what flows in from
+    /// them is the callers' too.
+    fn claimed(t: &Ty, out: &mut HashSet<u32>) {
+        match t {
+            Ty::Var(v) => {
+                out.insert(v.id);
+            }
+            Ty::Record(fields) => fields.values().for_each(|t| claimed(t, out)),
+            Ty::List(t) | Ty::Dict(t) | Ty::Opt(t) => claimed(t, out),
+            Ty::Tags(tags) => tags.values().flatten().for_each(|t| claimed(t, out)),
+            Ty::Union(ts) | Ty::Inter(ts) => ts.iter().for_each(|t| claimed(t, out)),
+            _ => {}
+        }
+    }
     let mut out = HashSet::new();
     for m in members {
         if let Ty::Var(v) = m {
             for l in v.lower.borrow().iter() {
                 if let Ty::Fn(params, ..) = l {
                     params.iter().for_each(|p| reach(p, &mut out));
+                }
+            }
+            for u in v.upper.borrow().iter() {
+                if let Ty::Fn(params, ..) = u {
+                    params.iter().for_each(|p| claimed(p, &mut out));
                 }
             }
         }
