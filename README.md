@@ -156,9 +156,12 @@ The design the language is heading for is in
 (assoc d :k v) (dissoc d :k)
 [1 2 3] (count xs) (first xs) (rest xs) (concat xs ys) (conj xs x)
 (map xs each: f) (filter xs where: f)
-(str "id: " 42)                         ; any values, as text
-(str {title: "milk", done: false})     ; {done: false, title: "milk"}
+(join ["id: " (show 42)])               ; texts together; anything else through show
+(show {title: "milk", done: false})    ; {done: false, title: milk}: for people, by its type
+(inspect {title: "milk", done: false}) ; {done: false, title: "milk"}: reads back
 (= a b)                                 ; structural, for every value
+(same? a as: b)                         ; = unless the type says what it means
+(secret "hunter2")                      ; shown as <secret>; only reveal opens it
 
 :active                                 ; a keyword: its type is :active
 
@@ -167,7 +170,7 @@ The design the language is heading for is in
   :suspended "Paused")                  ; no `_`: status is [:active :suspended]
 (match handler "add" 1 "clear" 2 _ 0)   ; strings need a final `_`
 (match job                              ; record patterns narrow `job`
-  {state: :active} (str "Since " (since job))
+  {state: :active} (join ["Since " (show (since job))])
   {state: :suspended} "paused")
 (match job {n: n} (+ n 1) _ 0)          ; n where job has n
 
@@ -208,6 +211,7 @@ The design the language is heading for is in
 (slice t from: a to: b)                                     ; the bytes from `a` up to `b`
 (occurs? small in: t at: i) (index-of small in: t from: i or: d)
 (join pieces with: ", ")                                    ; one text of a list of texts
+(join pieces)                                               ; with nothing between
 (utf8 "hé")                                                  ; text's bytes: (list byte), [104 195 169]
 (from-utf8 bytes or: :invalid)                              ; the text bytes are, or the default
 (byte n or: 0)                                              ; an integer as a byte, or the default
@@ -299,9 +303,9 @@ case it fits:
 
 (define (report job)
   (match job
-    (idle description: d) (str "Idle: " d)
-    (pending description: d) (str "Pending: " d)
-    (done description: d) (str "Done: " d)))
+    (idle description: d) (join ["Idle: " d])
+    (pending description: d) (join ["Pending: " d])
+    (done description: d) (join ["Done: " d])))
 ```
 
 A job with both `started-at` and `completed-at` is `done`. A wider case
@@ -465,12 +469,14 @@ What narrowing does not cover is a predicate you define:
 about its argument is not part of its type. That would take Typed
 Racket's occurrence typing, inferred without annotations.
 
-Equality and `str` work on any value: `=` takes `(Any, Any)`. What a
-type does its own way is a method (below). `str` writes text as it is
-and anything else as it is written: text inside a value quoted, a list
-`[1 2]`, a record `{done: false, title: "milk"}` with its attributes by
-their local names in alphabetical order, a dictionary `{:k "v"}`, a
-function `<function>`.
+Equality and `inspect` work on any value, the same way for every type:
+`=` takes `(Any, Any)` and compares structure, as maps, `match` and
+Dialog do, and `conduct.syntax/inspect` writes a value as it is written,
+so it reads back: text quoted, a list `["a" 1]`, a record
+`{done: false, title: "milk"}` with its attributes by their local names
+in alphabetical order, a dictionary `{:k "v"}`, a function `<function>`.
+What a type does its own way, `show` and `same?`, are methods with a
+default (below).
 
 `true` and `false` are patterns too, and the two cover a `Bool`.
 
@@ -565,11 +571,56 @@ claim rather than by a block on the type.
   (compare (tree ?a) vs: (tree ?a)) : integer)`: without it, what a tree's
   definition holds is whatever its callers give, a tree of trees of
   trees without end.
-- **Not yet:** `=`, `hash` and `str` do not use methods; a method is
-  found by its first argument, never by the type a call must answer; a
-  method called inside a function a `let` binds, on a value of a type
+- **Not yet:** a method is found by its first argument, never by the
+  type a call must answer; a method called inside a function a `let` binds, on a value of a type
   the `let` makes generic, is an error; an element's or a route's
   functions, which the host calls, may not ask for methods.
+
+#### Methods with a default: `show` and `same?`
+
+`show` writes a value for people and `same?` says whether two values
+mean the same. Every type has them: its own, defined in its domain as
+any method is, or else the one its shape makes, which calls the method
+again on each part the type says the value has.
+
+```clojure
+(domain demo.money
+  (type (money ?a) : {(./money ?a)})
+  (define (show (money n)) (join [(show n) " USD"]))
+  (define (same? (money a) as: (money b)) (= (quot a 100) (quot b 100))))
+
+(show [(money 5) (money 7)])                ; [5 USD 7 USD]
+(show {login: "ada", token: (secret "x")})  ; {login: ada, token: <secret>}
+(show (ok (money 3)))                       ; (ok 3 USD)
+(same? [(money 120)] as: [(money 150)])     ; true: whole dollars; `=` says false
+```
+
+- **The type selects.** A record shows the attributes its type has, not
+  whatever else the value holds: a function claimed to take `{login:
+  text}` shows `{login: ada}` of a record that also has a token. A claim
+  is the type, so it is the selection; a function with no claim shows
+  what its caller's type says.
+- **Found when the code is checked,** as methods are: a function that
+  shows what its callers give is passed `show` for each caller's type.
+  A variant's own comes first, then its shape: a record's attributes, a
+  list's items, a variant as its constructor, `(thing 5)`. A union of
+  variants picks by which it is, as a `match` would. Anything else, and
+  past a depth of nesting, is shown as `inspect` shows it, but text as
+  it is.
+- **`show` of text is the text,** inside a list too: `(show ["a" "b"])`
+  is `[a b]`. What must read back is `inspect`'s.
+- **`same?` is `=` but where a type says otherwise:** two lists are the
+  same if their items are, pairwise; two records if the attributes the
+  type has are.
+- **A bare `show` is the method,** not one of the definitions of it each
+  type has; `demo.money/show` is that one. A definition named `show` at
+  the top level of a source is still that definition there.
+- **A secret** is `(secret v)`: `show` and `inspect` write `<secret>`,
+  `=` and `hash` see what it holds, and only `reveal` takes it apart; a
+  pattern of it is an error outside `conduct.secret`. It has no codec,
+  so `record-codec` of a record that holds one says so.
+- **Dictionaries** show their values as `inspect` does: what a type
+  says about a value in a dictionary is not used.
 
 ### Effects: tasks
 
@@ -578,8 +629,8 @@ describing work that needs capabilities, and `!` after a name at a call
 performs it:
 
 ```clojure
-(define (stamp! msg) (let [t (now!)] (log! (str t ": " msg))))
-; stamp : ((\ any) : (task {} with: {clock log}))
+(define (stamp! msg) (let [t (now!)] (log! (join [(show t) ": " msg]))))
+; stamp : ((\ text) : (task {} with: {clock log}))
 
 (stamp "hi")                          ; a task: nothing happens
 (stamp! "hi")                         ; performs it, inside a task's body

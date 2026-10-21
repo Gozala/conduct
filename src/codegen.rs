@@ -65,7 +65,9 @@ pub const KIND_FETCH: u32 = 8;
 pub const KIND_KEYWORD: u32 = 9;
 
 const RUNTIME: &str = include_str!("runtime.wat");
-const RUNTIME_DATA: &[u8] = b"truefalse[] <value>null{}:,\"\\ustringnumberbooleanarrayobject<function>, : #";
+const RUNTIME_DATA: &[u8] = b"truefalse[] <value>null{}:,\"\\ustringnumberbooleanarrayobject<function>, : #<secret>";
+/// The domain of `secret`, whose one attribute marks a secret.
+pub const SECRET_DOMAIN: &str = "conduct.secret";
 /// Addresses below this hold scratch space: the canonical ABI return
 /// area at 0 and the allocator's free-list heads at 64.
 const STATIC_START: u32 = 1024;
@@ -293,7 +295,7 @@ pub struct Builder<'a> {
     current: Option<(Hash, usize)>,
     looped: bool,
     /// The attributes records in this module are built and read with,
-    /// by field id: what `str` shows a record's fields as.
+    /// by field id: what `inspect` shows a record's fields as.
     fields: BTreeMap<i64, String>,
 }
 
@@ -359,7 +361,7 @@ impl<'a> Builder<'a> {
         self.static_bytes(bytes) + 8
     }
 
-    /// The id of the field `name`, which `str` then shows by name.
+    /// The id of the field `name`, which `inspect` then shows by name.
     fn field(&mut self, name: &str) -> i64 {
         let id = field_id(name);
         self.fields.entry(id).or_insert_with(|| name.to_string());
@@ -1062,7 +1064,7 @@ impl<'a> Builder<'a> {
                 let temps: Vec<String> = values.iter().map(|_| frame.local()).collect();
                 let result = frame.local();
                 let gets: Vec<String> = temps.iter().map(|t| format!("(local.get {t})")).collect();
-                let call = prim(*op, &gets, self);
+                let call = prim(*op, &gets);
                 let mut out = String::from("(block (result i64)");
                 // What is not consumed needs no reference of its own: a
                 // local the code still holds is borrowed as it is, and a
@@ -1145,7 +1147,7 @@ impl<'a> Builder<'a> {
     /// Compile everything queued and assemble the module text.
     pub fn finish(mut self) -> Result<String> {
         self.compile_queued()?;
-        // What `str` shows each field as: its local name where the
+        // What `inspect` shows each field as: its local name where the
         // codebase declares one, in the order it shows them in.
         let mut shown: Vec<(String, i64)> = std::mem::take(&mut self.fields)
             .into_iter()
@@ -1169,6 +1171,12 @@ impl<'a> Builder<'a> {
         ranks.push_str("    (i32.const -1))");
         self.funcs.push(names);
         self.funcs.push(ranks);
+        // A secret is the record of one field of this id, which `show`
+        // and `inspect` write as `<secret>`.
+        self.funcs.push(format!(
+            "  (func $secret_field (result i64) (i64.const {}))",
+            field_id(&format!("{SECRET_DOMAIN}/secret"))
+        ));
         let mut m = String::from("(module\n");
         for n in 0..=self.max_arity {
             let params: String = " i64".repeat(n);
@@ -1301,7 +1309,7 @@ fn consumes(op: Op) -> Option<usize> {
 
 /// A built-in applied to argument expressions. Every built-in borrows
 /// its arguments and returns an owned value.
-fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
+fn prim(op: Op, a: &[String]) -> String {
     let bool = |e: String| format!("(select (i64.const {TRUE}) (i64.const {FALSE}) {e})");
     // Values equal as words are equal; otherwise only two objects can be.
     let eq = |x: &str, y: &str| {
@@ -1326,16 +1334,9 @@ fn prim(op: Op, a: &[String], b: &mut Builder) -> String {
         Op::Eq => bool(eq(&a[0], &a[1])),
         Op::NotEq => bool(format!("(i32.eqz {})", eq(&a[0], &a[1]))),
         Op::Not => bool(format!("(i64.ne {} (i64.const {TRUE}))", a[0])),
-        Op::Str => {
-            if a.is_empty() {
-                return format!("(i64.const {})", b.static_str(""));
-            }
-            let mut out = format!("(call $to_str {})", a[0]);
-            for x in &a[1..] {
-                out = format!("(call $concat_owned {out} (call $to_str {x}))");
-            }
-            out
-        }
+        Op::Inspect => format!("(call $show {} (i32.const 1))", a[0]),
+        Op::Show => format!("(call $to_str {})", a[0]),
+        Op::Pairwise => format!("(call $pairwise {} {} {})", a[0], a[1], a[2]),
         Op::Count => format!("(call $count {})", a[0]),
         Op::Nth => format!("(call $list_nth {} {})", a[0], a[1]),
         Op::Drop => format!("(call $list_drop {} {})", a[0], a[1]),

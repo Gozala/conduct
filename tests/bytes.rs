@@ -94,7 +94,7 @@ fn bytes_are_a_list() {
          (define out [(= b [97 98 99]) (= [97 98 99] b) (= b [97 98]) (= b (utf8 \"abc\")) (= b \"abc\")
                       (= (hash b) (hash [97 98 99])) (compare b [97 98 100]) (compare b [97 98]) (compare [97 98 99] b)
                       (count b) (first b 0) (rest b) (item b at: 2 or: 0) (item b at: 3 or: 0)
-                      (concat b b) (concat b [1000]) (slice b from: 1 to: 9) (str b)
+                      (concat b b) (concat b [1000]) (slice b from: 1 to: 9) (show b)
                       (match b [x y rest ...] [y x rest] _ [])])",
     ) else {
         panic!()

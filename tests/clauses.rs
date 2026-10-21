@@ -83,8 +83,8 @@ fn clauses_are_a_set() {
 #[test]
 fn clauses_with_labels_and_variants() {
     let cb = check(
-        "(define (show (ok v)) (str \"ok \" v))
-         (define (show (error e)) (str \"error \" e))
+        "(define (show (ok v)) (join [\"ok \" (conduct/show v)]))
+         (define (show (error e)) (join [\"error \" (conduct/show e)]))
          (define (take [] n) [])
          (define (take [_ _ ...] n: 0) [])
          (define (take [x rest ...] n) (concat [x] (take rest n: (- n 1))))
@@ -199,9 +199,9 @@ fn review_findings() {
          (type pending : {description started-at})
          (type done : {description completed-at})
          (type job : [done pending idle])
-         (define (report (idle description: d)) (str \"Idle: \" d))
-         (define (report (done description: d)) (str \"Done: \" d))
-         (define (report (pending description: d)) (str \"Pending: \" d))
+         (define (report (idle description: d)) (join [\"Idle: \" d]))
+         (define (report (done description: d)) (join [\"Done: \" d]))
+         (define (report (pending description: d)) (join [\"Pending: \" d]))
          (define r (report {description: \"x\", started-at: 1, completed-at: 2}))",
     );
     assert_eq!(run(&cb, "r"), Value::Str("Done: x".into()));
@@ -231,7 +231,7 @@ fn boolean_patterns() {
 fn a_record_pattern_binds_the_rest() {
     let cb = check(
         "(type action : (t/action keyword)) (type value : (t/value text))
-         (define (act {action: :shout params ...}) (str (value params \"\") \"!\"))
+         (define (act {action: :shout params ...}) (join [(show (value params \"\")) \"!\"]))
          (define (act {action: :whisper value: v}) v)
          (define (act command) \"\")
          (define r [(act {action: :shout, value: \"hi\"}) (act {action: :whisper, value: \"psst\"}) (act {action: :nap})])

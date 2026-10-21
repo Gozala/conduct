@@ -88,7 +88,7 @@
 
 (define (save title model)
   {model: (assoc model editing: false)
-   effects: [(emit "todo-edit" (str (todo-id model) "\n" title))]})
+   effects: [(emit "todo-edit" (join [(todo-id model) "\n" title]))]})
 
 ;; `update` is defined by clauses on the command it hears: a call takes
 ;; the narrowest one that matches, so the last, which matches anything,

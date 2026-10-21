@@ -10,7 +10,7 @@
 use crate::claims::{self, Claims, Env, Mode, TypeDef};
 use crate::infer::{Binding, Globals, Infer};
 use crate::macros::{self, Rule};
-use crate::methods::{self, Impl, Method, Receiver};
+use crate::methods::{self, Impl, Method, Receiver, Shape};
 use crate::reader::{self, Sexp, bare, pin_of};
 use crate::syntax::{self, Arg, Claim, Clause, Def, Expr, Item, Param, Pat, TypeExpr};
 use crate::term::{Hash, Op, Pattern, Sig, Term};
@@ -18,6 +18,7 @@ use crate::transform;
 use crate::types::{Requirement, Scheme, Solver, Ty, TypeError, coalesce, coalesce_with};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
+use std::rc::Rc;
 
 pub struct Definition {
     pub hash: Hash,
@@ -240,24 +241,35 @@ impl Codebase {
     fn resolve_name(&self, written: &str, defined: &dyn Fn(&str) -> bool) -> Result<Option<String>, Vec<String>> {
         if defined(written) {
             return match builtin_named(written) {
-                Some(op) => Err(vec![written.to_string(), format!("{BUILTIN_DOMAIN}/{op}")]),
+                Some(op) => Err(vec![written.to_string(), op.whole_name()]),
                 None => Ok(Some(written.to_string())),
             };
         }
         let mut candidates: Vec<String> =
             self.names.keys().chain(self.methods.keys()).filter(|n| ends_with_segments(n, written)).cloned().collect();
-        let builtin = Op::from_name(written).is_some()
-            || written.strip_prefix(&format!("{BUILTIN_DOMAIN}/")).is_some_and(|op| Op::from_name(op).is_some());
+        let builtin = Op::from_written(written);
         match (candidates.len(), builtin) {
             (0, _) => Ok(None),
-            (1, false) => Ok(candidates.pop()),
+            (1, None) => Ok(candidates.pop()),
             _ => {
-                if builtin {
-                    let op = written.rsplit('/').next().unwrap_or(written);
-                    candidates.push(format!("{BUILTIN_DOMAIN}/{op}"));
+                if let Some(op) = builtin {
+                    candidates.push(op.whole_name());
                 }
                 Err(candidates)
             }
+        }
+    }
+
+    /// The method a bare name means: the one method whose name ends with
+    /// it, unless a built-in has the name.
+    fn method_named(&self, written: &str) -> Option<&str> {
+        if written.contains('/') || Op::from_written(written).is_some() {
+            return None;
+        }
+        let mut found = self.methods.keys().filter(|m| m.rsplit('/').next() == Some(written));
+        match (found.next(), found.next()) {
+            (Some(m), None) => Some(m.as_str()),
+            _ => None,
         }
     }
 
@@ -912,8 +924,18 @@ impl Codebase {
                         // A name settled by its type is that name; a built-in
                         // is no definition, so it resolves as built in.
                         let settled = chosen.get(written).cloned();
-                        if settled.as_deref().is_some_and(|f| f.starts_with(&format!("{BUILTIN_DOMAIN}/"))) {
+                        if settled.as_deref().is_some_and(|f| Op::from_written(f).is_some_and(|op| op.whole_name() == f)) {
                             return None;
+                        }
+                        // A bare name of a method means the method, not one
+                        // of the definitions of it each type gives, unless a
+                        // definition has that whole name.
+                        if settled.is_none()
+                            && !index.contains_key(written)
+                            && !self.names.contains_key(written)
+                            && let Some(m) = self.method_named(written)
+                        {
+                            return Some(Target::Method(m.to_string(), self.methods[m].labels.clone()));
                         }
                         // A definition of this source comes before what the
                         // codebase holds.
@@ -924,7 +946,7 @@ impl Codebase {
                             // definitions would be: the use decides, or the
                             // name must be written whole.
                             None => match (in_batch(written, &index), builtin_named(written)) {
-                                (Ok(Some(full)), Some(op)) => Err(vec![full, format!("{BUILTIN_DOMAIN}/{op}")]),
+                                (Ok(Some(full)), Some(op)) => Err(vec![full, op.whole_name()]),
                                 (other, _) => other,
                             },
                         };
@@ -969,7 +991,8 @@ impl Codebase {
                         };
                         Some(Target::Hash(*h, labels))
                     };
-                    let names = Names { lookup: &lookup, claims: &self.claims, macros: &self.macros };
+                    let domain = d.name.rsplit_once('/').map_or("", |(home, _)| home);
+                    let names = Names { lookup: &lookup, claims: &self.claims, macros: &self.macros, domain };
                     let resolved_term = resolve(&d.body, &mut Vec::new(), &names);
                     // A name that could be several things is an error even
                     // where resolution went on to read it as a built-in.
@@ -1262,7 +1285,9 @@ impl Codebase {
             ));
         }
         let last = method.rsplit('/').next().unwrap_or(method);
+        let defaulted = methods::DEFAULTED.contains(&method);
         match methods::receiver(on) {
+            Receiver::Invalid(_) if defaulted => self.derive(method, on, needed, lookup, depth),
             Receiver::Invalid(what) => Err(format!("`{method}` is called on {what}")),
             Receiver::Unknown(sources) => {
                 // A variable a `let` made generic stands for many types,
@@ -1303,9 +1328,156 @@ impl Codebase {
                         return self.use_method(method, on, &name, target, needed, lookup, depth);
                     }
                 }
+                if defaulted {
+                    return self.derive(method, on, needed, lookup, depth);
+                }
                 Err(format!("{shown} has no `{last}`: `{method}` is defined for it as `{}/{last}`", domains[0]))
             }
         }
+    }
+
+    /// A method with a default, for a type that does not define it: what
+    /// the shape of the type says, with the method found for each part.
+    /// Past a depth, and for what has no parts the method goes through,
+    /// the built-in's way.
+    fn derive(
+        &self,
+        method: &str,
+        on: &Ty,
+        needed: &mut Vec<Needed>,
+        lookup: &Lookup,
+        depth: usize,
+    ) -> Result<Impl, String> {
+        let labels = self.methods[method].labels.clone();
+        let made = |shape: Shape, parts: Vec<Impl>| Impl::Derived { method: method.to_string(), labels: labels.clone(), shape, parts };
+        let plain = || made(Shape::Plain, vec![]);
+        if depth > 8 {
+            return Ok(plain());
+        }
+        let (known, vars) = methods::sources(on);
+        let from_callers = vars.iter().any(|t| matches!(t, Ty::Var(v) if lookup.inputs.contains(&v.id)));
+        if from_callers && !known.is_empty() {
+            return Err(format!(
+                "`{method}` is called on a value whose type is known in some places it comes from and not in others: \
+                 say which type it is, or call it where it is one"
+            ));
+        }
+        let union = |ts: Vec<Ty>| if ts.len() == 1 { ts.into_iter().next().unwrap() } else { Ty::Union(Rc::new(ts)) };
+        let local = |global: &str| self.claims.local(global).unwrap_or_else(|| global.rsplit('/').next().unwrap_or(global).to_string());
+        let last = method.rsplit('/').next().unwrap_or(method);
+        // What flows in, sorted: variants by key, records by their fields,
+        // lists by their items, and anything else.
+        let mut variants: BTreeMap<String, Vec<Ty>> = BTreeMap::new();
+        let mut records: Vec<BTreeMap<String, Ty>> = Vec::new();
+        let mut items: Vec<Ty> = Vec::new();
+        let mut other = false;
+        for k in &known {
+            match k {
+                Ty::Tags(tags) => {
+                    for (key, payload) in tags.iter() {
+                        match payload {
+                            Some(t) => variants.entry(key.clone()).or_default().push(t.clone()),
+                            None => other = true,
+                        }
+                    }
+                }
+                Ty::Update(_, key, v, true) => variants.entry(key.clone()).or_default().push((**v).clone()),
+                Ty::Update(r, key, v, false) => {
+                    let (inner, _) = methods::sources(r);
+                    for i in inner {
+                        let mut fields = match i {
+                            Ty::Record(fields) => (*fields).clone(),
+                            // A record of one attribute.
+                            Ty::Tags(tags) if tags.len() == 1 && tags.values().all(Option::is_some) => {
+                                tags.iter().map(|(k, t)| (k.clone(), t.clone().unwrap())).collect()
+                            }
+                            _ => {
+                                other = true;
+                                continue;
+                            }
+                        };
+                        fields.insert(key.clone(), (**v).clone());
+                        records.push(fields);
+                    }
+                }
+                Ty::Record(fields) => records.push((**fields).clone()),
+                Ty::List(t) => items.push((**t).clone()),
+                Ty::Bot => {}
+                _ => other = true,
+            }
+        }
+        // A variant is a record of one attribute: among records, it is one.
+        if !records.is_empty() {
+            for (key, payloads) in std::mem::take(&mut variants) {
+                records.push(BTreeMap::from([(key, union(payloads))]));
+            }
+        }
+        if !variants.is_empty() {
+            let mut shown = Vec::new();
+            let mut parts = Vec::new();
+            for (key, payloads) in variants {
+                let domain = key.rsplit_once('/').map_or("", |(d, _)| d);
+                let name = format!("{domain}/{last}");
+                let payload = union(payloads);
+                let found = if domain.is_empty() { None } else { lookup.find(self, &name)? };
+                match found {
+                    Some(target) => {
+                        let whole = Ty::Tags(Rc::new(BTreeMap::from([(key.clone(), Some(payload))])));
+                        parts.push(self.use_method(method, &whole, &name, target, needed, lookup, depth + 1)?);
+                        shown.push((key.clone(), local(&key), true));
+                    }
+                    None => {
+                        parts.push(self.find_method(method, &payload, needed, lookup, depth + 1)?);
+                        shown.push((key.clone(), local(&key), false));
+                    }
+                }
+            }
+            return Ok(made(Shape::Variants(shown), parts));
+        }
+        if other || (!records.is_empty() && !items.is_empty()) {
+            return Ok(plain());
+        }
+        if !records.is_empty() {
+            let mut keys: Vec<String> = records.iter().flat_map(|r| r.keys().cloned()).collect();
+            keys.sort();
+            keys.dedup();
+            let mut fields: Vec<(String, String, bool)> = Vec::new();
+            let mut types: Vec<Ty> = Vec::new();
+            for key in keys {
+                let mut optional = false;
+                let mut ts = Vec::new();
+                for r in &records {
+                    match r.get(&key) {
+                        Some(Ty::Opt(t)) => {
+                            optional = true;
+                            ts.push((**t).clone());
+                        }
+                        Some(t) => ts.push(t.clone()),
+                        None => optional = true,
+                    }
+                }
+                fields.push((key.clone(), local(&key), optional));
+                types.push(union(ts));
+            }
+            // Shown in the order of their local names, as `inspect` shows
+            // them.
+            let mut order: Vec<usize> = (0..fields.len()).collect();
+            order.sort_by(|&a, &b| fields[a].1.cmp(&fields[b].1));
+            let mut parts = Vec::new();
+            for &i in &order {
+                parts.push(self.find_method(method, &types[i], needed, lookup, depth + 1)?);
+            }
+            let fields = order.into_iter().map(|i| fields[i].clone()).collect();
+            return Ok(made(Shape::Record(fields), parts));
+        }
+        if !items.is_empty() {
+            let part = self.find_method(method, &union(items), needed, lookup, depth + 1)?;
+            return Ok(made(Shape::List, vec![part]));
+        }
+        if known.is_empty() {
+            return Ok(Impl::Nothing(labels));
+        }
+        Ok(plain())
     }
 
     /// The definition `name` of `method`, for a call on `on`: checked to
@@ -1598,7 +1770,14 @@ struct Names<'a> {
     lookup: &'a dyn Fn(&str) -> Option<Target>,
     claims: &'a Claims,
     macros: &'a BTreeMap<String, macros::Macro>,
+    /// The domain of the definition being resolved, which alone may take
+    /// apart the opaque types it defines.
+    domain: &'a str,
 }
+
+/// The domains whose variants only their own definitions may take apart:
+/// a secret is made by anyone and opened only by `reveal`.
+const OPAQUE: &[&str] = &["conduct.secret"];
 
 impl Names<'_> {
     /// A local may not take a macro's name: expansion does not see
@@ -1615,6 +1794,19 @@ impl Names<'_> {
     /// global one.
     fn attribute(&self, name: &str) -> Option<String> {
         self.claims.attribute(name)
+    }
+
+    /// An error if `global` is an attribute of an opaque domain other
+    /// than the one being resolved in, which a pattern may not take apart.
+    fn open(&self, global: &str) -> Result<(), ResolveError> {
+        let home = global.rsplit_once('/').map_or("", |(d, _)| d);
+        if OPAQUE.contains(&home) && home != self.domain {
+            let local = global.rsplit('/').next().unwrap_or(global);
+            return Err(ResolveError::Invalid(format!(
+                "a `{local}` is opaque, and only `{home}` takes one apart: `reveal` gives what it holds"
+            )));
+        }
+        Ok(())
     }
 
     fn key(&self, name: &str) -> Result<String, ResolveError> {
@@ -1644,6 +1836,7 @@ impl Names<'_> {
                 let mut out: Vec<(String, Pattern)> = Vec::new();
                 for (k, p) in fields {
                     let global = self.key(k)?;
+                    self.open(&global)?;
                     if out.iter().any(|(g, _)| *g == global) {
                         return Err(ResolveError::Invalid(format!("the attribute `{global}` appears twice")));
                     }
@@ -1695,6 +1888,9 @@ impl Names<'_> {
             given[at] = Some(self.pattern(p)?.0);
         }
         let mut out: Vec<(String, Pattern)> = Vec::new();
+        for f in fields.iter() {
+            self.open(&f.global)?;
+        }
         for (f, p) in fields.iter().zip(given) {
             match p {
                 Some(p) => out.push((f.global.clone(), p)),
@@ -1876,7 +2072,7 @@ fn resolve(expr: &Expr, scope: &mut Vec<String>, names: &Names) -> Result<Term, 
                     Some(Target::Hash(h, _)) => Term::Ref(h),
                     Some(Target::Cycle(i, _)) => Term::CycleRef(i),
                     Some(Target::Method(m, _)) => Term::Dispatch(m),
-                    None if Op::from_name(name).is_some() => {
+                    None if Op::from_written(name).is_some() => {
                         return Err(ResolveError::Invalid(format!(
                             "the built-in `{name}` is not a value yet; call it, or wrap it in `fn`"
                         )));
@@ -2073,9 +2269,10 @@ fn app(callee: &Expr, args: &[Arg], scope: &mut Vec<String>, names: &Names) -> R
                     )));
                 }
                 if let Some(attribute) = names.attribute(name) {
+                    names.open(&attribute)?;
                     return read(name, attribute, resolved);
                 }
-                if let Some(op) = Op::from_name(name.strip_prefix("conduct/").unwrap_or(name)) {
+                if let Some(op) = Op::from_written(name) {
                     return builtin(op, resolved);
                 }
                 return Err(ResolveError::Unbound(name.to_string()));
@@ -2168,7 +2365,11 @@ fn shift_up(t: Term) -> Term {
 
 /// A built-in applied to arguments, after checking how many it takes.
 /// `h` fills in its optional attributes, children, and events.
-fn builtin(op: Op, args: Vec<(Option<String>, Term)>) -> Result<Term, ResolveError> {
+fn builtin(op: Op, mut args: Vec<(Option<String>, Term)>) -> Result<Term, ResolveError> {
+    // `join` without `with:` joins with nothing between.
+    if op == Op::Join && args.len() == 1 {
+        args.push((Some("with".into()), Term::Str(String::new())));
+    }
     let mut args: Vec<Term> = match builtin_labels(op) {
         Some((labels, order)) => {
             let all: Vec<String> =
@@ -2699,11 +2900,10 @@ fn ends_with_segments(name: &str, written: &str) -> bool {
     part.len() <= whole.len() && whole[whole.len() - part.len()..] == part[..]
 }
 
-/// The built-in `written` names, if it names one: `byte` or
-/// `conduct/byte`.
-fn builtin_named(written: &str) -> Option<&str> {
-    let op = written.strip_prefix(&format!("{BUILTIN_DOMAIN}/")).unwrap_or(written);
-    Op::from_name(op).is_some().then_some(op)
+/// The built-in `written` names, if it names one: `byte`,
+/// `conduct/byte`, or `syntax/inspect`.
+fn builtin_named(written: &str) -> Option<Op> {
+    Op::from_written(written)
 }
 
 /// The definition of the source being added that `written` names: the

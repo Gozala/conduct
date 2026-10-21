@@ -14,7 +14,7 @@
 //! passes, found where the call knows the type (dictionary passing, as
 //! Haskell compiles type classes). Nothing is copied for each type.
 
-use crate::term::{Hash, Term};
+use crate::term::{Hash, Op, Term};
 use crate::types::{Prim, Scheme, Ty};
 use std::collections::{HashMap, HashSet};
 
@@ -149,6 +149,13 @@ fn local(global: &str) -> &str {
     global.rsplit('/').next().unwrap_or(global)
 }
 
+/// The types that flow into `t`, and the variables nothing flows into.
+pub fn sources(t: &Ty) -> (Vec<Ty>, Vec<Ty>) {
+    let (mut known, mut vars) = (Vec::new(), Vec::new());
+    gather(t, &mut HashSet::new(), &mut known, &mut vars);
+    (known, vars)
+}
+
 /// The types that flow into `t`, through the variables that flow into
 /// it, and the variables that nothing flows into.
 fn gather(t: &Ty, seen: &mut HashSet<u32>, known: &mut Vec<Ty>, sources: &mut Vec<Ty>) {
@@ -250,6 +257,33 @@ pub enum Impl {
     /// so any function of the method's parameters, which is never
     /// called, will do. Its parameters' labels.
     Nothing(Vec<String>),
+    /// A method with a default, for a type that does not define it: a
+    /// function the shape of the type makes, calling the method found
+    /// for each of its parts. The method, its parameters' labels, the
+    /// shape, and the parts.
+    Derived { method: String, labels: Vec<String>, shape: Shape, parts: Vec<Impl> },
+}
+
+/// The methods every type has, which a type may define for itself and
+/// which otherwise follow its shape: `show` and `same?`.
+pub const DEFAULTED: &[&str] = &["conduct/show", "conduct/same?"];
+
+/// How a method with a default goes through a type that does not define
+/// it, with a part for each place it calls the method again.
+#[derive(Clone, Debug)]
+pub enum Shape {
+    /// As the built-in does: `show` as `inspect` writes it, text as it
+    /// is; `same?` as `=`.
+    Plain,
+    /// A record's attributes, by global name and local name, and whether
+    /// each may be absent, in the order shown: a part for each.
+    Record(Vec<(String, String, bool)>),
+    /// A list: a part for its items.
+    List,
+    /// Variants, by global name and local name, each with a part for
+    /// the whole value when its domain defines the method, or else for
+    /// what it holds; any other value is [`Shape::Plain`].
+    Variants(Vec<(String, String, bool)>),
 }
 
 /// A function's own parameters' labels, and the labels it takes the
@@ -354,7 +388,7 @@ impl Elaborator<'_> {
     fn call_impl(&self, imp: &Impl, mut args: Vec<Term>, mut labels: Vec<String>, depth: u32) -> Term {
         let callee = match imp {
             Impl::Passed(j) => self.passed(*j, depth),
-            Impl::Nothing(_) => self.value_impl(imp, depth),
+            Impl::Nothing(_) | Impl::Derived { .. } => self.value_impl(imp, depth),
             Impl::Found { target, needs, hidden, .. } => {
                 args.extend(needs.iter().map(|n| self.value_impl(n, depth)));
                 labels.extend(hidden.iter().cloned());
@@ -388,6 +422,7 @@ impl Elaborator<'_> {
         let (callee, labels, passing): (Term, &[String], Vec<&Impl>) = match imp {
             Impl::Passed(j) => return self.passed(*j, depth),
             Impl::Nothing(labels) => return Term::Fn(labels.clone(), Box::new(Term::Nil)),
+            Impl::Derived { method, labels, shape, parts } => return self.derived(method, labels, shape, parts, depth),
             Impl::Found { target, needs, .. } if needs.is_empty() => return Term::Ref(*target),
             Impl::Member(i) if self.hidden.is_empty() => return Term::CycleRef(*i),
             Impl::Found { target, needs, labels, .. } => (Term::Ref(*target), labels, needs.iter().collect()),
@@ -407,6 +442,107 @@ impl Elaborator<'_> {
             }
         }
         Term::Fn(labels.to_vec(), Box::new(Term::App(Box::new(callee), args, call_labels)))
+    }
+
+    /// A function of the method's parameters that goes through `shape`,
+    /// calling the method found for each part.
+    fn derived(&self, method: &str, labels: &[String], shape: &Shape, parts: &[Impl], depth: u32) -> Term {
+        let n = labels.len() as u32;
+        let parts: Vec<Term> = parts.iter().map(|p| self.value_impl(p, depth + n)).collect();
+        let body = if method.ends_with("/show") { show_body(shape, &parts) } else { same_body(shape, &parts) };
+        Term::Fn(labels.to_vec(), Box::new(body))
+    }
+}
+
+fn join(pieces: Vec<Term>, with: &str) -> Term {
+    Term::Prim(Op::Join, vec![Term::List(pieces), Term::Str(with.into())])
+}
+
+fn has(value: Term, global: &str) -> Term {
+    Term::Prim(Op::HasField, vec![value, Term::Str(global.into())])
+}
+
+fn field(global: &str, value: Term) -> Term {
+    Term::Field(global.into(), Box::new(value))
+}
+
+/// `show` through `shape`, of local 0.
+fn show_body(shape: &Shape, parts: &[Term]) -> Term {
+    let x = || Term::Local(0);
+    let call = |part: &Term, arg: Term| Term::App(Box::new(part.clone()), vec![arg], vec![]);
+    match shape {
+        Shape::Plain => Term::Prim(Op::Show, vec![x()]),
+        Shape::List => join(
+            vec![
+                Term::Str("[".into()),
+                join_list(Term::Prim(Op::Map, vec![parts[0].clone(), x()]), " "),
+                Term::Str("]".into()),
+            ],
+            "",
+        ),
+        Shape::Record(fields) => {
+            let entries = fields.iter().zip(parts).map(|((global, local, optional), part)| {
+                let entry = join(vec![Term::Str(format!("{local}: ")), call(part, field(global, x()))], "");
+                if *optional {
+                    Term::If(Box::new(has(x(), global)), Box::new(Term::List(vec![entry])), Box::new(Term::List(vec![])))
+                } else {
+                    Term::List(vec![entry])
+                }
+            });
+            let all = entries.reduce(|a, b| Term::Prim(Op::Concat, vec![a, b])).unwrap_or(Term::List(vec![]));
+            join(vec![Term::Str("{".into()), join_list(all, ", "), Term::Str("}".into())], "")
+        }
+        Shape::Variants(variants) => {
+            variants.iter().zip(parts).rev().fold(Term::Prim(Op::Show, vec![x()]), |otherwise, ((global, local, whole), part)| {
+                let shown = if *whole {
+                    call(part, x())
+                } else {
+                    join(
+                        vec![Term::Str(format!("({local} ")), call(part, field(global, x())), Term::Str(")".into())],
+                        "",
+                    )
+                };
+                Term::If(Box::new(has(x(), global)), Box::new(shown), Box::new(otherwise))
+            })
+        }
+    }
+}
+
+fn join_list(list: Term, with: &str) -> Term {
+    Term::Prim(Op::Join, vec![list, Term::Str(with.into())])
+}
+
+/// `same?` through `shape`, of locals 1 and 0.
+fn same_body(shape: &Shape, parts: &[Term]) -> Term {
+    let (a, b) = (|| Term::Local(1), || Term::Local(0));
+    let call = |part: &Term, x: Term, y: Term| Term::App(Box::new(part.clone()), vec![x, y], vec!["as".into()]);
+    let and = |x: Term, y: Term| Term::And(Box::new(x), Box::new(y));
+    match shape {
+        Shape::Plain => Term::Prim(Op::Eq, vec![a(), b()]),
+        Shape::List => Term::Prim(Op::Pairwise, vec![parts[0].clone(), a(), b()]),
+        Shape::Record(fields) => fields
+            .iter()
+            .zip(parts)
+            .map(|((global, _, optional), part)| {
+                let both = call(part, field(global, a()), field(global, b()));
+                if *optional {
+                    Term::If(
+                        Box::new(has(a(), global)),
+                        Box::new(and(has(b(), global), both)),
+                        Box::new(Term::Prim(Op::Not, vec![has(b(), global)])),
+                    )
+                } else {
+                    both
+                }
+            })
+            .reduce(and)
+            .unwrap_or(Term::Bool(true)),
+        Shape::Variants(variants) => {
+            variants.iter().zip(parts).rev().fold(Term::Prim(Op::Eq, vec![a(), b()]), |otherwise, ((global, _, whole), part)| {
+                let both = if *whole { call(part, a(), b()) } else { call(part, field(global, a()), field(global, b())) };
+                Term::If(Box::new(has(a(), global)), Box::new(and(has(b(), global), both)), Box::new(otherwise))
+            })
+        }
     }
 }
 

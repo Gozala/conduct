@@ -167,7 +167,7 @@
 ;; Requests
 
 (define (load model)
-  (fetch "GET" (str "/api/todos?filter=" (showing model)) "" :loaded))
+  (fetch "GET" (join ["/api/todos?filter=" (showing model)]) "" :loaded))
 
 (define (change method path body)
   (fetch method path body :changed))
@@ -192,8 +192,8 @@
         id (first parts "")
         title (trim (first (rest parts) ""))]
     (if (= title "")
-      (change "DELETE" path: (str "/api/todos/" id) body: "")
-      (change "PATCH" path: (str "/api/todos/" id) body: (to-json {:title title})))))
+      (change "DELETE" path: (join ["/api/todos/" id]) body: "")
+      (change "PATCH" path: (join ["/api/todos/" id]) body: (to-json {:title title})))))
 
 (define (next model effects) {model: model, effects: effects})
 
@@ -222,10 +222,10 @@
   (next model
     effects: (map (filter (todos model) where: (fn [todo] (= (id todo) which)))
                   each: (fn [todo] (change "PATCH"
-                                           path: (str "/api/todos/" (id todo))
+                                           path: (join ["/api/todos/" (id todo)])
                                            body: (to-json {:completed (not (completed todo))}))))))
 (define (update {action: :destroy value: which} model)
-  (next model effects: [(change "DELETE" path: (str "/api/todos/" which) body: "")]))
+  (next model effects: [(change "DELETE" path: (join ["/api/todos/" which]) body: "")]))
 (define (update {action: :edit value: detail} model) (next model effects: [(edit detail)]))
 (define (update {action: :clear} model) (next model effects: [(change "DELETE" path: "/api/todos" body: "")]))
 ;; Any other command, or another attribute changing, changes nothing.
@@ -275,7 +275,7 @@
 (define (frame-attrs model)
   (let [base {:class "frame" :data-phase (phase model)}]
     (if (= (phase model) "revealing")
-      (assoc base :style (str "height: " (height model) "px"))
+      (assoc base :style (join ["height: " (height model) "px"]))
       base)))
 
 (define (view model)
@@ -288,8 +288,8 @@
                      {:todo-add :add :todo-toggle-all :toggle-all})])
         main (if (> total 0)
                [(h "section" {:class "main"} [(h "ul" {:class "todo-list"} (map (todos model) each: item))])
-                (h "todo-footer" {:active (str (active-count model))
-                                  :completed (str (completed-count model))
+                (h "todo-footer" {:active (show (active-count model))
+                                  :completed (show (completed-count model))
                                   :filter (showing model)}
                    []
                    {:todo-clear :clear})]

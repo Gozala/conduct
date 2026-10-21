@@ -196,7 +196,7 @@ fn a_match_narrows_what_it_tested() {
     let src = format!(
         "{claims} (define (describe job)
                     (match job
-                      {{status: :active}} (str \"Since \" (since job))
+                      {{status: :active}} (join [\"Since \" (show (since job))])
                       {{status: :suspended}} \"paused\"))"
     );
     assert_eq!(ty(&src, "describe"), "((\\ {since: any, status: [:active :suspended]}) : text)");

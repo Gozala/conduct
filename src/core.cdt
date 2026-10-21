@@ -5,6 +5,24 @@
 (type (error ?reason) : {(conduct.result/error ?reason)})
 (type (result ?value error: ?reason) : [(ok ?value) (error ?reason)])
 
+;; Methods every type has. A type's own, defined in the domain of its
+;; attribute (`demo.money/show`), comes first; any other type goes by its
+;; shape, the method called again on each part its type says it has.
+;; `show` writes a value for people, a secret as `<secret>` and text as
+;; it is; `same?` says whether two values mean the same, which is `=`
+;; unless a type says otherwise. `conduct.syntax/inspect` and `=` are
+;; the built-ins no type changes.
+(domain conduct
+  (claim (show ?a) : text)
+  (claim (same? ?a as: ?a) : boolean))
+
+;; A value kept from being shown: `show` and `inspect` write it as
+;; `<secret>`. It is made by anyone, and only `reveal` takes it apart.
+(type (secret ?a) : {(conduct.secret/secret ?a)})
+(domain conduct.secret
+  (define (reveal (secret held)) held)
+  (define (show s) "<secret>"))
+
 ;; `and`, `or` and `cond` are macros: each is the set of its rules, and
 ;; a call expands by the narrowest rule that matches it.
 (macro (and x) x)

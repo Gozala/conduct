@@ -33,9 +33,9 @@ fn error(src: &str) -> String {
 #[test]
 fn a_definition_marked_bang_makes_a_task() {
     assert_eq!(ty("(define x 1)", "x"), "byte");
-    assert_eq!(ty("(define (greet! name) (log! (str \"hi \" name)))", "greet"), "((\\ any) : (task {} with: {log}))");
+    assert_eq!(ty("(define (greet! name) (log! (join [\"hi \" name])))", "greet"), "((\\ any) : (task {} with: {log}))");
     // Capabilities add up, through `let`, `do`, and other tasks.
-    let src = "(define (stamp! msg) (let [t (now!)] (log! (str t \": \" msg))))
+    let src = "(define (stamp! msg) (let [t (now!)] (log! (join [(show t) \": \" msg]))))
                (define (twice! msg) (stamp! msg) (stamp! msg))";
     assert_eq!(ty(src, "twice"), "((\\ any) : (task {} with: {clock log}))");
     // A task of no parameters is the task itself.
@@ -51,7 +51,7 @@ fn calls_are_pure() {
     // list of tasks needs no effect polymorphism.
     assert_eq!(ty("(define (all xs) (map xs each: log))", "all"), "((\\ (list text)) : (list (task {} with: {log})))");
     assert_eq!(
-        ty("(define (logger prefix) (fn [m] (log (str prefix m))))", "logger"),
+        ty("(define (logger prefix) (fn [m] (log (join [prefix m]))))", "logger"),
         "((\\ any) : ((\\ any) : (task {} with: {log})))"
     );
     // A task held in a value is performed with `(t!)`.
@@ -115,7 +115,7 @@ fn claims_of_tasks() {
 
 #[test]
 fn an_environment_provides_capabilities() {
-    let src = "(define (stamp! msg) (let [t (now!)] (log! (str t \": \" msg))))";
+    let src = "(define (stamp! msg) (let [t (now!)] (log! (join [(show t) \": \" msg]))))";
     // Providing `clock` leaves `log`.
     assert_eq!(
         ty(&format!("{src} (define (fixed msg) (perform (stamp msg) with: {{clock: {{now: 7}}}}))"), "fixed"),
@@ -170,14 +170,14 @@ fn run(src: &str, entry: &str) -> (Value, Vec<String>) {
 
 #[test]
 fn tasks_run_in_order() {
-    let src = "(define (stamp! msg) (let [t (now!)] (log! (str t \": \" msg))))
+    let src = "(define (stamp! msg) (let [t (now!)] (log! (join [(show t) \": \" msg]))))
                (define (all! tasks)
                  (match (count tasks)
                    0 {}
                    _ (let [t (first tasks (log \"none\"))] (t!) (all! (rest tasks)))))
                (define (main! n)
                  (stamp! \"start\")
-                 (let [tasks (map [1 2] each: (fn [x] (log (str \"item \" x))))]
+                 (let [tasks (map [1 2] each: (fn [x] (log (join [\"item \" (show x)]))))]
                    (all! tasks)
                    (count tasks)))";
     let (value, logged) = run(src, "main");
@@ -201,7 +201,7 @@ fn a_task_held_is_performed_later() {
 
 #[test]
 fn an_environment_answers_in_the_host_place() {
-    let src = "(define (stamp! msg) (let [t (now!)] (log! (str t \": \" msg))))
+    let src = "(define (stamp! msg) (let [t (now!)] (log! (join [(show t) \": \" msg]))))
                (define (main! n)
                  (perform! (stamp \"fixed\") with: {clock: {now: 7}})
                  (perform! (stamp \"quiet\") with: {log: {log: (fn [line] {})}})
@@ -238,7 +238,7 @@ fn host_functions_take_optional_attributes() {
 
 #[test]
 fn implementations_are_pure_and_given_once() {
-    let src = "(define (stamp! msg) (let [t (now!)] (log! (str t \": \" msg))))";
+    let src = "(define (stamp! msg) (let [t (now!)] (log! (join [(show t) \": \" msg]))))";
     // An implementation that performs would run in the environment it
     // belongs to.
     let e = error(&format!("{src} (define (main! n) (perform! (stamp \"x\") with: {{clock: {{now: (now!)}}}}) n)"));

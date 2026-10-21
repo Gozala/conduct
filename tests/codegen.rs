@@ -60,7 +60,7 @@ fn closures_capture() {
 #[test]
 fn strings_and_defaults() {
     let src = "(define d {:title \"Buy milk\"})
-               (define t (str (get :title of: d or: \"untitled\") \" / \" (get :nope of: d or: \"none\") \" \" 42 \" \" true))";
+               (define t (join [(show (get :title of: d or: \"untitled\")) \" / \" (show (get :nope of: d or: \"none\")) \" \" (show 42) \" \" (show true)]))";
     assert_eq!(run(src, "t", &[]), Value::Str("Buy milk / none 42 true".into()));
     // An attribute read with a default, and a list's first with one.
     let src = "(type title : (t/title ?title))
@@ -127,9 +127,9 @@ fn ownership_edge_cases() {
     // Defaults: a default not taken is dropped, and a bound attribute
     // its arm ignores is dropped.
     let src = "(type k : (t/k ?k)) (type n : (t/n ?n))
-               (define (f d fallback) (get :k of: d or: (str fallback \"!\")))
+               (define (f d fallback) (get :k of: d or: (join [fallback \"!\"])))
                (define (g r) (match r {k: x} 1 _ 0))
-               (define (h r fallback) (k r (str fallback \"!\")))
+               (define (h r fallback) (k r (join [fallback \"!\"])))
                (define e (f {:k \"v\"} fallback: \"unused\"))
                (define gk (g {k: [\"heap\"], n: 1}))
                (define m (h {k: \"v\", n: 1} fallback: \"unused\"))";
@@ -143,7 +143,7 @@ fn ownership_edge_cases() {
     assert_eq!(run(src, "i", &[]), Value::Bool(false));
 
     // Recursion building and tearing down a structure.
-    let src = "(define (range n acc) (if (= n 0) acc (range (- n 1) acc: (conj acc (str n)))))
+    let src = "(define (range n acc) (if (= n 0) acc (range (- n 1) acc: (conj acc (show n)))))
                (define j (count (filter (range 50 acc: []) where: (fn [s] (not= s \"3\")))))";
     assert_eq!(run(src, "j", &[]), Value::Int(49));
 }
@@ -215,9 +215,9 @@ fn keywords_and_match() {
 (define (handle h n) (match h "inc" (+ n 1) "dec" (- n 1) _ n))
 (define labels [(label :active) (label :suspended)])
 (define handled [(handle "inc" n: 1) (handle "dec" n: 1) (handle "other" n: 1)])
-(define shown (str :active " " (to-json [:done "x"])))
+(define shown (join [(show :active) " " (to-json [:done "x"])]))
 (define same [(= :a :a) (= :a :b) (= :a "a")])
-(define (status-of job) (match (status job) :active (str "Since " (since job)) :suspended "paused"))
+(define (status-of job) (match (status job) :active (join ["Since " (show (since job))]) :suspended "paused"))
 (define described [(status-of {status: :active, since: "May"}) (status-of {status: :suspended, since: ""})])
 (define kept (match {k: [1 2]} :x [] _ [3]))
 "#;
@@ -240,11 +240,11 @@ fn matching_shapes() {
 (type since : (t/since ?since))
 (type owner : (t/owner ?owner))
 (type name : (t/name ?name))
-(define (since-of job) (match job {started-at: at} (str "Since " at) _ "not started"))
+(define (since-of job) (match job {started-at: at} (join ["Since " (show at)]) _ "not started"))
 (define (describe job)
   (match job
     {status: :active, owner: {name: "ann"}} "ann's"
-    {status: :active} (str "Since " (since job))
+    {status: :active} (join ["Since " (show (since job))])
     {status: :suspended} "paused"
     {status: _} "other"))
 (define a [(since-of {id: 1}) (since-of {id: 2, started-at: "May"})])
@@ -346,9 +346,9 @@ fn variants_match_and_bind() {
 (define (find id) (if (= id "x") (error :not-found) (check id)))
 (define (show r)
   (match r
-    (ok {title: t, n: n}) (str t " (" n ")")
+    (ok {title: t, n: n}) (join [t " (" (show n) ")"])
     (error :not-found) "missing"
-    (error e) (str "bad " e)))
+    (error e) (join ["bad " e])))
 (define (done x) (if x :ok (error "late")))
 (define (status r) (match r :ok "fine" (error why) why))
 (define a [(show (find "buy milk")) (show (find "x")) (show (find "")) (status (done true)) (status (done false))])
@@ -411,13 +411,13 @@ fn a_function_calling_itself_last_loops() {
 fn a_built_in_borrows_only_what_outlives_it() {
     // `u` is lent to `occurs?` while a later argument takes its last
     // reference, so it must be held until the call is done.
-    let src = "(define (f u) (occurs? u in: (str u u) at: 0))
-               (define (g n) (f (str \"ab\" n)))";
+    let src = "(define (f u) (occurs? u in: (join [u u]) at: 0))
+               (define (g n) (f (join [\"ab\" (show n)])))";
     assert_eq!(run(src, "g", &[int(7)]), Value::Bool(true));
     // A local still held after the call is lent, and a number is never
     // counted: both are fine to read again.
     let src = "(define (h t n) (if (occurs? t in: t at: 0) (+ n (byte-count t)) n))
-               (define (k n) (h (str \"x\" n) n: n))";
+               (define (k n) (h (join [\"x\" (show n)]) n: n))";
     assert_eq!(run(src, "k", &[int(5)]), Value::Int(7));
 }
 

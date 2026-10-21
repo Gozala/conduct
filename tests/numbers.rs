@@ -93,7 +93,7 @@ fn bits_of_naturals() {
 #[test]
 fn equal_values_hash_alike() {
     let src = "(type n : (t/n integer))
-               (define hashes [(hash \"abc\") (hash (str \"a\" \"bc\"))
+               (define hashes [(hash \"abc\") (hash (join [\"a\" \"bc\"]))
                                (hash [1 2 [3]]) (hash (conj [1 2] [3]))
                                (hash {n: 1}) (hash (assoc {} n: 1))
                                (hash {}) (hash (dissoc {:k 1} :k))

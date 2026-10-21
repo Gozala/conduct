@@ -316,7 +316,7 @@ impl Infer<'_> {
             }
             Term::Prim(op, args) => {
                 let args = args.iter().map(|a| self.term(a, env, level)).collect::<Result<Vec<_>>>()?;
-                let (params, ret, effect) = signature(s, *op, args.len(), level);
+                let (params, ret, effect) = signature(s, *op, level);
                 for (i, (arg, param)) in args.iter().zip(params.iter()).enumerate() {
                     s.constrain(arg, param)
                         .map_err(|e| TypeError(format!("argument {} of `{}`: {e}", i + 1, op.name())))?;
@@ -412,14 +412,12 @@ impl Infer<'_> {
 
 /// The parameter types and result type of a built-in, with fresh
 /// variables for its generic parts.
-pub fn signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty, Ty) {
-    let var = || s.fresh_ty(level);
-    let _ = var;
-    let (params, ret) = pure_signature(s, op, argc, level);
+pub fn signature(s: &Solver, op: Op, level: u32) -> (Vec<Ty>, Ty, Ty) {
+    let (params, ret) = pure_signature(s, op, level);
     (params, ret, Ty::pure())
 }
 
-fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) {
+fn pure_signature(s: &Solver, op: Op, level: u32) -> (Vec<Ty>, Ty) {
     let var = || s.fresh_ty(level);
     let int2 = || vec![Ty::int(), Ty::int()];
     match op {
@@ -447,7 +445,8 @@ fn pure_signature(s: &Solver, op: Op, argc: usize, level: u32) -> (Vec<Ty>, Ty) 
         Op::Lt | Op::Gt | Op::Le | Op::Ge => (int2(), Ty::bool()),
         Op::Eq | Op::NotEq => (vec![Ty::Top, Ty::Top], Ty::bool()),
         Op::Not => (vec![Ty::bool()], Ty::bool()),
-        Op::Str => (vec![Ty::Top; argc], Ty::str()),
+        Op::Inspect | Op::Show => (vec![Ty::Top], Ty::str()),
+        Op::Pairwise => (vec![Ty::Top, Ty::list(Ty::Top), Ty::list(Ty::Top)], Ty::bool()),
         Op::Count => (vec![Ty::list(Ty::Top)], Ty::nat()),
         Op::BitAnd | Op::BitOr | Op::BitXor | Op::ShiftLeft | Op::ShiftRight => (vec![Ty::nat(), Ty::nat()], Ty::nat()),
         Op::CountOnes => (vec![Ty::nat()], Ty::nat()),

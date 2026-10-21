@@ -60,7 +60,7 @@ fn a_record_type_constructs() {
 fn a_record_type_matches() {
     let cb = check(&format!(
         "{PERSON}
-         (define (describe p) (match p (person who age: years) (str who \" \" years)))
+         (define (describe p) (match p (person who age: years) (join [who \" \" (show years)])))
          (define (call p) (match p (person phone: n) n _ \"none\"))"
     ));
     assert_eq!(cb.type_of("describe").unwrap(), "((\\ {age: any, name: any}) : text)");
@@ -68,7 +68,7 @@ fn a_record_type_matches() {
     assert_eq!(cb.type_of("call").unwrap(), "((\\ {phone?: ?a}) : [?a text])");
     let src = format!(
         "{PERSON}
-         (define (describe p) (match p (person who age: years) (str who \" \" years)))
+         (define (describe p) (match p (person who age: years) (join [who \" \" (show years)])))
          (define x (describe (person \"Ada\" age: 36)))"
     );
     assert_eq!(run(&src, "x"), Value::Str("Ada 36".into()));
@@ -78,7 +78,7 @@ fn a_record_type_matches() {
 fn constructors_of_variants() {
     let cb = check(
         "(define (safe-div n by) (if (= by 0) (error :division-by-zero) (ok (quot n by))))
-         (define (show r) (match r (ok v) (str v) (error why) (str why)))",
+         (define (show r) (match r (ok v) (conduct/show v) (error why) (conduct/show why)))",
     );
     assert_eq!(
         cb.type_of("safe-div").unwrap(),
@@ -86,7 +86,7 @@ fn constructors_of_variants() {
     );
     assert_eq!(cb.type_of("show").unwrap(), "((\\ [(error any) (ok any)]) : text)");
     let src = "(define (safe-div n by) (if (= by 0) (error :division-by-zero) (ok (quot n by))))
-               (define (show r) (match r (ok v) (str v) (error why) (str why)))";
+               (define (show r) (match r (ok v) (conduct/show v) (error why) (conduct/show why)))";
     assert_eq!(run(&format!("{src} (define a (show (safe-div 7 by: 2)))"), "a"), Value::Str("3".into()));
     assert_eq!(
         run(&format!("{src} (define a (show (safe-div 7 by: 0)))"), "a"),
@@ -130,9 +130,9 @@ fn a_variant_ranks_overlapping_records() {
          (type job : [done pending idle])
          (define (report job)
            (match job
-             (idle description: d) (str \"Idle: \" d)
-             (pending description: d) (str \"Pending: \" d)
-             (done description: d) (str \"Done: \" d)))"
+             (idle description: d) (join [\"Idle: \" d])
+             (pending description: d) (join [\"Pending: \" d])
+             (done description: d) (join [\"Done: \" d])))"
     );
     let cb = check(&src);
     assert_eq!(cb.type_of("report").unwrap(), "((\\ {description: any}) : text)");

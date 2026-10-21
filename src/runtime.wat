@@ -606,6 +606,10 @@
       (then
         (local.set $p (call $ptr (local.get $v)))
         (local.set $n (call $len (local.get $v)))
+        ;; A secret, whatever it holds.
+        (if (i32.and (i32.eq (local.get $n) (i32.const 1))
+              (i64.eq (i64.load offset=8 (local.get $p)) (call $secret_field)))
+          (then (return (call $lit (i32.const 75) (i32.const 8)))))
         (local.set $out (call $lit (i32.const 23) (i32.const 1)))
         (local.set $last (i32.const -1))
         (block $done
@@ -925,6 +929,23 @@
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $next)))
     (i64.extend_i32_u (local.get $p)))
+  (func $pairwise (param $f i64) (param $a i64) (param $b i64) (result i64)
+    ;; Whether `a` and `b` are as long and `f` is true of each pair of
+    ;; their items, all borrowed.
+    (local $n i32) (local $i i32)
+    (local.set $n (call $len (local.get $a)))
+    (if (i32.ne (local.get $n) (call $len (local.get $b))) (then (return (i64.const 0x0a))))
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (if (i64.ne (call $apply2 (local.get $f)
+                      (call $dup (call $list_get (local.get $a) (local.get $i)))
+                      (call $dup (call $list_get (local.get $b) (local.get $i))))
+                    (i64.const 0x12))
+          (then (return (i64.const 0x0a))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))
+    (i64.const 0x12))
   (func $filter (param $f i64) (param $xs i64) (result i64)
     (local $p i32) (local $n i32) (local $i i32) (local $k i32) (local $x i64)
     (local.set $n (call $len (local.get $xs)))

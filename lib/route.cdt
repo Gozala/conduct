@@ -58,8 +58,8 @@
     (match (declaration-of name in: declared)
       (form-list [_ (form-symbol "natural")]) (ok `(~p ./natural-segment))
       (form-list [_ (form-symbol "text")]) (ok `(~p ./text-segment))
-      :undeclared (error (str "`" name "` is not a declared attribute, and a route captures attributes"))
-      _ (error (str "`" name "` is neither a natural nor text: write `(" name " segment)` with a segment for it")))
+      :undeclared (error (join ["`" name "` is not a declared attribute, and a route captures attributes"]))
+      _ (error (join ["`" name "` is neither a natural nor text: write `(" name " segment)` with a segment for it"])))
     _ (ok p)))
 
 ;; `(route-of piece ..)`: each piece is literal text or `(name segment)`.
@@ -79,7 +79,7 @@
 
 (macro (route-from v [bind ...] [out ...] [field ...])
   {route-parse: (parsing [bind ... _ (end :expecting-end)] (succeed {field: field ...})),
-   route-format: (fn [v] (str out ...))})
+   route-format: (fn [v] (join [out ...]))})
 
 ;; The parameters of `path`, `(ok params)`, or `(error dead-ends)`.
 (define (match-path r path) (run (route-parse r) text: path))
@@ -92,7 +92,7 @@
 ;; A natural in decimal.
 (define natural-segment
   {segment-parse: (int :expecting-natural invalid: :invalid-natural),
-   segment-format: (fn [n] (str n))})
+   segment-format: (fn [n] (show n))})
 
 ;; Text up to the next `/`, `?` or `#`, at least one byte of it, with
 ;; each `%XX` read as the byte it stands for and the bytes as UTF-8; and
@@ -150,8 +150,8 @@
 (define (escape-byte b)
   (if (path-char? b)
     (from-code-point b)
-    (str "%" (slice "0123456789ABCDEF" from: (shift-right b 4) to: (+ (shift-right b 4) 1))
-             (slice "0123456789ABCDEF" from: (bit-and b 15) to: (+ (bit-and b 15) 1)))))
+    (join ["%" (slice "0123456789ABCDEF" from: (shift-right b 4) to: (+ (shift-right b 4) 1))
+               (slice "0123456789ABCDEF" from: (bit-and b 15) to: (+ (bit-and b 15) 1))])))
 
 ;; RFC 3986's `pchar` but `%`: unreserved characters, sub-delimiters,
 ;; `:` and `@`.

@@ -101,7 +101,7 @@
 (define (surrogates high low)
   (if (and (>= low 0xdc00) (<= low 0xdfff))
     (from-code-point (+ 0x10000 (+ (shift-left (natural (- high 0xd800) or: 0) 10) (natural (- low 0xdc00) or: 0))))
-    (str (from-code-point high) (from-code-point low))))
+    (join [(from-code-point high) (from-code-point low)])))
 
 (define hex4
   (map-value (get-chomped (skip hex-digit then: (skip hex-digit then: (skip hex-digit then: hex-digit))))
@@ -171,18 +171,18 @@
   (match j
     :null "null"
     (bool b) (if b "true" "false")
-    (number n) (str n)
+    (number n) (show n)
     (decimal t) t
     (string t) (quote-text t)
-    (array items) (str "[" (join (map items each: to-text) with: ",") "]")
-    (object members) (str "{" (join (map members each: member-text) with: ",") "}")))
+    (array items) (join ["[" (join (map items each: to-text) with: ",") "]"])
+    (object members) (join ["{" (join (map members each: member-text) with: ",") "}"])))
 
 (claim (member-text json-member) : text)
-(define (member-text m) (str (quote-text (member-name m)) ":" (to-text (member-value m))))
+(define (member-text m) (join [(quote-text (member-name m)) ":" (to-text (member-value m))]))
 
 ;; `t` as a JSON string: quoted, with quotes, backslashes and control
 ;; characters escaped.
-(define (quote-text t) (str "\"" (join (escape-from t from: 0 at: 0 pieces: []) with: "") "\""))
+(define (quote-text t) (join ["\"" (join (escape-from t from: 0 at: 0 pieces: [])) "\""]))
 
 (define (escape-from t from at pieces)
   (let [b (byte-at t at: at or: 256)]
@@ -201,7 +201,7 @@
     (= b 9) "\\t"
     (= b 8) "\\b"
     (= b 12) "\\f"
-    :else (str "\\u00" (hex-char (shift-right b 4)) (hex-char (bit-and b 15)))))
+    :else (join ["\\u00" (hex-char (shift-right b 4)) (hex-char (bit-and b 15))])))
 
 (define (hex-char n) (slice "0123456789abcdef" from: n to: (+ n 1)))
 

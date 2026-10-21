@@ -67,15 +67,15 @@ const FETCHER: &str = r#"
 (define (init attrs) {n: 0, urls: (get :urls of: attrs or: "")})
 (define (ask url)
   (if (= (count (split url "/big")) 1)
-    (fetch "POST" url (str "{\"url\":\"" url "\"}") :answer)
+    (fetch "POST" url (join ["{\"url\":\"" url "\"}"]) :answer)
     (fetch "GET" url "" :answer)))
 (define (update {action: :connected} model: m)
   {model: m
    effects: (map (filter (split (urls m) "\n") where: (fn [u] (not (= u "")))) each: ask)})
 (define (update {action: :answer status: code value: body} model: m)
-  {model: (assoc m n: (+ (n m) 1)), effects: [(emit "answered" (str code " " body))]})
+  {model: (assoc m n: (+ (n m) 1)), effects: [(emit "answered" (join [(show code) " " body]))]})
 (define (update command model: m) {model: m, effects: []})
-(define (view m) (h "p" {} [(str (n m))] {}))
+(define (view m) (h "p" {} [(show (n m))] {}))
 "#;
 
 async fn run(urls: &[&str]) -> (Vec<String>, Vec<String>) {

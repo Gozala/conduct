@@ -62,14 +62,14 @@ fn a_macro_function_reads_what_names_are_declared_as() {
                (define (show f)
                  (match f
                    (form-symbol s) s
-                   (form-list items) (str \"(\" (join (map items each: show) with: \" \") \")\")
+                   (form-list items) (join [\"(\" (join (map items each: show) with: \" \") \")\"])
                    _ \"?\"))
                (macro describe
                  (fn [call declared]
                    (match call
                      (form-list [_ (form-symbol n)])
                      (match (declaration-of n in: declared)
-                       :undeclared (error (str \"`\" n \"` is not declared\"))
+                       :undeclared (error (join [\"`\" n \"` is not declared\"]))
                        f (ok (form-text (show f))))
                      _ (error \"`describe` takes a name\"))))
                (define out [(describe x) (describe title)])";

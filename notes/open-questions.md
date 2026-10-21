@@ -5,6 +5,23 @@ would reverse it. Newest first. Go over these together; anything marked
 **revisit** is a choice that gets more expensive to change the longer it
 stands.
 
+## show, same? and secrets
+
+- **revisit: a default, once chosen, stays.** A definition checked
+  before a type defined its own `show` was hashed with the shape's, and
+  keeps it; one checked after gets the type's. Before defaults a missing
+  method was an error, so this could not happen silently. Making a
+  type's own `show` part of its declaration, as a ranked variant's rank
+  is, would put it in the attribute's identity, at the cost of a cycle
+  in hashing (the definition matches on the type that names it).
+- **Interpolation:** `\(expr)` inside text, which reads as an error
+  today, would expand to `join` and `show`. Not built; `join` first.
+- **What a shape's `show` costs:** it is a closure made at each call,
+  not one function per type shared by every call. Fine for views;
+  worth sharing if a profile says so.
+- **Dictionaries and `same?`/`show`:** their values go by `inspect` and
+  `=`. Walking them needs a function over entries.
+
 ## Methods
 
 - **Unions:** a method called on a value that may be one of several
@@ -12,10 +29,11 @@ stands.
   already picks among variants at run time in functions by clauses, so
   picking a method by tag would be consistent with conduct; it is the
   harder of the two to take back.
-- **Built-ins:** `=`, `hash` and `str` stay structural. Letting a type
-  give its own equality means every generic use of `=` asks for it,
-  `conduct.map` included; display (hiding a password) is the case that
-  most needs a type's own say.
+- **Built-ins:** `=`, `hash` and `inspect` stay structural; `show` and
+  `same?` are a type's say, with a default. `hash` has no semantic twin:
+  a type whose `same?` differs from `=` cannot be a key by what it
+  means. Add one with `same?` if a case needs it, and then the two must
+  agree.
 - **By the type a call must answer:** decoding wants it, so `codec` is
   found from the type expected; not built. `record-codec` finds a
   variant's codec in its domain, at expansion, which covers nested

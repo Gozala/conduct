@@ -3,6 +3,63 @@
 Choices made while building, each with the reason and what would reverse
 it. Newest first.
 
+## Two kinds of show and equality; secrets
+
+- **Structural and semantic, each twice.** `=` and
+  `conduct.syntax/inspect` are built in and no type changes them: `=`
+  agrees with `hash` and is what maps, `match` and Dialog use, and
+  `inspect` writes a value so that it reads back. `same?` and `show` are
+  what a type means: its own if it defines them, else what its shape
+  makes. Keeping `=` structural is what keeps a rule and a function from
+  disagreeing about a fact; a type's equality is something domain code
+  asks for by name.
+- **The default is a rank, decided when the code is checked.** A
+  variant's own definition comes first, then its shape, and the last,
+  the built-in's way, fits every value, as the last case of a ranked
+  variant is in every other. A type's shape calls the method again on
+  each part, not the built-in, or a secret in a list would show. The
+  choice is part of the definition's hash, as a method's is.
+- **The type selects.** Conduct's records are maps and a type selects
+  some of their attributes, so `show` shows what the type at the call
+  says the value has, and a claim, which is the type, selects. That is
+  what lets the decision be made when the code is checked though a value
+  may hold more than its type says: what is not selected is not shown.
+  A claim now changes what a definition does, which it did not before;
+  the claim is already part of the hash, so a hash still fixes what a
+  definition does.
+- **Found by the rules methods have,** with two more: a record, a list,
+  a union of variants or anything else no method is found for goes by
+  its shape instead of being an error, and a variant without its own
+  goes by what it holds. A one-attribute record among records is one of
+  them, not a variant. Past eight levels of nesting, which a recursive
+  type reaches, it is the built-in's way.
+- **`show` of text is the text, at any depth.** `[a b]` for `["a" "b"]`
+  is ambiguous, and is for people; `inspect` is for reading back.
+- **A bare method name means the method** when one method has that last
+  segment and no built-in or definition has it as its whole name.
+  Before, a bare `compare` reached every type's definition of it and was
+  ambiguous, so `show` could not have been written bare.
+- **`str` is gone.** Building text is `join`, whose `with:` is now
+  optional, and it takes texts only, so `(join todos)` is still a type
+  error rather than record syntax in a page. `(join ["n: " (show n)])`
+  is longer than `(str "n: " n)`; loosening `join` later changes no call,
+  tightening it would. Interpolation was considered: adjacent forms
+  (`"a"b"c"`) would make a space change meaning, and a `~` in text would
+  reuse quasiquote's mark; `\(expr)` in text, Swift's, is still open.
+- **`inspect` is `conduct.syntax/inspect`.** A built-in may live in a
+  domain other than `conduct`, and is reached by the segments its whole
+  name ends with, as a definition is.
+- **`secret` is built in and opaque.** Structural `inspect` cannot be
+  told to hide anything, so the runtime knows a secret's attribute and
+  writes `<secret>`; `=` and `hash` see what it holds, so maps and
+  Dialog treat two equal secrets as one value. Only `conduct.secret` may
+  take one apart in a pattern, so every place one is opened is a
+  `reveal`, which a search finds. It has no codec on purpose: encoding a
+  secret should be written, not happen.
+- **Dictionaries show their values by `inspect`'s way,** since a
+  dictionary's values have one type for all and walking them needs a
+  function over entries conduct does not have yet.
+
 ## Methods, found by type when code is checked
 
 - **A claim with no definition is a method,** when its first parameter
@@ -78,7 +135,7 @@ it. Newest first.
   is made from the route it points at. Subroute builds both from a
   tagged template at run time; here `route` is a macro that walks the
   description once at compile time and writes a `parsing` pipeline for
-  one direction and a `str` of the same pieces for the other.
+  one direction and a `join` of the same pieces for the other.
 - **Parameters are a record of declared attributes,** `(a
   natural-segment)` capturing the attribute `a`. Subroute builds an
   object with dynamic keys and merges objects; conduct has neither, and
@@ -441,7 +498,7 @@ it. Newest first.
 - **Built-ins borrow what outlives them.** An argument that is a local
   the code still holds after the call is passed as it is, not
   duplicated and dropped. Only after the call: a later argument may take
-  the last reference to the same local (`(occurs? u in: (str u u) at:
+  the last reference to the same local (`(occurs? u in: (join [u u]) at:
   0)`), which a test now covers.
 - **No counting what is never an object:** constants, and arguments
   that are integers or Booleans by their type.
@@ -1222,15 +1279,13 @@ it. Newest first.
 - **A clause learns nothing from the ones before it.** That needs
   negation types. With exhaustive matches on one field, it rarely
   matters.
-- **Keywords print with their colon in `str` and as their name in
-  JSON.** A view attribute wanting the bare name has to match on it.
-- **`str` shows a value as it would be written.** Text at the top is
-  itself, so `(str "a" 1)` is `a1`; inside a value it is quoted. A
-  record's fields are written by local name, in alphabetical order, the
-  module carrying a table from field id to name for the attributes it
-  uses; a field it does not know is written `#id`. Its fields are not
-  hidden, so a password in a record shows; a type's own display would be
-  a method, which `str` does not use yet.
+- **Keywords print with their colon in `show` and `inspect` and as their
+  name in JSON.** A view attribute wanting the bare name has to match on
+  it.
+- **Values are written as they would be written.** A record's fields by
+  local name, in alphabetical order, the module carrying a table from
+  field id to name for the attributes it uses; a field it does not know
+  is written `#id`.
 
 ## Slice 4: requests
 

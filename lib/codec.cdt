@@ -421,8 +421,8 @@
       (form-list [_ t])
       (match (codec-for t declared: declared)
         (ok c) (record-rows rest declared: declared done: (conj done `[~(form-symbol name) ~(form-text name) ~c]))
-        (error why) (error (str "`" name "` " why ": write `[" name " \"" name "\" codec]`")))
-      _ (error (str "`" name "` is not a declared attribute")))
+        (error why) (error (join ["`" name "` " why ": write `[" name " \"" name "\" codec]`"])))
+      _ (error (join ["`" name "` is not a declared attribute"])))
     [row rest ...] (record-rows rest declared: declared done: (conj done row))))
 
 ;; The codec of a declared type, as a form. A variant's codec is the one
@@ -453,8 +453,8 @@
   (match (variant-domain (declaration-of name in: declared) declared: declared)
     (ok home)
     (match (arg-codecs args declared: declared done: [])
-      (ok []) (ok (form-symbol (str home "/codec")))
-      (ok cs) (ok `(~(form-symbol (str home "/codec")) ~@cs))
+      (ok []) (ok (form-symbol (join [home "/codec"])))
+      (ok cs) (ok `(~(form-symbol (join [home "/codec"])) ~@cs))
       (error e) (error e))
     (error e) (error e)))
 
@@ -478,7 +478,7 @@
 (claim (domain-of text) : (result text error: text))
 (define (domain-of attribute)
   (match (split attribute "/")
-    [home _] (if (= home ".") (error (str "has a variant of `" attribute "`, which has no domain to find a codec in"))
+    [home _] (if (= home ".") (error (join ["has a variant of `" attribute "`, which has no domain to find a codec in"]))
                (ok home))
     _ (error "has a type with no codec to take")))
 
@@ -857,7 +857,7 @@
 (define (read-decimal bs at start)
   (match (read-cbor bs at: at)
     (ok {read-value: (data-list [(data-integer e) (data-integer m)]), read-next: next})
-    (read-ok (data-decimal (str m "e" e)) next: next)
+    (read-ok (data-decimal (join [(show m) "e" (show e)])) next: next)
     (ok _) (fails-at :expecting-decimal-fraction at: start)
     (error e) (error e)))
 
@@ -870,14 +870,14 @@
 (claim (error-text-at decode-error path: text) : text)
 (define (error-text-at e path)
   (match e
-    (in-member {failed-name: n, failed-cause: inner}) (error-text-at inner path: (str path "." n))
-    (in-item {failed-index: i, failed-cause: inner}) (error-text-at inner path: (str path "[" i "]"))
-    (none-of errors) (str "none of " (count errors) " ways to decode the value at `" path "` fits: "
-                          (join (conduct/map errors each: error-text) with: "; "))
+    (in-member {failed-name: n, failed-cause: inner}) (error-text-at inner path: (join [path "." n]))
+    (in-item {failed-index: i, failed-cause: inner}) (error-text-at inner path: (join [path "[" (show i) "]"]))
+    (none-of errors) (join ["none of " (show (count errors)) " ways to decode the value at `" path "` fits: "
+                           (join (conduct/map errors each: error-text) with: "; ")])
     (failure {failed-reason: why, failed-value: d})
-    (str "the value at `" path "` fails with " why ": " (to-text (to-json d)))
+    (join ["the value at `" path "` fails with " (show why) ": " (to-text (to-json d))])
     (not-json ends) (match ends
                       [] "the text is not JSON"
-                      [end _ ...] (str "the text is not JSON at " (row end) ":" (col end) ": " (reason end)))
+                      [end _ ...] (join ["the text is not JSON at " (show (row end)) ":" (show (col end)) ": " (show (reason end))]))
     (bad-bytes {failed-offset: at, failed-reason: why})
-    (str "the bytes of `" path "` fail at offset " at " with " why))))
+    (join ["the bytes of `" path "` fail at offset " (show at) " with " (show why)]))))

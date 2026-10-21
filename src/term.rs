@@ -67,7 +67,13 @@ pub enum Op {
     Eq,
     NotEq,
     Not,
-    Str,
+    Inspect,
+    /// `show` of a value with no type of its own to say how: text as it
+    /// is, anything else as `inspect` writes it.
+    Show,
+    /// Whether two lists are as long and a function of two values is
+    /// true of each pair of their items: `same?` of lists.
+    Pairwise,
     Count,
     First,
     Rest,
@@ -163,7 +169,7 @@ impl Op {
         Op::Eq,
         Op::NotEq,
         Op::Not,
-        Op::Str,
+        Op::Inspect,
         Op::Count,
         Op::First,
         Op::Rest,
@@ -227,7 +233,9 @@ impl Op {
             Op::Eq => "=",
             Op::NotEq => "not=",
             Op::Not => "not",
-            Op::Str => "str",
+            Op::Inspect => "inspect",
+            Op::Show => "show-plain",
+            Op::Pairwise => "pairwise",
             Op::Count => "count",
             Op::First => "first",
             Op::Rest => "rest",
@@ -287,10 +295,37 @@ impl Op {
         Op::ALL.iter().copied().find(|op| op.name() == name)
     }
 
-    /// The number of arguments, or `None` for `str`, which takes any.
+    /// The domain a built-in is in: `conduct`, but for `inspect`, which
+    /// is `conduct.syntax/inspect`.
+    pub fn domain(self) -> &'static str {
+        match self {
+            Op::Inspect => "conduct.syntax",
+            _ => "conduct",
+        }
+    }
+
+    /// A built-in's whole name: `conduct/count`, `conduct.syntax/inspect`.
+    pub fn whole_name(self) -> String {
+        format!("{}/{}", self.domain(), self.name())
+    }
+
+    /// The built-in a name as written reaches: its own name, its whole
+    /// name, or the segments its whole name ends with (`syntax/inspect`),
+    /// as a definition's name is reached; and `conduct/` and its name.
+    pub fn from_written(written: &str) -> Option<Op> {
+        let segments = |n: &str| n.split(['.', '/']).map(str::to_string).collect::<Vec<_>>();
+        let part = segments(written);
+        Op::ALL.iter().copied().find(|op| {
+            let whole = segments(&op.whole_name());
+            op.name() == written
+                || written == format!("conduct/{}", op.name())
+                || (part.len() <= whole.len() && whole[whole.len() - part.len()..] == part[..])
+        })
+    }
+
+    /// The number of arguments, or `None` for one that takes any.
     pub fn arity(self) -> Option<usize> {
         Some(match self {
-            Op::Str => return None,
             Op::Not
             | Op::Count
             | Op::Rest
@@ -306,6 +341,8 @@ impl Op {
             | Op::Hash
             | Op::ByteCount
             | Op::FromCodePoint
+            | Op::Inspect
+            | Op::Show
             | Op::Utf8 => 1,
             Op::Assoc
             | Op::Get
@@ -315,6 +352,7 @@ impl Op {
             | Op::ByteAt
             | Op::CodePointAt
             | Op::Slice
+            | Op::Pairwise
             | Op::Occurs => 3,
             Op::IndexOf => 4,
             Op::H | Op::Fetch => 4,
