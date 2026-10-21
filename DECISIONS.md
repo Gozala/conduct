@@ -33,6 +33,17 @@ it. Newest first.
   goes by what it holds. A one-attribute record among records is one of
   them, not a variant. Past eight levels of nesting, which a recursive
   type reaches, it is the built-in's way.
+- **Where no caller says the type, the built-in's way.** What the host
+  calls is passed it, since a host has no types; so is a value that
+  must be of a built-in type (an attribute `+` reads elsewhere in the
+  same definition is a number, though each read is its own variable),
+  and a parameter of a function value that no caller of the definition
+  gives, as a segment's format in a route is. Before defaults such a
+  call was "nothing reaches it", which was wrong for a function kept in
+  a record and called later.
+- **A claim's variables are the callers' to say,** as an unclaimed
+  definition's parameters are, so a claim does not turn `show` of `?a`
+  into the built-in's way.
 - **`show` of text is the text, at any depth.** `[a b]` for `["a" "b"]`
   is ambiguous, and is for people; `inspect` is for reading back.
 - **A bare method name means the method** when one method has that last

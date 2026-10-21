@@ -574,7 +574,8 @@ claim rather than by a block on the type.
 - **Not yet:** a method is found by its first argument, never by the
   type a call must answer; a method called inside a function a `let` binds, on a value of a type
   the `let` makes generic, is an error; an element's or a route's
-  functions, which the host calls, may not ask for methods.
+  functions, which the host calls, may not ask for methods other than
+  `show` and `same?`.
 
 #### Methods with a default: `show` and `same?`
 
@@ -601,7 +602,12 @@ again on each part the type says the value has.
   is the type, so it is the selection; a function with no claim shows
   what its caller's type says.
 - **Found when the code is checked,** as methods are: a function that
-  shows what its callers give is passed `show` for each caller's type.
+  shows what its callers give, claimed or not, is passed `show` for each
+  caller's type, `where ?a has conduct/show`. What the host calls, an
+  element's `view` say, is passed the built-in's way, since the host
+  says no types; so is a value that must be a number or text, as an
+  attribute added to elsewhere is, and a function value's parameter no
+  caller of the definition gives.
   A variant's own comes first, then its shape: a record's attributes, a
   list's items, a variant as its constructor, `(thing 5)`. A union of
   variants picks by which it is, as a `match` would. Anything else, and
